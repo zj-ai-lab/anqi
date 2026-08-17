@@ -361,4 +361,3 @@ export function removeSecureCreatedFile(context, written) {
     return false;
   }
 }
-
