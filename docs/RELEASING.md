@@ -64,6 +64,8 @@ git tag -s android-vX.Y.Z -m "ANQI Android vX.Y.Z"
 git push origin android-vX.Y.Z
 ```
 
+`-s` 需要本机已配置 git 签名密钥（GPG 或 SSH）。尚未配置时用注解 tag `git tag -a ... -m ...` 代替，不要用轻量 tag；配好签名后再切回 `-s`。
+
 发布 tag 应视为不可变。tag、Release 或镜像内容有误时，修复后发布更高的补丁版本；不要强制覆盖已公开 tag。连续失败三次应停止重跑，先记录根因并修复。
 
 ## 3. macOS：GitHub Release

@@ -29,8 +29,8 @@ android {
         applicationId = "com.fdong.anjian"
         minSdk = 26          // 自适应图标起点，覆盖面足够
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
     }
 
     signingConfigs {
