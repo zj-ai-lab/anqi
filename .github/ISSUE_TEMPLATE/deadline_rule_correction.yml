@@ -1,0 +1,124 @@
+name: 期限规则勘误
+description: 提交有权威法源支持、使用虚构事实的期限规则更正线索
+title: "[期限规则] "
+labels:
+  - deadline-rule
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢帮助核对期限规则。期限错误可能造成严重后果，请只提交可公开核验的权威法源，并用完全虚构、不可识别的最小场景说明问题。
+
+        Issue 只是复核线索，不是法律意见，也不代表规则已经核准或会自动进入系统。`rules/deadline_rules.json` 的 review 状态只能由维护者完成独立法律复核后变更。
+
+  - type: input
+    id: jurisdiction
+    attributes:
+      label: 法域
+      description: 国家或地区；如涉及地方规则，请写到省、市或具体法院层级。
+      placeholder: 中国大陆 / 广东省
+    validations:
+      required: true
+
+  - type: input
+    id: procedure
+    attributes:
+      label: 程序类型
+      description: 例如民事诉讼、行政诉讼、仲裁、执行或其他明确程序。
+      placeholder: 民事诉讼
+    validations:
+      required: true
+
+  - type: input
+    id: instance
+    attributes:
+      label: 审级或阶段
+      description: 例如一审、二审、再审、执行、仲裁审理阶段。
+      placeholder: 一审
+    validations:
+      required: true
+
+  - type: textarea
+    id: trigger_event
+    attributes:
+      label: 触发事件
+      description: 说明期限从什么法律事件起算；日期必须是明显虚构的示例日期。
+      placeholder: 例：2026-01-10，张三通过直接送达收到示例判决书。
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: 当前规则或当前结果
+      description: 写明案齐当前显示或计算出的规则、日期或行为；如知道 rule id 可一并注明。
+      placeholder: 当前从……起算，得到虚构日期 2026-01-20。
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: 期望规则或期望结果
+      description: 说明你认为应采用的计日、期间、送达、顺延或扣除规则及可观察结果。
+      placeholder: 根据下列条文，应当……，虚构场景中的结果应为 2026-01-21。
+    validations:
+      required: true
+
+  - type: textarea
+    id: authority
+    attributes:
+      label: 权威来源、精确条款与 URL
+      description: 请给出法规或司法解释全名、发布机关、精确条款号、相关原文和可公开访问的官方 URL。仅有二手文章或搜索摘要不足以核准规则。
+      placeholder: |
+        名称：
+        发布机关：
+        条款：第 X 条第 X 款
+        原文：
+        官方 URL：https://...
+    validations:
+      required: true
+
+  - type: input
+    id: effective_date
+    attributes:
+      label: 施行日期与时效状态
+      description: 填写该版本的施行日期，并注明现行有效、尚未生效、已修改或失效；不确定时请明确写“不确定”。
+      placeholder: 2024-01-01，现行有效
+    validations:
+      required: true
+
+  - type: textarea
+    id: local_factors
+    attributes:
+      label: 地方因素或适用例外
+      description: 说明节假日、地区性规定、特定法院口径、过渡条款或其他可能改变结果的因素；没有则写“无”。
+      placeholder: 无；或列出具体地方规则及官方来源。
+    validations:
+      required: true
+
+  - type: textarea
+    id: minimal_scenario
+    attributes:
+      label: 已脱敏的最小场景
+      description: 仅使用张三、李四、示例法院和虚构日期，给出复核该规则所需的最少事实。不要上传案件材料、截图、数据库或完整日志。
+      placeholder: |
+        1. 2026-01-10，张三收到示例文书。
+        2. 送达方式为直接送达。
+        3. 期间内存在虚构法定节假日……
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 提交确认
+      options:
+        - label: 我提交的场景完全虚构且已最小化，不含真实当事人、案号、法院安排、联系方式、案件材料或可重新识别的组合信息。
+          required: true
+        - label: 我已给出可公开核验的权威来源、精确条款和 URL，并标明施行日期及时效状态。
+          required: true
+        - label: 我理解此 Issue 只是一条待独立复核的线索，不代表规则已核准，也不会自动改变 `rules/deadline_rules.json` 的 review 状态。
+          required: true
+        - label: 我没有粘贴完整补丁、成段实现代码或可直接合并的文件。
+          required: true

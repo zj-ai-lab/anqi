@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.INTERNET" />
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:usesCleartextTraffic="true"
+        android:theme="@style/Theme.Anjian">
+
+        <!--
+          动态自托管地址无法由 manifest 静态枚举。cleartext 能力只为可信局域网 HTTP 开放；
+          MainActivity 的确定性 validator 仍会拒绝所有公网 HTTP，且 WebView 禁止 mixed content。
+        -->
+
+        <!--
+          exported=true：flow-widget 小组件要从外部用 ACTION_VIEW 直达案件页。
+          singleTask：壳常驻一个实例，第二次点小组件走 onNewIntent 换页，
+                      不然会叠一个新实例、或者干脆停在旧页面不动。
+        -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
+            android:windowSoftInputMode="adjustResize">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <!-- 下载完的文件放 app 私有外部目录，靠 FileProvider 授权给外部 app 打开。 -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+    </application>
+
+</manifest>

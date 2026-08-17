@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>日历 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+<!-- 顶栏（.topnav）与底部快录条（.quickbar）由 js/nav.js 运行时注入 —— 本页不预置，也不占用同名 id。 -->
+<main class="page">
+
+  <!-- 页头：月份即标题（.date 走 --f-num：pro 等宽 / paper·jade 衬线）+ 本月负荷 + 翻页。
+       .cal-head 里 .page-title 吃掉 flex 余量 —— 衬线标题比无衬线宽，不吸收会推移右侧按钮。 -->
+  <div class="cal-head">
+    <h1 class="page-title" id="cal-title" aria-live="polite">日历</h1>
+    <span class="p-meta" id="cal-load"></span>
+    <button class="btn" id="prev" aria-label="上一月">‹ 上月</button>
+    <button class="btn" id="today-btn">今天</button>
+    <button class="btn" id="next" aria-label="下一月">下月 ›</button>
+  </div>
+  <p class="cal-hint" id="cal-hint">点开待办可改期或处理；桌面可拖动托盘任务与日历长条</p>
+
+  <div class="cal-sheet">
+    <!-- 星期头：常驻空容器，calendar.js 只在加载时填一次，load() 不重建（DOM 契约） -->
+    <div class="cal-grid" id="dow"></div>
+    <!-- 月格：每次 load() 整体 replaceChildren 重建，必须是可彻底清空重填的裸容器（DOM 契约）。
+         重建单位是「周行」.cal-week（车道布局的舞台，列模板与 .cal-grid 一致，逐像素对齐星期头）。
+         性能红线：.cal-cell 可达 42 个 —— 任何皮肤都不给它上 backdrop-filter。 -->
+    <div class="cal-weeks" id="grid"></div>
+  </div>
+
+  <div class="cal-bottom">
+    <details class="cal-tray fold" id="cal-tray" data-fold-id="calendar-tray" aria-labelledby="unplanned-title">
+      <summary class="cal-tray-head">
+        <div class="cal-tray-head-copy">
+          <h2 class="cal-tray-title" id="unplanned-title">未排期</h2>
+          <span class="cal-tray-count" id="unplanned-count" aria-live="polite"></span>
+          <p class="cal-tray-hint">开放待办拖到月格即可排到当天</p>
+        </div>
+      </summary>
+      <div class="unplanned-list" id="unplanned-list" aria-live="polite"></div>
+    </details>
+
+    <div class="cal-legend">
+      <button type="button" class="lg lg-crit" data-key="crit">致命死线</button>
+      <button type="button" class="lg lg-warn" data-key="warn">重要死线</button>
+      <button type="button" class="lg lg-event" data-key="hearing">开庭</button>
+      <button type="button" class="lg lg-task" data-key="task">待办到期</button>
+      <button type="button" class="lg lg-done" data-key="done">已处理</button>
+      <span class="meta">底色：绿=法定假 · 橙=调休班 · 灰=周末</span>
+      <span class="meta">点按图例可隐藏 · 已处理灰显划线</span>
+    </div>
+  </div>
+
+</main>
+<script type="module" src="/js/calendar.js"></script>
+</body>
+</html>

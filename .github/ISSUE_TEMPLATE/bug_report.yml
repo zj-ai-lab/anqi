@@ -1,0 +1,88 @@
+name: Bug report
+description: 报告可复现、已脱敏的功能缺陷
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢报告。安全漏洞请使用 Security 页的私密漏洞报告，不要提交公开 Issue。严禁上传真实案件、当事人信息、数据库、凭据或未经脱敏的截图。
+
+  - type: input
+    id: version
+    attributes:
+      label: 案齐版本
+      description: 请填写 Release、镜像 tag 或 commit。
+      placeholder: v2.x.x
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: 运行方式
+      options:
+        - Docker
+        - Node.js 源码
+        - macOS 桌面版
+        - Android WebView
+        - 其他
+    validations:
+      required: true
+
+  - type: input
+    id: environment
+    attributes:
+      label: 运行环境
+      description: 操作系统、CPU 架构、浏览器；不要填写公网或内网地址。
+      placeholder: macOS 15 / arm64 / Safari 18
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: 最小复现步骤
+      description: 使用全新测试库和虚构数据，按顺序列出步骤。
+      placeholder: |
+        1. 新建“张三诉李四示例案”
+        2. ……
+        3. ……
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: 期望行为
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: 实际行为
+      description: 可以附最小化、已脱敏的错误片段；不要附完整日志。
+    validations:
+      required: true
+
+  - type: textarea
+    id: legal_rule_context
+    attributes:
+      label: 期限规则补充信息（仅相关时）
+      description: 使用虚构日期，并给出法域、程序类型、触发事件、计日/顺延条件和公开权威法源链接。Issue 不会自动改变规则审核状态。
+
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: 提交确认
+      options:
+        - label: 这不是安全漏洞；安全问题应改走私密漏洞报告。
+          required: true
+        - label: 内容不含真实当事人、案号、证件号、电话、地址、案件材料或其他可识别事实。
+          required: true
+        - label: 内容不含密码、hash、API key、cookie、token、数据库、`.env`、内网地址或其他秘密。
+          required: true
+        - label: 我没有粘贴完整补丁、成段实现代码或可直接合并的文件。
+          required: true

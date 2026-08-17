@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>用户中心 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+
+<!-- 顶栏 / 快录条 / toast 全部由 js（nav.js、api.js）运行时注入 body，此处不要手写。 -->
+
+<main class="wrap">
+  <h1 class="page-title">用户中心</h1>
+  <p class="page-sub">方律 · 个人设置与系统偏好</p>
+
+  <section class="col">
+
+    <!-- ═════ 界面皮肤（本页主角：三皮肤 + 跟随系统） ═════ -->
+    <div class="panel" aria-label="界面皮肤">
+      <div class="p-head">
+        <h2 class="p-title">界面皮肤</h2>
+        <span class="p-meta">即时生效<span>·</span>只存本机</span>
+      </div>
+      <div class="panel-body">
+        <div class="theme-cards" role="group" aria-label="皮肤选择">
+          <div class="theme-card" role="button" tabindex="0" aria-pressed="false" data-skin-value="pro">
+            <span class="swatch sw-pro" aria-hidden="true"></span>
+            <div class="name">专业 · 亮</div>
+            <div class="desc">扁平白面 · 灰阶骨架 · 等宽数字</div>
+          </div>
+          <div class="theme-card" role="button" tabindex="0" aria-pressed="false" data-skin-value="paper">
+            <span class="swatch sw-paper" aria-hidden="true"></span>
+            <div class="name">纸感 · 亮</div>
+            <div class="desc">暖白纸底 · 零阴影 · 衬线排印</div>
+          </div>
+          <div class="theme-card" role="button" tabindex="0" aria-pressed="false" data-skin-value="jade">
+            <span class="swatch sw-jade" aria-hidden="true"></span>
+            <div class="name">翡翠 · 暗</div>
+            <div class="desc">墨绿毛玻璃 · 衬线大数字</div>
+          </div>
+          <div class="theme-card" role="button" tabindex="0" aria-pressed="false" data-skin-value="auto">
+            <span class="swatch sw-auto" aria-hidden="true"></span>
+            <div class="name">跟随系统</div>
+            <div class="desc">OS 亮 → 专业 · OS 暗 → 翡翠</div>
+          </div>
+        </div>
+      </div>
+      <div class="p-foot">
+        <span class="fk">当前生效 <b id="skin-now">—</b></span>
+        <span class="tail">三种材质共用一套骨架——换皮肤只换质感，版面零位移</span>
+      </div>
+    </div>
+
+    <!-- ═════ 个人设置 ═════ -->
+    <div class="panel" aria-label="个人设置">
+      <div class="p-head">
+        <h2 class="p-title">个人设置</h2>
+        <span class="p-meta">保存在本机</span>
+      </div>
+      <div class="panel-body">
+        <div class="formgrid">
+          <label class="f">姓名<input id="set-name" placeholder="张三"></label>
+          <label class="f">执业证号<input id="set-license_no" inputmode="numeric" placeholder="17 位执业证号"></label>
+          <label class="f">律所名称<input id="set-firm" placeholder="××律师事务所"></label>
+          <label class="f">联系电话<input id="set-phone" type="tel" placeholder="13800138000"></label>
+          <label class="f">邮箱<input id="set-email" type="email" placeholder="name@example.com"></label>
+          <label class="f">办公地址<input id="set-address" placeholder="深圳市××区示例路 1 号"></label>
+        </div>
+        <div class="formrow">
+          <button class="btn primary" type="button" id="set-save">保存设置</button>
+        </div>
+      </div>
+      <div class="p-foot">
+        <span class="fk">存在本机数据库的 <span class="chip mono">settings</span> 表，不联网、不进任何计算</span>
+      </div>
+    </div>
+
+    <!-- ═════ 账户与安全（事实条：一行摘要 + 展开看完整设置） ═════ -->
+    <div class="panel" aria-label="账户与安全">
+      <div class="factstrip" id="profile-security-strip">
+        <div class="factstrip-row">
+          <span class="factstrip-label">账户</span>
+          <span class="factstrip-fact">单用户自用 · 口令哈希存环境变量 · 会话 30 天滚动续期</span>
+          <button class="factstrip-edit" type="button" id="profile-security-toggle" aria-expanded="false">展开</button>
+        </div>
+        <div class="factstrip-more" id="profile-security-more" hidden>
+          <div class="panel-body" style="padding:14px 16px">
+            <div class="settings-row">
+              <div>
+                <div class="label">登录方式</div>
+                <div class="desc">用户名 + 口令；口令哈希存环境变量，改密改 env 后重启，Web 端不开改密入口</div>
+              </div>
+              <span class="chip mono">ANJIAN_PASS_HASH</span>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">会话 cookie</div>
+                <div class="desc">HttpOnly · SameSite=Lax · 30 天滚动续期</div>
+              </div>
+              <span class="chip mono">anjian_sess</span>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">内部接口</div>
+                <div class="desc">/internal/* 走独立密钥，供外部自动化 / Agent 调用；建议在反向代理层对公网屏蔽</div>
+              </div>
+              <span class="chip mono">X-Anjian-Key</span>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">退出当前会话</div>
+                <div class="desc">销毁服务端 session 并清 cookie，回到登录页</div>
+              </div>
+              <button class="btn danger" type="button" id="logout-btn">退出登录</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ═════ 关于（事实条：版本一行 + 展开看架构/规则数） ═════ -->
+    <div class="panel" aria-label="关于">
+      <div class="factstrip" id="profile-about-strip">
+        <div class="factstrip-row">
+          <span class="factstrip-label">关于</span>
+          <span class="factstrip-fact"><span class="m" id="ver-badge">—</span> · 数据存在本机，未上传</span>
+          <button class="factstrip-edit" type="button" id="profile-about-toggle" aria-expanded="false">展开</button>
+        </div>
+        <div class="factstrip-more" id="profile-about-more" hidden>
+          <div class="panel-body" style="padding:14px 16px">
+            <div class="settings-row">
+              <div class="label">系统版本</div>
+              <span class="num" id="ver-full">读取中……</span>
+            </div>
+            <div class="settings-row">
+              <div class="label">设计系统</div>
+              <span class="meta">一个骨架 · 三种材质（专业 / 纸感 / 翡翠）</span>
+            </div>
+            <div class="settings-row">
+              <div class="label">技术架构</div>
+              <span class="meta">Node ESM + Express + better-sqlite3 · 无构建步骤</span>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">期限规则</div>
+                <div class="desc">规则是数据不是代码——rules/deadline_rules.json</div>
+              </div>
+              <span class="num" id="sys-rules">—</span>
+            </div>
+            <div class="settings-row">
+              <div>
+                <div class="label">事件类型词表</div>
+                <div class="desc">立案 / 送达 / 开庭 / 判决……由引擎驱动推算</div>
+              </div>
+              <span class="num" id="sys-events">—</span>
+            </div>
+          </div>
+          <div class="p-foot">
+            <span class="fk">期限只由确定性规则引擎推算——模型产物一律先进收件箱，人工确认才入正式表</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </section>
+</main>
+
+<script type="module" src="/js/profile.js"></script>
+</body>
+</html>

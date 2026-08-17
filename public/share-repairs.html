@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>历史分成修复 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+<!-- 顶栏与快录条由 js/nav.js 运行时注入，本页不写。 -->
+<main class="wrap">
+  <div class="pagehead">
+    <h1 class="page-title">历史分成修复</h1>
+    <p class="page-sub">逐笔人工裁决：认领既有来源款、保留未认领，或逻辑作废重复/录错；不自动挂款、合并、删除或重算。</p>
+  </div>
+
+  <section class="panel" aria-label="历史分成修复队列">
+    <div class="p-head">
+      <h2 class="p-title">修复队列</h2>
+      <span class="p-meta">
+        <span id="repair-meta"></span>
+        <select id="repair-status" aria-label="修复队列状态">
+          <option value="open">待裁决</option>
+          <option value="all">全部记录</option>
+          <option value="claimed">已认领</option>
+          <option value="retained_unlinked">已保留未认领</option>
+          <option value="voided_duplicate">已逻辑作废</option>
+        </select>
+      </span>
+    </div>
+    <div id="repair-list"></div>
+    <div class="p-foot">
+      <span class="tail">候选和可能重复仅供核对；所有裁决只经人工 `/api` 写入，不接 LLM、收件箱或内部接口。</span>
+    </div>
+  </section>
+</main>
+<script type="module" src="/js/share-repairs.js"></script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>案齐 · 初始设置</title>
+<style>
+  :root {
+    --bg: #050D0A;
+    --surface: #0B1714;
+    --line: #1A2925;
+    --ink: #E8F0ED;
+    --meta: #8A9D97;
+    --green: #14B584;
+    --green-d: #0A6B4A;
+    --red: #E5484D;
+    --r: 10px;
+    --f: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: var(--f);
+    background: var(--bg);
+    color: var(--ink);
+    padding: 40px 32px;
+    -webkit-font-smoothing: antialiased;
+    height: 100vh;
+    overflow-y: auto;
+  }
+  /* 与 webui 顶栏 .seal、下载落地页 .mark 同一套做法：图标图片铺满，文字只作无图时的兜底。
+     引导页走 loadFile(file://)，public/ 与 electron/ 在 dev 和打包后（asar:false）都是同级实体目录，
+     故相对路径 ../public/assets/... 两种形态下都取得到。 */
+  .logo {
+    width: 56px; height: 56px;
+    border-radius: 15px;
+    /* 多图层必须逗号分隔：写成 `linear-gradient(...) url(...)` 是非法简写，整条声明会被丢弃。 */
+    background: url('../public/assets/anjian-icon.png') center / cover no-repeat,
+                linear-gradient(135deg, var(--green), var(--green-d));
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0; color: transparent;
+    margin-bottom: 20px;
+  }
+  h1 { font-size: 22px; font-weight: 650; margin-bottom: 6px; }
+  .sub { font-size: 13px; color: var(--meta); margin-bottom: 32px; line-height: 1.5; }
+  .field { margin-bottom: 24px; }
+  .field label { display: block; font-size: 13px; font-weight: 500; margin-bottom: 8px; }
+  .field .hint { font-size: 11px; color: var(--meta); margin-top: 6px; line-height: 1.5; }
+  input[type=text], input[type=password] {
+    width: 100%; padding: 11px 14px;
+    background: var(--surface); border: 1px solid var(--line); border-radius: var(--r);
+    color: var(--ink); font-family: var(--f); font-size: 14px;
+    transition: border-color .12s;
+  }
+  input:focus { outline: none; border-color: var(--green); }
+  .dir-row { display: flex; gap: 8px; }
+  .dir-row input { flex: 1; font-family: ui-monospace, monospace; font-size: 12px; }
+  .btn {
+    padding: 11px 18px; border: none; border-radius: var(--r);
+    font-family: var(--f); font-size: 14px; font-weight: 500; cursor: pointer;
+    transition: background .12s, opacity .12s;
+  }
+  .btn.sec { background: var(--surface); border: 1px solid var(--line); color: var(--ink); white-space: nowrap; }
+  .btn.sec:hover { border-color: var(--green); }
+  .btn.primary { background: var(--green); color: #fff; width: 100%; padding: 13px; font-weight: 590; }
+  .btn.primary:hover { background: var(--green-d); }
+  .btn.primary:disabled { opacity: .4; cursor: not-allowed; }
+  .divider { border-top: 1px solid var(--line); margin: 28px 0; }
+  .step-tag {
+    display: inline-block; font-size: 11px; color: var(--green);
+    background: rgba(20,181,132,.12); padding: 3px 8px; border-radius: 6px;
+    margin-bottom: 4px;
+  }
+  .err { color: var(--red); font-size: 12px; margin-top: 12px; min-height: 16px; }
+  .foot { font-size: 11px; color: var(--meta); margin-top: 24px; line-height: 1.6; }
+  .checking { display: none; font-size: 13px; color: var(--meta); text-align: center; padding: 40px 0; }
+  .checking.show { display: block; }
+</style>
+</head>
+<body>
+
+<div class="logo">齐</div>
+<h1>欢迎使用案齐</h1>
+<p class="sub">首次使用，需要做三个简单设置。完成后数据保存在你自己的电脑上。</p>
+
+<form id="form">
+  <div class="field">
+    <span class="step-tag">第 1 步</span>
+    <label for="dir">数据保存位置</label>
+    <div class="dir-row">
+      <input type="text" id="dir" readonly placeholder="点击右侧选择文件夹">
+      <button type="button" class="btn sec" id="pick">选择…</button>
+    </div>
+    <div class="hint">会在你选的位置下新建一个「案齐数据」文件夹，案件数据库和案件夹文件都存在里面。建议放在 Documents 或 iCloud Drive。</div>
+  </div>
+
+  <div class="field">
+    <span class="step-tag">第 2 步</span>
+    <label for="user">登录用户名</label>
+    <input type="text" id="user" autocomplete="username">
+    <label for="pass" style="margin-top:14px">登录密码</label>
+    <input type="password" id="pass" autocomplete="new-password" placeholder="设置一个密码保护你的案件数据">
+    <div class="hint">密码本地保存（哈希存储），不联网。之后每次打开 App 用它登录。</div>
+  </div>
+
+  <div class="divider"></div>
+
+  <div class="field">
+    <span class="step-tag">第 3 步 · 可选</span>
+    <label for="key">DeepSeek API key</label>
+    <input type="password" id="key" placeholder="留空也可正常使用">
+    <div class="hint">
+      不填 = 纯台账模式，全部期限 / 待办 / 费用功能正常，仅「快录整理」和 AI 建议不可用。<br>
+      填写 = 解锁 AI 功能。在 platform.deepseek.com 申请，数据按 DeepSeek 政策处理。
+    </div>
+  </div>
+
+  <div class="err" id="err"></div>
+
+  <button type="submit" class="btn primary" id="submit">完成设置，开始使用</button>
+
+  <p class="foot">
+    案齐是你的本地案件管理系统，数据完全保存在本机，不依赖云端服务。<br>
+    法定期限由确定性引擎推算，不经 LLM，即使不填 API key 也准确可靠。
+  </p>
+</form>
+
+<div class="checking" id="checking">
+  正在初始化数据库…<br>首次启动需要几秒钟。
+</div>
+
+<script src="onboarding.js"></script>
+</body>
+</html>

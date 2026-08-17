@@ -1,0 +1,17 @@
+{
+  "id": "/",
+  "name": "案齐",
+  "short_name": "案齐",
+  "description": "案件管理工作台",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "lang": "zh-CN",
+  "background_color": "#F6F7F8",
+  "theme_color": "#F6F7F8",
+  "icons": [
+    { "src": "/assets/anjian-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "/assets/anjian-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "/assets/anjian-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}

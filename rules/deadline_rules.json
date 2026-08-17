@@ -1,0 +1,116 @@
+{
+  "_comment": "期限规则表 v1（中国民诉单辖区）。编纂起点=litigation-brief 期限表；schema 见 docs/DESIGN.md §3.1。本表已由作者于 2026-08-17 核准；后续修订须再次核准——本表按执业事故防线标准维护（D5），引擎照算，但正式依赖前必须过目。",
+  "review": "approved",
+  "reviewed_by": "作者",
+  "reviewed_at": "2026-08-17",
+  "rules": [
+    {
+      "id": "defense_period",
+      "name": "答辩期",
+      "trigger": "served",
+      "kind": "statutory",
+      "days": 15, "unit": "natural_days",
+      "direction": "after", "count_from": "next_day", "roll": "forward",
+      "service_modifiers": {
+        "公告送达": { "prepend_days": 30, "note": "公告送达自发出公告之日起经 30 日视为送达" }
+      },
+      "extendable": false,
+      "applies_procedure": ["一审"],
+      "basis": "民诉法 §128（收到起诉状副本之日起 15 日内提出答辩状）",
+      "severity": "high"
+    },
+    {
+      "id": "jurisdiction_objection",
+      "name": "管辖权异议期",
+      "trigger": "served",
+      "kind": "statutory",
+      "days": 15, "unit": "natural_days",
+      "direction": "after", "count_from": "next_day", "roll": "forward",
+      "service_modifiers": {
+        "公告送达": { "prepend_days": 30, "note": "公告送达自发出公告之日起经 30 日视为送达" }
+      },
+      "extendable": false,
+      "applies_procedure": ["一审"],
+      "basis": "民诉法 §130（提交答辩状期间内提出）",
+      "severity": "critical"
+    },
+    {
+      "id": "evidence_deadline_entry",
+      "name": "举证期限",
+      "trigger": "evidence_notice",
+      "kind": "court_specified",
+      "task_title": "录入举证期限届满日（举证通知载明）",
+      "basis": "法院指定（民诉法 §68 及证据规定，普通程序不少于 15 日）",
+      "severity": "high"
+    },
+    {
+      "id": "fee_deadline_entry",
+      "name": "预交诉讼费期限",
+      "trigger": "fee_notice",
+      "kind": "court_specified",
+      "task_title": "录入预交诉讼费截止日（缴费通知载明）⚠️ 逾期按撤诉处理",
+      "basis": "诉讼费用交纳办法 §22（通知载明期限，逾期未交按自动撤诉处理）",
+      "severity": "critical"
+    },
+    {
+      "id": "appeal_judgment",
+      "name": "上诉期（判决）",
+      "trigger": "judgment_served",
+      "kind": "statutory",
+      "days": 15, "unit": "natural_days",
+      "direction": "after", "count_from": "next_day", "roll": "forward",
+      "service_modifiers": {
+        "公告送达": { "prepend_days": 30, "note": "公告送达自发出公告之日起经 30 日视为送达（判决类 60 日的旧规已随 2023 修正统一）" }
+      },
+      "extendable": false,
+      "applies_procedure": ["一审"],
+      "basis": "民诉法 §171（判决书送达之日起 15 日内上诉）",
+      "severity": "critical"
+    },
+    {
+      "id": "appeal_ruling",
+      "name": "上诉期（裁定）",
+      "trigger": "ruling_served",
+      "kind": "statutory",
+      "days": 10, "unit": "natural_days",
+      "direction": "after", "count_from": "next_day", "roll": "forward",
+      "extendable": false,
+      "applies_procedure": ["一审"],
+      "basis": "民诉法 §171（裁定书送达之日起 10 日内上诉；仅不予受理/管辖权异议/驳回起诉裁定可上诉——不可上诉的裁定采纳后手动放弃该期限即可）",
+      "severity": "critical"
+    },
+    {
+      "id": "execution_application",
+      "name": "申请执行期",
+      "trigger": "judgment_effective",
+      "kind": "statutory",
+      "days": 2, "unit": "years",
+      "direction": "after", "count_from": "next_day", "roll": "forward",
+      "extendable": false,
+      "applies_procedure": ["一审", "二审", "仲裁"],
+      "basis": "民诉法（申请执行时效二年，自法律文书规定履行期间最后一日起算——若文书定有履行期，请以履行期届满日为触发日期录入）",
+      "severity": "critical"
+    },
+    {
+      "id": "retrial_application",
+      "name": "申请再审期",
+      "trigger": "judgment_effective",
+      "kind": "statutory",
+      "days": 6, "unit": "months",
+      "direction": "after", "count_from": "same_day", "roll": "forward",
+      "extendable": false,
+      "applies_procedure": ["一审", "二审"],
+      "basis": "民诉法 §216（裁判发生法律效力后 6 个月内申请；特殊情形自知道或应当知道之日起算）",
+      "severity": "normal"
+    },
+    {
+      "id": "preservation_renewal_entry",
+      "name": "保全续封期限",
+      "trigger": "preservation_order",
+      "kind": "court_specified",
+      "task_title": "录入保全到期日并倒排续封（不动产3年/动产2年/冻结1年，到期前办续）",
+      "basis": "最高法关于财产保全若干问题的规定（不同财产类型期限不同，以保全裁定与查控回执为准）",
+      "severity": "critical"
+    }
+  ]
+}

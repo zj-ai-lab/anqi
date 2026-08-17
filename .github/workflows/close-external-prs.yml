@@ -1,0 +1,28 @@
+name: close-external-prs
+
+on:
+  pull_request_target:
+    types:
+      - opened
+      - reopened
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  close:
+    # 同仓分支（含 Dependabot）不匹配此条件，不会被关闭。
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain contribution policy and close
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          PR_ACTION: ${{ github.event.action }}
+        run: |
+          if [ "$PR_ACTION" = "opened" ]; then
+            gh pr comment "$PR_URL" --body '谢谢你愿意为案齐花时间。主仓目前只由我维护，所以外部 Pull Request 不进入评审，会被关闭。请把可复现的问题或建议改为已脱敏的 Issue；如果你已经写了代码，欢迎在自己的 Fork 中继续维护。这个做法只是维护政策，不是许可证限制，AGPL-3.0-only 赋予你的 Fork、修改、运行和分发权利不受影响。详见 CONTRIBUTING.md。'
+          fi
+          gh pr close "$PR_URL"

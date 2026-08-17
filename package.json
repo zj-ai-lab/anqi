@@ -1,0 +1,101 @@
+{
+  "name": "anjian",
+  "version": "2.6.0",
+  "private": true,
+  "license": "AGPL-3.0-only",
+  "type": "module",
+  "main": "electron/main.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --env-file=.env server.js",
+    "seed": "node tools/seed-demo.js",
+    "check": "npm run rebuild:node && bash tools/check.sh",
+    "qa:finance": "bash tools/run-finance-ui-qa.sh",
+    "rebuild:node": "npm rebuild better-sqlite3",
+    "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
+    "icon:build": "bash tools/build-icon.sh",
+    "electron:dev": "npm run electron:rebuild && electron .",
+    "dist": "npm run electron:rebuild && electron-builder --mac"
+  },
+  "build": {
+    "appId": "asia.fdonglawyer.anjian",
+    "productName": "案齐",
+    "artifactName": "anqi-${version}-${arch}.${ext}",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "server.js",
+      "src/**",
+      "public/**",
+      "rules/**",
+      "tools/**",
+      "electron/**",
+      "LICENSE",
+      "LICENSES/**",
+      "ACKNOWLEDGEMENTS.md",
+      "LEGAL-NOTICE.md",
+      "package.json",
+      "package-lock.json"
+    ],
+    "asar": false,
+    "asarUnpack": [
+      "**/*.node"
+    ],
+    "afterSign": "build/adhoc-sign.cjs",
+    "copyright": "Copyright © 2026 方律",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64",
+            "x64"
+          ]
+        }
+      ],
+      "category": "public.app-category.business",
+      "icon": "build/icon.icns",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "ANQI ${version}",
+      "icon": "build/icon.icns",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "publish": {
+      "provider": "github",
+      "owner": "zj-ai-lab",
+      "repo": "anqi"
+    }
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.11.1",
+    "electron-updater": "^6.8.9",
+    "express": "^4.21.2"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^4.2.0",
+    "electron": "^43.4.0",
+    "electron-builder": "^26.15.7"
+  },
+  "allowScripts": {
+    "better-sqlite3@12.11.1": true,
+    "electron@43.4.0": true
+  }
+}

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>律师费台账 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+<!-- 顶栏与快录条由 js/nav.js 运行时注入，此处不得静态声明。 -->
+<header class="context-header fee-context-header">
+  <div class="fee-context-title">
+    <div class="context-kicker">律师费 · 分成 · 净留存</div>
+    <h1 class="page-title">律师费台账</h1>
+    <p class="page-sub" id="subtitle"></p>
+  </div>
+  <button class="btn primary fee-context-add" id="fee-add" type="button">记款项</button>
+  <div id="ledger-overview"></div>
+  <nav class="section-nav" aria-label="台账分区">
+    <a class="is-active" href="#fees-cases">按案款项</a>
+    <a href="#fees-pending">待处理分成</a>
+    <a href="#fees-agreements">分成约定</a>
+    <a href="#fees-repairs">历史修复</a>
+  </nav>
+  <!-- 下滑收起后钉在导航行右侧的关键数字（overlay，不占布局高度）；内容由 fees.js renderLedger 填 -->
+  <div class="fee-context-mini" id="ledger-mini" aria-hidden="true"></div>
+</header>
+
+<main class="page fee-page">
+  <div class="fee-layout">
+    <section class="fee-main" id="fees-cases">
+      <div class="fee-section-head">
+        <h2 class="group-title">按案款项</h2>
+        <span class="fee-case-count" id="fee-case-count"></span>
+        <div class="fee-toolbar" role="group" aria-label="案款项折叠工具">
+          <button class="btn small" id="fee-only-owing" type="button" aria-pressed="false">只看有待收</button>
+          <button class="btn small" id="fee-collapse-all" type="button">只留逾期展开</button>
+        </div>
+      </div>
+      <div class="col" id="detail"></div>
+    </section>
+
+    <aside class="fee-side">
+      <section class="panel" aria-label="经营信号">
+        <div class="p-head">
+          <h2 class="p-title">经营信号</h2>
+          <span class="p-meta">待收与异常</span>
+        </div>
+        <div class="fee-signals" id="fee-signals"></div>
+      </section>
+
+      <section class="panel" id="fees-pending" aria-label="待处理分成">
+        <div class="p-head">
+          <h2 class="p-title">待处理分成</h2>
+          <span class="p-meta" id="share-meta"></span>
+        </div>
+        <div id="share-rows"></div>
+        <div class="p-foot" id="share-foot" hidden>
+          <span class="fk">应付未结 <b class="num" id="share-payable"></b></span>
+          <span class="fk">应收未结 <b class="num" id="share-receivable"></b></span>
+        </div>
+      </section>
+
+      <section class="panel" id="fees-agreements" aria-label="分成约定">
+        <div class="factstrip" id="fees-agreements-strip">
+          <div class="factstrip-row">
+            <span class="factstrip-label">约定</span>
+            <span class="factstrip-fact" id="fees-agreements-summary">加载中……</span>
+            <button class="factstrip-edit" type="button" id="fees-agreements-toggle" aria-expanded="false">改</button>
+          </div>
+          <div class="factstrip-more" id="share-agreement-rows" hidden></div>
+        </div>
+      </section>
+
+      <section class="aux-panel fee-repairs" id="fees-repairs">
+        <span>低频校正</span>
+        <a class="btn small" id="share-repairs-link" href="/share-repairs.html">修复历史分成</a>
+      </section>
+    </aside>
+  </div>
+</main>
+<script type="module" src="/js/fees.js?v=1.8.1"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "_comment": "程序事件词表。id 稳定勿改（期限规则 P1 起按 trigger 引用）；label 可调。hearing 被看板/日历特殊消费（开庭）。",
+  "types": [
+    { "id": "signed",             "label": "签约" },
+    { "id": "filed",              "label": "立案受理" },
+    { "id": "fee_notice",         "label": "收到缴费通知" },
+    { "id": "served",             "label": "收到起诉状副本/应诉通知" },
+    { "id": "evidence_notice",    "label": "收到举证通知" },
+    { "id": "summons",            "label": "收到开庭传票" },
+    { "id": "hearing",            "label": "开庭" },
+    { "id": "judgment_served",    "label": "收到判决" },
+    { "id": "ruling_served",      "label": "收到裁定" },
+    { "id": "mediation_served",   "label": "收到调解书" },
+    { "id": "judgment_effective", "label": "裁判生效" },
+    { "id": "preservation_order", "label": "保全裁定" },
+    { "id": "execution_filed",    "label": "申请执行" },
+    { "id": "settlement",         "label": "和解" },
+    { "id": "withdraw",           "label": "撤诉" },
+    { "id": "other",              "label": "其他" }
+  ]
+}

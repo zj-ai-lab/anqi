@@ -1,0 +1,21 @@
+# 构建产物
+build/
+.gradle/
+.cxx/
+
+# 本机路径与密钥——一律不进库
+local.properties
+*.jks
+*.keystore
+*.p12
+*.pass
+keystore.properties
+
+# 仓根 .gitignore 有一条 `*.png`（那是给截图/临时图用的），会把启动图标一起吃掉。
+# 这里定向解禁本工程的资源图，仓根那条规则不动。
+!app/src/main/res/**/*.png
+
+# IDE
+.idea/
+*.iml
+.DS_Store

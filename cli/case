@@ -1,0 +1,246 @@
+#!/usr/bin/env node
+// case — anjian CLI（agent 一等公民入口，薄封装 REST）
+// 配置优先级：env ANJIAN_URL/ANJIAN_TOKEN > ~/.config/anjian/config.json > http://127.0.0.1:3000
+// token 以兼容 Cookie 方式通过应用鉴权（公网访问时需要；本机/容器直连不需要）。
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+function loadConfig() {
+  let cfg = { url: 'http://127.0.0.1:3000', token: '' };
+  try {
+    const f = path.join(os.homedir(), '.config', 'anjian', 'config.json');
+    if (fs.existsSync(f)) cfg = { ...cfg, ...JSON.parse(fs.readFileSync(f, 'utf8')) };
+  } catch { /* noop */ }
+  if (process.env.ANJIAN_URL) cfg.url = process.env.ANJIAN_URL;
+  if (process.env.ANJIAN_TOKEN) cfg.token = process.env.ANJIAN_TOKEN;
+  return cfg;
+}
+const CFG = loadConfig();
+
+async function req(p, opts = {}) {
+  const headers = { 'Content-Type': 'application/json', 'X-Anjian-Actor': 'cli' };
+  if (CFG.token) headers.Cookie = `anjian_token=${CFG.token}`;
+  const res = await fetch(CFG.url + '/api' + p, {
+    method: opts.method || (opts.body ? 'POST' : 'GET'),
+    headers,
+    body: opts.body ? JSON.stringify(opts.body) : undefined,
+  });
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { error: text.slice(0, 200) }; }
+  if (!res.ok) {
+    console.error(`✗ ${res.status} ${data.error || ''}`);
+    process.exit(1);
+  }
+  return data;
+}
+
+async function resolveCase(name) {
+  if (name === '-') return null; // 所务，不挂案件
+  const list = await req('/cases?q=' + encodeURIComponent(name));
+  const exact = list.find((c) => c.name === name);
+  if (exact) return exact;
+  if (list.length === 1) return list[0];
+  if (!list.length) {
+    console.error(`✗ 找不到案件：${name}`);
+    process.exit(1);
+  }
+  console.error(`✗ 「${name}」命中多件，请写全名：`);
+  for (const c of list) console.error(`   - ${c.name}`);
+  process.exit(1);
+}
+
+function fmtDeadline(d) {
+  const mark = d.days_left < 0 ? `逾期${-d.days_left}日` : d.days_left === 0 ? '今日' : `剩${d.days_left}日`;
+  const sev = d.severity === 'critical' ? '🔴' : d.severity === 'high' ? '🟠' : '·';
+  return `${sev} ${d.due_on} ${mark.padEnd(6)} ${d.case_name}｜${d.name}${d.basis ? `（${d.basis}）` : ''}`;
+}
+
+function opt(args, flag) {
+  const i = args.indexOf(flag);
+  if (i === -1) return undefined;
+  const v = args[i + 1];
+  args.splice(i, 2);
+  return v;
+}
+
+const [cmd, ...args] = process.argv.slice(2);
+
+const HELP = `case — anjian 案件管理 CLI
+
+  case list [关键词]                 案件列表（在办）
+  case due                           期限看板 + 七日内开庭（digest 视图）
+  case show <案件名>                 单案全景
+  case event <案件名> <类型> <日期> [备注] [--service 送达方式] [--doc 文书]
+  case deadline <案件名> <日期> <名称> [--sev critical|high|normal] [--basis 依据]
+  case task <案件名|-> <事项> [--plan 日期] [--due 日期]
+  case task-done <id>
+  case log <案件名|-> <内容> [--min 分钟] [--date 日期]
+  case inbox                         收件箱待裁决
+  case inbox-accept <id> / inbox-decline <id>
+  case fees <案件名>                 本案律师费款项
+  case fee-paid <id>                 标记款项已收
+  case shares <案件名>               本案分成约定与台账
+  case share-done <id>               标记分成已结
+  case types                         事件类型词表
+
+环境：ANJIAN_URL（默认 http://127.0.0.1:3000）ANJIAN_TOKEN（公网访问需要）`;
+
+const today = () => new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
+
+switch (cmd) {
+  case 'list': {
+    const q = args[0] ? '&q=' + encodeURIComponent(args[0]) : '';
+    const list = await req('/cases?status=active' + q);
+    if (!list.length) { console.log('（无在办案件）'); break; }
+    for (const c of list) {
+      console.log(`${c.name}｜${c.procedure}·${c.stage}（停留${c.stage_days}天）｜死线${c.pending_deadlines} 待办${c.open_tasks}${c.next_due ? `｜最近死线 ${c.next_due}` : '｜⚠️ 无在追期限'}`);
+    }
+    break;
+  }
+  case 'due': {
+    const d = await req('/digest');
+    console.log(`# 期限看板 · ${d.date}`);
+    const secs = [['🔴 临期/逾期（≤3日）', d.red], ['🟠 本周（4–7日）', d.week], ['🟡 关注（8–30日）', d.watch]];
+    for (const [title, rows] of secs) {
+      console.log(`\n${title}`);
+      console.log(rows.length ? rows.map(fmtDeadline).join('\n') : '  （无）');
+    }
+    console.log('\n📅 七日内开庭');
+    console.log(d.hearings.length ? d.hearings.map((h) => `  ${h.occurred_on}${h.is_today ? '（今日）' : ''} ${h.case_name}${h.note ? '｜' + h.note : ''}`).join('\n') : '  （无）');
+    if (d.no_deadline_cases.length) {
+      console.log('\n❓ 无在追期限（检查是否漏录）');
+      for (const c of d.no_deadline_cases) console.log(`  ${c.name}（${c.procedure}·${c.stage}）`);
+    }
+    console.log(`\n✅ 今日待办 ${d.today_tasks.length} 条${d.counts.inbox_pending ? ` · 📥 收件箱 ${d.counts.inbox_pending} 条待裁决` : ''}`);
+    for (const t of d.today_tasks) console.log(`  [${t.id}] ${t.title}${t.case_name ? `（${t.case_name}）` : ''}${t.due_on ? ` 截止${t.due_on}` : ''}`);
+    break;
+  }
+  case 'show': {
+    const c = await resolveCase(args.join(' '));
+    const b = await req(`/cases/${c.id}`);
+    console.log(`# ${b.case.name}`);
+    console.log(`${b.case.procedure} · ${b.case.stage}（停留 ${b.case.stage_days} 天）· ${b.case.status}`);
+    if (b.case.case_no) console.log(`案号：${b.case.case_no}`);
+    if (b.case.court) console.log(`法院：${b.case.court}`);
+    console.log('\n## 在追期限');
+    const pend = b.deadlines.filter((x) => x.status === 'pending');
+    console.log(pend.length ? pend.map((x) => `  ${x.due_on} ${x.name}${x.basis ? `（${x.basis}）` : ''}`).join('\n') : '  （无）⚠️');
+    console.log('\n## 未结待办');
+    const open = b.tasks.filter((x) => x.status === 'open');
+    console.log(open.length ? open.map((x) => `  [${x.id}] ${x.title}${x.due_on ? ` 截止${x.due_on}` : ''}`).join('\n') : '  （无）');
+    console.log('\n## 最近事件');
+    console.log(b.events.slice(0, 8).map((x) => `  ${x.occurred_on} ${x.type}${x.instrument ? `｜${x.instrument}` : ''}`).join('\n') || '  （无）');
+    console.log('\n## 最近日志');
+    console.log(b.worklog.slice(0, 5).map((x) => `  ${x.worked_on} ${x.content}`).join('\n') || '  （无）');
+    break;
+  }
+  case 'event': {
+    const service = opt(args, '--service');
+    const doc = opt(args, '--doc');
+    const [name, type, date, ...note] = args;
+    const c = await resolveCase(name);
+    const r = await req(`/cases/${c.id}/events`, { body: { type, occurred_on: date, note: note.join(' '), service_method: service || '', instrument: doc || '' } });
+    console.log(`⚖️ 已记录：${c.name} ${type} ${r.occurred_on}（P1 起将自动派生期限）`);
+    break;
+  }
+  case 'deadline': {
+    const sev = opt(args, '--sev') || 'normal';
+    const basis = opt(args, '--basis') || '';
+    const [name, date, ...dn] = args;
+    const c = await resolveCase(name);
+    const r = await req(`/cases/${c.id}/deadlines`, { body: { name: dn.join(' '), due_on: date, severity: sev, basis } });
+    console.log(`⏰ 已记录：${c.name}｜${r.name} → ${r.due_on}（${sev}）`);
+    break;
+  }
+  case 'task': {
+    const plan = opt(args, '--plan');
+    const due = opt(args, '--due');
+    const [name, ...title] = args;
+    const c = await resolveCase(name);
+    const r = await req('/tasks', { body: { case_id: c?.id, title: title.join(' '), plan_date: plan || '', due_on: due || '' } });
+    console.log(`☑️ 待办 [${r.id}] ${r.title}`);
+    break;
+  }
+  case 'task-done': {
+    await req(`/tasks/${args[0]}`, { method: 'PATCH', body: { status: 'done' } });
+    console.log('✅ 已完成');
+    break;
+  }
+  case 'log': {
+    const min = opt(args, '--min');
+    const date = opt(args, '--date');
+    const [name, ...content] = args;
+    const c = await resolveCase(name);
+    await req('/worklog', { body: { case_id: c?.id, content: content.join(' '), minutes: min ? Number(min) : undefined, worked_on: date || today() } });
+    console.log('📝 已记日志');
+    break;
+  }
+  case 'inbox': {
+    const list = await req('/inbox?status=pending');
+    if (!list.length) { console.log('📥 收件箱空'); break; }
+    for (const i of list) {
+      console.log(`[${i.id}] ${i.kind}｜${i.case_name || '未挂案件'}｜${i.payload}｜来源：${i.source}`);
+    }
+    break;
+  }
+  case 'inbox-accept': {
+    const r = await req(`/inbox/${args[0]}/accept`, { body: {} });
+    console.log(`✅ 已采纳 → ${r.created.entity} #${r.created.id}`);
+    break;
+  }
+  case 'inbox-decline': {
+    await req(`/inbox/${args[0]}/decline`, { body: {} });
+    console.log('已弃置');
+    break;
+  }
+  case 'fees': {
+    const c = await resolveCase(args.join(' '));
+    const d = await req(`/cases/${c.id}/fees`);
+    console.log(`# ${c.name} 律师费（已收 ¥${d.total_paid} · 未收 ¥${d.total_unpaid}）`);
+    for (const f of d.items) {
+      const st = f.status === 'paid' ? `✅已收${f.paid_on}` : f.status === 'waived' ? '减免' : (f.due_on ? `⏳待收 到期${f.due_on}` : '⏳待收 节点未到');
+      console.log(`  [${f.id}] ${f.label}｜${f.amount != null ? '¥' + f.amount : '待定'}｜${st}${f.node ? '｜' + f.node : ''}`);
+    }
+    break;
+  }
+  case 'fee-paid': {
+    await req(`/fees/${args[0]}`, { method: 'PATCH', body: { status: 'paid' } });
+    console.log('💰 已收讫');
+    break;
+  }
+  case 'shares': {
+    const c = await resolveCase(args.join(' '));
+    const d = await req(`/cases/${c.id}/shares`);
+    console.log(`# ${c.name} 合作分成（应付未结 ¥${d.totals.payable_pending} · 应收未结 ¥${d.totals.receivable_pending}）`);
+    console.log('\n## 约定');
+    if (!d.agreements.length) console.log('  （无）');
+    for (const a of d.agreements) {
+      const direction = a.direction === 'payable' ? '应付' : '应收';
+      const terms = a.rate != null ? `${a.rate}%` : `固定 ¥${a.flat_amount}`;
+      console.log(`  [${a.id}] ${direction} ${a.counterpart}｜${terms}${a.note ? '｜' + a.note : ''}`);
+    }
+    console.log('\n## 台账');
+    if (!d.items.length) console.log('  （无）');
+    for (const s of d.items) {
+      const direction = s.direction === 'payable' ? '应付' : '应收';
+      const status = s.status === 'settled' ? `已分${s.settled_on ? ' ' + s.settled_on : ''}` : s.status === 'waived' ? '减免' : `待分 ${s.due_month}`;
+      console.log(`  [${s.id}] ${direction} ${s.counterpart}｜¥${s.amount}｜${status}${s.external_case ? '｜' + s.external_case : ''}`);
+    }
+    break;
+  }
+  case 'share-done': {
+    await req(`/shares/${args[0]}`, { method: 'PATCH', body: { status: 'settled' } });
+    console.log('分成已结');
+    break;
+  }
+  case 'types': {
+    const m = await req('/meta');
+    for (const t of m.event_types) console.log(`${t.id.padEnd(20)} ${t.label}`);
+    break;
+  }
+  default:
+    console.log(HELP);
+    process.exit(cmd ? 1 : 0);
+}

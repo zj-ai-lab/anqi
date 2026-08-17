@@ -1,0 +1,156 @@
+# 案齐 Android 壳发行：android-v* tag 发布到 GitHub Release；workflow_dispatch 固定为 dry-run。
+# 唯一外部 secrets：ANDROID_KEYSTORE_BASE64 与 ANDROID_KEYSTORE_PASSWORD。
+name: android
+
+on:
+  push:
+    tags:
+      - "android-v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "固定为 true：只构建并上传 Actions artifact"
+        required: true
+        default: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Require dry-run for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          test "$REQUESTED_DRY_RUN" = "true" || {
+            echo "FATAL: workflow_dispatch 永远只允许 dry-run"
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: gradle
+
+      - name: Resolve and verify Android version
+        id: version
+        working-directory: android
+        run: |
+          set -euo pipefail
+          VERSION=$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)".*/\1/p' app/build.gradle.kts)
+          [ -n "$VERSION" ]
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#android-v}"
+            [ "$TAG_VERSION" = "$VERSION" ] || {
+              echo "FATAL: tag $TAG_VERSION != Android versionName $VERSION"
+              exit 1
+            }
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure Android SDK
+        working-directory: android
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-$HOME/android-sdk}}"
+          echo "sdk.dir=$SDK" > local.properties
+          if [ ! -d "$SDK/platforms/android-36" ] || [ ! -d "$SDK/build-tools/36.0.0" ]; then
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0"
+          fi
+          echo "ANDROID_SDK_DIR=$SDK" >> "$GITHUB_ENV"
+
+      - name: Restore signing key
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          set -euo pipefail
+          test -n "$KEYSTORE_B64" || { echo "FATAL: ANDROID_KEYSTORE_BASE64 未配置"; exit 1; }
+          test -n "$KEYSTORE_PASSWORD" || { echo "FATAL: ANDROID_KEYSTORE_PASSWORD 未配置"; exit 1; }
+          printf '%s' "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release-signing.jks"
+          chmod 600 "$RUNNER_TEMP/release-signing.jks"
+
+      - name: Build signed APK
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/release-signing.jks
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: anjian
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew --no-daemon assembleRelease
+
+      - name: Verify, rename, and checksum APK
+        working-directory: android
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          APKSIGNER="$ANDROID_SDK_DIR/build-tools/36.0.0/apksigner"
+          APK=app/build/outputs/apk/release/app-release.apk
+          "$APKSIGNER" verify --verbose "$APK"
+          cp "$APK" "anqi-${VERSION}.apk"
+          sha256sum "anqi-${VERSION}.apk" > "anqi-${VERSION}.apk.sha256"
+          sha256sum -c "anqi-${VERSION}.apk.sha256"
+
+      - name: Remove signing material
+        if: always()
+        run: rm -f "$RUNNER_TEMP/release-signing.jks"
+
+      - name: Upload Android dry-run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-release-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            android/anqi-${{ steps.version.outputs.version }}.apk
+            android/anqi-${{ steps.version.outputs.version }}.apk.sha256
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: android-release-${{ needs.build.outputs.version }}
+          path: release
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          files=(release/*)
+          cat > "$RUNNER_TEMP/android-release-notes.md" <<'NOTES'
+          安卓 WebView 壳，登录态保存在应用自身 Cookie 中。
+
+          安装：下载 APK 后用文件管理器打开。当前使用项目自有签名，系统可能提示来源未知；请先核对同名 SHA-256 文件。
+          NOTES
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "案齐 Android $VERSION" \
+              --notes-file "$RUNNER_TEMP/android-release-notes.md"
+          fi

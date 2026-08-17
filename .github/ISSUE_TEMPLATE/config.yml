@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Q&A
+    url: https://github.com/zj-ai-lab/anqi/discussions/categories/q-a
+    about: 安装、自托管和使用问题请到 Discussions 的 Q&A。
+  - name: Ideas
+    url: https://github.com/zj-ai-lab/anqi/discussions/categories/ideas
+    about: 尚未形成明确需求的想法请到 Discussions 的 Ideas。
+  - name: 私密漏洞报告
+    url: https://github.com/zj-ai-lab/anqi/security/advisories/new
+    about: 安全问题不要公开提交，请使用 GitHub 私密漏洞报告。

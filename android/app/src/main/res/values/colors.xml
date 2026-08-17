@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 与站点 manifest.webmanifest 的 background_color 一致，冷启动不闪白。 -->
+    <color name="anjian_bg">#F6F7F8</color>
+    <!-- 自适应图标底色：取自案齐图标母版的深绿。 -->
+    <color name="ic_launcher_background">#022E23</color>
+</resources>

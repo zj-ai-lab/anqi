@@ -1,0 +1,180 @@
+# 案齐 Docker 发行：v* tag 推送多架构镜像到 GHCR；workflow_dispatch 固定为 dry-run。
+name: docker-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "固定为 true：只构建、冒烟并上传 OCI artifact"
+        required: true
+        default: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      minor: ${{ steps.version.outputs.minor }}
+    steps:
+      - name: Require dry-run for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          test "$REQUESTED_DRY_RUN" = "true" || {
+            echo "FATAL: workflow_dispatch 永远只允许 dry-run"
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+
+      - name: Resolve and verify version
+        id: version
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            [ "$TAG_VER" = "$PKG_VER" ] || {
+              echo "FATAL: tag $TAG_VER != package.json $PKG_VER"
+              exit 1
+            }
+          fi
+          echo "version=$PKG_VER" >> "$GITHUB_OUTPUT"
+          echo "minor=${PKG_VER%.*}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build amd64 smoke image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: anqi-smoke:${{ steps.version.outputs.version }}
+
+      - name: Smoke test image and fail-closed startup
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          image="anqi-smoke:$VERSION"
+          if docker run --rm -e DB_PATH=/tmp/fail-closed.db "$image" >fail-closed.log 2>&1; then
+            echo "FATAL: missing credentials unexpectedly started"
+            exit 1
+          fi
+          grep -Fq "ANJIAN_USER" fail-closed.log
+
+          HASH=$(ANJIAN_PASSWORD='ci-smoke-password' node tools/hash-password.js)
+          cleanup() { docker rm -f anqi-smoke >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          docker run -d --name anqi-smoke \
+            -e DB_PATH=/tmp/smoke.db \
+            -e ANJIAN_USER=ci-smoke \
+            -e ANJIAN_PASS_HASH="$HASH" \
+            -e ANJIAN_INTERNAL_KEY=ci-smoke-internal-key \
+            -p 127.0.0.1:3000:3000 \
+            "$image"
+          ready=""
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/healthz | grep -q '"ok":true'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          [ -n "$ready" ] || {
+            docker logs anqi-smoke
+            exit 1
+          }
+          IMAGE_VERSION=$(docker exec anqi-smoke node -p "require('/app/package.json').version")
+          [ "$IMAGE_VERSION" = "$VERSION" ]
+
+      - name: Build multi-arch OCI dry-run archive
+        if: github.event_name == 'workflow_dispatch'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          outputs: type=oci,dest=${{ runner.temp }}/anqi-${{ steps.version.outputs.version }}.oci.tar
+
+      - name: Generate OCI SHA-256
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          cd "$RUNNER_TEMP"
+          sha256sum "anqi-${VERSION}.oci.tar" > "anqi-${VERSION}.oci.tar.sha256"
+          sha256sum -c "anqi-${VERSION}.oci.tar.sha256"
+
+      - name: Upload Docker dry-run artifact
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v4
+        with:
+          name: docker-oci-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          retention-days: 7
+          path: |
+            ${{ runner.temp }}/anqi-${{ steps.version.outputs.version }}.oci.tar
+            ${{ runner.temp }}/anqi-${{ steps.version.outputs.version }}.oci.tar.sha256
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push multi-arch image
+        id: push
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ghcr.io/zj-ai-lab/anqi:${{ needs.build.outputs.version }}
+            ghcr.io/zj-ai-lab/anqi:${{ needs.build.outputs.minor }}
+            ghcr.io/zj-ai-lab/anqi:latest
+          labels: |
+            org.opencontainers.image.source=https://github.com/zj-ai-lab/anqi
+            org.opencontainers.image.version=${{ needs.build.outputs.version }}
+
+      - name: Record immutable digest
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          echo "Published digest: $DIGEST" >> "$GITHUB_STEP_SUMMARY"

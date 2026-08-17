@@ -1,0 +1,10 @@
+[versions]
+agp = "9.1.1"
+coreKtx = "1.18.0"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+
+[plugins]
+# 注意：AGP 9.0+ 内置 Kotlin 支持，**不要**再 apply org.jetbrains.kotlin.android（会直接报错）。
+android-application = { id = "com.android.application", version.ref = "agp" }

@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>今日 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+<!-- 顶栏 <nav class="topnav"> 与底部 <div class="quickbar"> 由 js/nav.js 运行时注入
+     （prepend / append 到 body）——源码里看不到它们，别在这里重复声明。
+     骨架 = docs/design-directions/D-merged.html：双栏工作台，左栏主工作流、右栏仪表窄栏。
+     数据全部来自 /api/digest 与 /api/inbox，由 js/today.js 注入；HTML 只留容器与静态文案。 -->
+<main class="page">
+
+  <div class="pagehead">
+    <h1 class="page-title" id="title">今日</h1>
+    <p class="page-sub" id="subtitle"></p>
+  </div>
+
+  <div class="today-workbench">
+    <section class="today-main" aria-label="主工作流">
+      <div class="work-group">
+        <h2 class="group-title">先处理这个</h2>
+        <section class="focus-zone" aria-label="最紧急期限">
+          <div id="sec-lead"></div>
+        </section>
+      </div>
+
+      <div class="work-group">
+        <h2 class="group-title">还在追的期限</h2>
+        <section class="panel" aria-label="期限跑道">
+          <div class="p-head">
+            <h3 class="p-title" id="h-runway">期限跑道<span class="count" id="runway-count"></span></h3>
+            <span class="p-meta" id="runway-meta"></span>
+          </div>
+          <div id="sec-runway"></div>
+          <div class="p-foot">
+            <span class="fk"><span class="kbd">/</span> 聚焦快录</span>
+            <span class="fk"><span class="kbd">1</span>–<span class="kbd">9</span> 按行序直达案件</span>
+            <span class="tail">刻度 = 1 天 · 原点 = 今日 · 满格 ≥ 14 日</span>
+          </div>
+        </section>
+      </div>
+
+      <div class="work-group">
+        <h2 class="group-title">今天要做的</h2>
+        <section class="panel" aria-label="今日待办">
+          <div class="p-head">
+            <h3 class="p-title" id="h-tasks">今日待办</h3>
+            <span class="p-meta" id="tasks-meta"></span>
+          </div>
+          <div id="sec-tasks"></div>
+        </section>
+        <section class="panel" aria-label="本周待办">
+          <div class="p-head">
+            <h3 class="p-title" id="h-weektasks">本周待办</h3>
+            <span class="p-meta" id="weektasks-meta"></span>
+          </div>
+          <div id="sec-weektasks"></div>
+        </section>
+        <!-- 更远的待办（规格 §03.C：本组唯一归档门，放最后） -->
+        <details class="archive-door today-alltasks-door" id="today-alltasks" data-fold-id="today-alltasks" aria-label="更远的待办">
+          <summary class="archive-door-summary">
+            <span class="archive-door-caret">▸</span>
+            <span class="archive-door-text">更远的待办</span>
+            <span class="archive-door-count" id="alltasks-meta"></span>
+          </summary>
+          <div class="archive-door-body" id="sec-alltasks"></div>
+        </details>
+      </div>
+
+      <div class="work-group" id="sec-inbox-card" hidden>
+        <h2 class="group-title">等你裁决</h2>
+        <section class="panel" aria-label="收件箱待裁决">
+          <div class="p-head">
+            <h3 class="p-title" id="h-inbox">收件箱 · 待裁决</h3>
+            <span class="p-meta" id="inbox-meta"></span>
+          </div>
+          <div id="inbox-list"></div>
+        </section>
+      </div>
+    </section>
+
+    <aside class="today-dashboard panel" aria-label="全局仪表">
+      <div class="p-head">
+        <h2 class="p-title">全局仪表</h2>
+        <span class="p-meta">今天的全所视野</span>
+      </div>
+      <section class="dashboard-section" aria-label="今日概览">
+        <h3>今日概览</h3>
+        <div id="tiles"></div>
+      </section>
+      <section class="dashboard-section" aria-label="未来 14 日">
+        <div class="dashboard-title">
+          <h3 id="h-strip">未来 14 日</h3>
+          <span class="meta" id="strip-range"></span>
+        </div>
+        <div id="sec-strip"></div>
+      </section>
+      <section class="dashboard-section" aria-label="七日内开庭">
+        <div class="dashboard-title">
+          <h3 id="h-hearings">七日内开庭</h3>
+          <span class="meta" id="hearings-meta"></span>
+        </div>
+        <div id="sec-hearings"></div>
+      </section>
+      <section class="dashboard-section" aria-label="待收款">
+        <div class="dashboard-title">
+          <h3 id="h-fees">待收款</h3>
+          <span class="meta" id="fees-meta"></span>
+        </div>
+        <div id="sec-fees"></div>
+      </section>
+      <!-- 期限缺口（规格 §03.C：本来只有 3 行，压成一条事实条 + 「去补」） -->
+      <div class="dashboard-section today-gap-section" id="today-gap" aria-label="期限缺口">
+        <div class="factstrip" id="today-gap-strip">
+          <div class="factstrip-row">
+            <span class="factstrip-label">缺口</span>
+            <span class="factstrip-fact" id="gap-meta">无期限缺口</span>
+            <button class="factstrip-edit" type="button" id="today-gap-toggle" aria-expanded="false">去补</button>
+          </div>
+          <div class="factstrip-more" id="sec-gap" hidden></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+</main>
+<script type="module" src="/js/today.js?v=1.9.0"></script>
+</body>
+</html>

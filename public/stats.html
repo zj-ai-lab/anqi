@@ -1,0 +1,206 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>数据统计 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════════
+     数据统计 —— 设计系统 v2「一个骨架 · 三种材质」
+
+     母题 = 期限本身。所以本页的头条不是「案件数」也不是「收入」，
+     而是 **已错过的期限**（56px 巨字，复用跑道头条的 .hd-* 排印）——
+     律师翻统计页的第一个问题是「我有没有漏过线」，不是「我今年赚了多少」。
+
+     🔴 本页零硬编码数字：一切读 GET /api/stats（src/routes/views.js），
+        图表由 js/stats.js 按真实数据现算坐标、现画 SVG/DOM。
+        HTML 只留骨架与空容器 —— 数字、月份、金额、弧长、柱高一个都不写在这里。
+
+     画法（沿用 v2 手写图表，stats.js 里只是把坐标改成算出来的）：
+       环形 = stroke-dasharray 切弧 · 柱状 = height% · 折线 = polyline + 零长圆点 · 仪表 = 半圆弧
+     颜色一律 var()：多序列走 --chart-1..6；期限三态走 --green/--amber/--red（语义色）；
+       账龄四档走 .progress-fill 的 ok / warn / warn-deep / crit。
+     空数据出空态文案（demo 库里费用全 0 —— 那是常态不是意外），绝不画全 0 的假图。
+
+     DOM 契约（改这里必须同步 js/stats.js 文件头的同一份清单）：
+       #stats-period
+       #p-deadlines > #dl-meta · #dl-chart · #dl-foot   （.kpi-row 由 JS 插在 #dl-foot 前）
+       #cases-meta · #cases-chart
+       #cause-meta · #cause-chart
+       #stage-meta · #stage-chart · #stage-note
+       #p-quick                                          （.kpi-row 由 JS 追加）
+       #trend-range · #trend-chart
+       #fee-unit · #fee-range · #fee-net-tiles · #fee-chart · #fee-foot
+       #p-aging > #ar-meta · #ar-foot                    （.prog-row 由 JS 插在 #ar-foot 前）
+
+     ⚠ .kpi-row / .prog-row 必须是 .panel 的**直接子元素** —— 分隔线靠
+       `.kpi-row:first-child` 与 `.p-head + .prog-row` 两条相邻/位置选择器归零。
+       所以 JS 用 insertBefore 把行插进 .panel，不套容器 div（一套就多一条或少一条线）。
+     ⚠ 脱敏：本页不落任何当事人事实，案由/阶段文案由库现取（CLAUDE.md 铁律④）。
+     ═══════════════════════════════════════════════════════════════════════════ -->
+
+<main class="page">
+
+  <div class="pagehead">
+    <h1 class="page-title">数据统计</h1>
+    <p class="page-sub" id="stats-period"></p>
+  </div>
+
+  <div class="workbench">
+
+    <!-- ══════════════════ 左栏 · 期限履约 + 案件结构 ══════════════════ -->
+    <section class="col" aria-label="期限履约与案件结构">
+
+      <!-- ═════ 板块 1 · 期限履约（页面头条 —— 母题所在） ═════
+           口径同后端：只统计**本年度已到期**的期限（未到期不进分母）；
+           compliance = 按期完成 ÷ 已到期，due_total=0 时为 null → 仪表显示「—」。 -->
+      <section class="panel" id="p-deadlines" aria-labelledby="h-comp">
+        <div class="p-head">
+          <h2 class="p-title" id="h-comp">期限履约</h2>
+          <span class="p-meta" id="dl-meta"></span>
+        </div>
+
+        <div class="panel-body">
+          <!-- JS 填：.gauge-wrap（头条巨字 + 半圆仪表）+ 三态色标；无已到期期限时仍出仪表但中心为「—」 -->
+          <div class="chart-area" id="dl-chart"></div>
+        </div>
+
+        <!-- ← .kpi-row（按期/逾期后补做/已错过/合计）由 stats.js 插在这条 p-foot 之前 -->
+
+        <div class="p-foot" id="dl-foot">
+          <div class="factstrip is-wrap">
+            <div class="factstrip-row">
+              <span class="factstrip-label">口径</span>
+              <span class="factstrip-fact">按期完成率 = 按期完成 ÷ 已到期期限。期限由确定性规则引擎推算，人工覆盖不参与重算。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════ 板块 2 · 案件总览（环形：在办 / 搁置 / 已结） ═════ -->
+      <section class="panel" aria-labelledby="h-cases">
+        <div class="p-head">
+          <h2 class="p-title" id="h-cases">案件总览</h2>
+          <span class="p-meta" id="cases-meta"></span>
+        </div>
+        <div class="panel-body">
+          <div class="chart-area" id="cases-chart"></div>
+        </div>
+      </section>
+
+      <!-- ═════ 板块 3 · 案由分布（常显：本来就只占三四行） ═════ -->
+      <section class="panel" aria-labelledby="h-type">
+        <div class="p-head">
+          <h2 class="p-title" id="h-type">案由分布</h2>
+          <span class="p-meta" id="cause-meta"></span>
+        </div>
+        <div class="panel-body">
+          <div class="chart-area" id="cause-chart"></div>
+        </div>
+      </section>
+
+      <!-- ═════ 板块 4 · 在办案件的阶段分布（常显柱状） ═════
+           标题写「在办」不写「未结」：后端 by_stage 只数 status='active'，
+           搁置件不在内 —— 文案必须与口径一致。 -->
+      <section class="panel" aria-labelledby="h-stage">
+        <div class="p-head">
+          <h2 class="p-title" id="h-stage">在办案件 · 阶段分布</h2>
+          <span class="p-meta" id="stage-meta"></span>
+        </div>
+        <div class="panel-body">
+          <div class="chart-area" id="stage-chart"></div>
+        </div>
+        <div class="p-foot">
+          <div class="factstrip is-wrap">
+            <div class="factstrip-row">
+              <span class="factstrip-label">口径</span>
+              <span class="factstrip-fact" id="stage-note"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </section>
+
+    <!-- ══════════════════ 右栏 · 速览 / 趋势 / 收款 ══════════════════ -->
+    <aside class="col" aria-label="年度速览与收支">
+
+      <!-- ═════ 板块 5 · 年度速览 ═════ -->
+      <section class="panel" id="p-quick" aria-labelledby="h-kpi">
+        <div class="p-head">
+          <h2 class="p-title" id="h-kpi">年度速览</h2>
+        </div>
+        <!-- ← .kpi-row 由 stats.js 追加到这里（直接挂 .panel，见文件头 ⚠） -->
+      </section>
+
+      <!-- ═════ 板块 6 · 收结案趋势（折线，近 6 个月） ═════ -->
+      <section class="panel" aria-labelledby="h-flow">
+        <div class="p-head">
+          <h2 class="p-title" id="h-flow">收结案趋势</h2>
+          <span class="p-meta"><span class="m" id="trend-range"></span></span>
+        </div>
+        <div class="panel-body">
+          <!-- JS 填：.line-chart（svg）+ .chart-axis（月份）+ .chart-legend -->
+          <div class="chart-area" id="trend-chart"></div>
+        </div>
+      </section>
+
+      <!-- ═════ 板块 7 · 已收律师费（柱状，近 6 个月按 paid_on 归月） ═════ -->
+      <section class="panel" aria-labelledby="h-fee">
+        <div class="p-head">
+          <h2 class="p-title" id="h-fee">已收律师费</h2>
+          <span class="p-meta"><span id="fee-unit"></span><span>·</span><span class="m" id="fee-range"></span></span>
+        </div>
+        <div class="panel-body">
+          <div class="tiles" id="fee-net-tiles"></div>
+          <div class="chart-area" id="fee-chart"></div>
+        </div>
+        <div class="p-foot">
+          <div class="factstrip is-wrap">
+            <div class="factstrip-row">
+              <span class="factstrip-label">口径</span>
+              <span class="factstrip-fact" id="fee-foot"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════ 板块 8 · 应收账龄（4 档，未收且金额已定的款项） ═════ -->
+      <section class="panel" id="p-aging" aria-labelledby="h-ar">
+        <div class="p-head">
+          <h2 class="p-title" id="h-ar">应收账龄</h2>
+          <span class="p-meta" id="ar-meta"></span>
+        </div>
+
+        <!-- ← .prog-row × 4（未到期 / 30 日内 / 31–90 / 90+）由 stats.js 插在这条 p-foot 之前；
+                无应收时改插一条 .section-empty -->
+
+        <div class="p-foot" id="ar-foot">
+          <div class="factstrip is-wrap">
+            <div class="factstrip-row">
+              <span class="factstrip-label">口径</span>
+              <span class="factstrip-fact" id="ar-foot-text"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </aside>
+  </div>
+</main>
+
+<script type="module" src="/js/stats.js"></script>
+</body>
+</html>

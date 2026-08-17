@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 无 ActionBar 的浅色主题：壳只是个 WebView 容器，站点自带顶栏。 -->
+    <style name="Theme.Anjian" parent="@android:style/Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/anjian_bg</item>
+        <item name="android:statusBarColor">@color/anjian_bg</item>
+        <item name="android:navigationBarColor">@color/anjian_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+        <item name="android:windowLightNavigationBar">true</item>
+    </style>
+</resources>

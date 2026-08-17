@@ -1,0 +1,31 @@
+node_modules/
+data/
+*.db
+.env
+.DS_Store
+
+# 工具与临时产物
+.playwright-mcp/
+.workbuddy/
+tmp/finance-ui-qa*/
+*.png
+!build/icon.png
+!build/icon.iconset/*.png
+!public/assets/anjian-icon.png
+!public/assets/anjian-192.png
+!public/assets/anjian-512.png
+!public/assets/anjian-maskable-512.png
+!docs/images/*.png
+!garden-gpt-image-2/image/*.png
+# Electron 构建产物（electron-builder 输出）
+dist-electron/
+# 文件桥联调沙盒
+data/files-dev/
+
+# Agent 工具与本地设置（可复原：npx skills add alchaincyf/huashu-design）
+.agents/
+.claude/
+.zcode/
+skills-lock.json
+# 第三方设计参考素材（open-design，Apache-2.0）——设计已吸收进 DESIGN-TOKENS，素材不入库
+docs/design-refs/

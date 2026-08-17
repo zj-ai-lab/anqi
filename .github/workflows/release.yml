@@ -1,0 +1,120 @@
+# 案齐 macOS 发行：v* tag 发布到 GitHub Release；workflow_dispatch 固定为 dry-run。
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "固定为 true：只构建并上传 Actions artifact"
+        required: true
+        default: true
+        type: boolean
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: macos-latest
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Require dry-run for manual dispatch
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          REQUESTED_DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          test "$REQUESTED_DRY_RUN" = "true" || {
+            echo "FATAL: workflow_dispatch 永远只允许 dry-run"
+            exit 1
+          }
+
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Resolve and verify version
+        id: version
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          if [ "$GITHUB_REF_TYPE" = "tag" ]; then
+            TAG_VER="${GITHUB_REF_NAME#v}"
+            [ "$TAG_VER" = "$PKG_VER" ] || {
+              echo "FATAL: tag $TAG_VER != package.json $PKG_VER"
+              exit 1
+            }
+          fi
+          echo "version=$PKG_VER" >> "$GITHUB_OUTPUT"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build arm64 and x64 DMGs
+        run: npm run dist -- --publish never
+
+      - name: Verify artifacts and generate SHA-256
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          cd dist-electron
+          for arch in arm64 x64; do
+            dmg="anqi-${VERSION}-${arch}.dmg"
+            test -f "$dmg"
+            test -f "$dmg.blockmap"
+            shasum -a 256 "$dmg" > "$dmg.sha256"
+            shasum -a 256 -c "$dmg.sha256"
+            grep -Fq "url: $dmg" latest-mac.yml
+          done
+          test -f latest-mac.yml
+
+      - name: Upload macOS dry-run artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-release-${{ steps.version.outputs.version }}
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist-electron/anqi-*.dmg
+            dist-electron/anqi-*.dmg.blockmap
+            dist-electron/anqi-*.dmg.sha256
+            dist-electron/latest-mac.yml
+
+  publish:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified macOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: macos-release-${{ needs.build.outputs.version }}
+          path: release
+
+      - name: Publish GitHub Release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          files=(release/*)
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" "${files[@]}" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "案齐 ANQI $VERSION" \
+              --generate-notes
+          fi

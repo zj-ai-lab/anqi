@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#F6F7F8">
+<link rel="icon" type="image/png" sizes="256x256" href="/assets/anjian-icon.png">
+<link rel="manifest" href="/assets/manifest.webmanifest">
+<title>案件 · 案齐</title>
+<!-- 防闪烁：CSS 之前把皮肤铺好。9 页一字不差，逻辑与 js/skin.js 的 getSkin() 一致。
+     旧键 anjian-theme(light|dark|auto) 就地迁移到 anjian-skin(pro|paper|jade|auto) 并删除；
+     auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
+<script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
+<link rel="stylesheet" href="/css/fonts.css?v=1">
+<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+</head>
+<body>
+<!-- 顶栏与快录条由 js/nav.js 运行时注入，本页不写。 -->
+<main class="page">
+  <div class="pagehead">
+    <h1 class="page-title">案件</h1>
+    <!-- #subtitle 由 cases.js 写成「N 件 · N 件死线逾期 · …」的期限体检行（0 值不显示） -->
+    <p class="page-sub" id="subtitle">加载中……</p>
+  </div>
+
+  <!-- 检索工具条：常显（规格 §03.D：桌面筛选条不做门） -->
+  <section class="panel" id="case-filters" aria-label="筛选案件">
+    <div class="panel-body">
+      <div class="formrow">
+        <label class="f">状态
+          <select id="f-status">
+            <option value="active">在办</option>
+            <option value="shelved">搁置</option>
+            <option value="closed">已结</option>
+            <option value="">全部</option>
+          </select>
+        </label>
+        <label class="f">搜索
+          <input type="search" id="f-q" size="32" placeholder="案件名 / 案号 / 当事人 / 案由 / 法院" aria-keyshortcuts="/">
+        </label>
+      </div>
+    </div>
+  </section>
+
+  <!-- #new-case 必须保持原生 <details>：cases.js 建案成功后靠 .open = false 收起 -->
+  <details class="adder" id="new-case">
+    <summary>新建案件</summary>
+    <form id="new-case-form">
+      <div class="formgrid">
+        <label class="f">案件名（= 案件夹名）<input name="name" required placeholder="张三诉李四民间借贷纠纷"></label>
+        <label class="f">程序<select name="procedure" id="nc-procedure"></select></label>
+        <label class="f">阶段<select name="stage" id="nc-stage"></select></label>
+        <label class="f">案号<input name="case_no" placeholder="立案前可空"></label>
+        <label class="f">案由<input name="cause" placeholder="民间借贷纠纷"></label>
+        <label class="f">法院 / 仲裁机构<input name="court" placeholder="深圳市南山区人民法院"></label>
+        <label class="f">我方当事人<input name="client" placeholder="张三"></label>
+        <label class="f">我方地位<input name="client_role" placeholder="原告 / 被告 / 申请人……"></label>
+        <label class="f">对方<input name="opponent" placeholder="李四"></label>
+        <label class="f">收案日<input type="date" name="accepted_at"></label>
+        <label class="f">案件夹路径<input name="folder_path" placeholder="案件夹根目录下的相对路径"></label>
+        <label class="f">备注<input name="note"></label>
+      </div>
+      <button class="btn primary" type="submit">建案</button>
+    </form>
+  </details>
+
+  <!-- 由 cases.js 整块重建：按程序分组，每组 = 一个 .group-title + 一个 .case-grid -->
+  <div id="case-list"></div>
+</main>
+<script type="module" src="/js/cases.js?v=1.7.5.1"></script>
+</body>
+</html>
