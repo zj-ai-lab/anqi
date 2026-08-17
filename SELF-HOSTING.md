@@ -51,7 +51,9 @@ DB_PATH=/app/data/anjian.db
 ANJIAN_USER=replace-me
 ANJIAN_PASS_HASH=scrypt-v1$...
 ANJIAN_INTERNAL_KEY=replace-with-a-separate-random-secret
-ANJIAN_TRUST_PROXY=loopback
+# 容器里看到的反向代理来源通常是 Docker 网桥地址（如 172.17.0.1）而不是回环，
+# 所以这里不要写 loopback；uniquelocal 覆盖全部 RFC1918 私网段。见 §可信代理。
+ANJIAN_TRUST_PROXY=uniquelocal
 
 ANJIAN_FILES_ROOT=
 DEEPSEEK_API_KEY=
@@ -140,7 +142,11 @@ server {
 - `1`–`10`：明确代理 hop 数；
 - 逗号分隔的命名范围或 CIDR，例如 `loopback,10.0.0.0/8`。
 
-不要设置为笼统的 `true`，也不要信任攻击者可以直接连接的地址段。代理与应用同机时，`loopback` 通常足够；多层代理应根据真实链路从应用一侧逐跳核对。
+不配置时的默认值是 `loopback,linklocal,uniquelocal`——已覆盖回环与全部 RFC1918 私网段，对「反向代理与应用同机或同私网」的常见部署可直接使用。生产建议显式写出实际链路而不是依赖默认。
+
+**容器化部署的坑**：应用跑在 Docker 里时，反向代理打进来的源地址是 Docker 网桥（如 `172.17.0.1`），**不是回环**。此时写 `loopback` 会让 Express 不信任代理，`req.ip` 对所有访客都坍缩成网桥地址——登录限速会把所有人当成同一来源互相误锁，Cookie 也不会带 `Secure`。裸 Node 与反向代理同机直连时才用 `loopback`；容器化用 `uniquelocal` 或具体网桥 CIDR（如 `172.17.0.0/16`）。
+
+不要设置为笼统的 `true`，也不要信任攻击者可以直接连接的地址段；多层代理应根据真实链路从应用一侧逐跳核对。
 
 如果合法的内部集成确实需要 `/internal`，只在私网或单独受控入口转发，并始终要求 `X-Anjian-Key`。不要因为已有应用登录页就把内部接口暴露到公网。
 

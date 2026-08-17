@@ -29,6 +29,7 @@ npm run check
 - `package.json` 的 `version` 是应用版本唯一事实源；`vX.Y.Z` 必须与其一致。
 - `docs/CHANGES.md` 顶部速查表与文件末尾均有本版记录。
 - README 的能力、下载方式、兼容性或安全说明如受本版影响，已经同步。
+- **README「下载安装」段的直链带版本号**（`releases/download/vX.Y.Z/anqi-X.Y.Z-arm64.dmg`、`x64.dmg`；Android 为 `android-vX.Y.Z/anqi-X.Y.Z.apk` 及 `.sha256`）——发对应线的版本时必须同步改成新版本号，否则页面上的「点击下载」会一直指向旧包。可以在打 tag 的同一个 commit 里改。
 - 数据模型变更已同步 `docs/DESIGN.md §2`，UI 体系变更已同步 `docs/DESIGN-TOKENS.md`。
 - 新 migration 有带存量 fixture 的独立测试，并已接入 `tools/check.sh`。
 - 前端变更已在 `pro`、`paper`、`jade` 三种皮肤、桌面宽度和 390px 窄屏下目测；拖拽必须使用真实输入事件验收。
