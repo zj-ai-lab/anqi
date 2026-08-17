@@ -76,7 +76,13 @@ jobs:
             echo "FATAL: missing credentials unexpectedly started"
             exit 1
           fi
-          grep -Fq "ANJIAN_USER" fail-closed.log
+          # 无凭据启动必须因 fail-closed 拒绝，且拒绝理由指向凭据配置
+          # （完全未配置时的错误文案提到 ANJIAN_UNSAFE_NO_AUTH，只配一半时提到 ANJIAN_USER）
+          if ! grep -Eq "ANJIAN_USER|ANJIAN_UNSAFE_NO_AUTH|登录凭据" fail-closed.log; then
+            echo "FATAL: fail-closed refusal did not mention credential configuration"
+            cat fail-closed.log
+            exit 1
+          fi
 
           HASH=$(ANJIAN_PASSWORD='ci-smoke-password' node tools/hash-password.js)
           cleanup() { docker rm -f anqi-smoke >/dev/null 2>&1 || true; }
