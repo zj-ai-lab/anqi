@@ -293,7 +293,7 @@ curl -fsS http://127.0.0.1:3000/healthz
 
 ## 从源码运行
 
-要求 Node.js 22 或更新（`better-sqlite3` v13 自带各平台预编译产物，一般无需本机编译）。先装依赖、生成凭据、写好 `.env`，通过自检后再启动：
+要求 Node.js 22 或更新（`better-sqlite3` v13 自带各平台预编译产物；按下面用 `npm ci` 装依赖不会触发本机编译。Node 22 自带的 npm 10 若改用 `npm install`，会尝试用 node-gyp 编译——要么装好 python3 / make / g++，要么加 `--ignore-scripts`）。先装依赖、生成凭据、写好 `.env`，通过自检后再启动：
 
 ```sh
 git clone https://github.com/zj-ai-lab/anqi.git
