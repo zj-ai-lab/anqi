@@ -60,6 +60,12 @@
 
 ---
 
+## 未发布 — 依赖升级
+
+- Express 4.22 → 5.2：路由全为简单 `:param`，未使用 v5 移除的 API；`tools/check.sh` 全绿，无行为变化。
+- better-sqlite3 12.11 → 13.0：上游改用 N-API，预编译产物随包自带（含 darwin arm64/x64、linux glibc/musl），`electron:rebuild` 不再触发本机编译；SQLite 3.53.4。随之 Node 最低版本升为 22（`package.json.engines`），`allowScripts` 同步为 `better-sqlite3@13.0.3`。已知无害噪音：v13 在 `db.close()` 后事件循环短暂存活，自检第 25 步末尾会打印数条 `legalrag bridge tick … connection is not open`，测试仍通过。
+- GitHub Actions 全组升级到 Node 24 运行时（checkout v7、setup-node v7、setup-java v5、upload-artifact v7、download-artifact v8、docker/* v4·v7）；download-artifact v8 起摘要不匹配默认失败。三条发行 workflow 需在下次发版前用 `workflow_dispatch` 干跑一次。
+
 ## 2.6.0 — 开源转换与安全基线
 
 **状态：2026-08-17 作者完成 `LEGAL-NOTICE.md` 与期限规则表核准，放行首次公开提交。**

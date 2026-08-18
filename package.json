@@ -6,7 +6,7 @@
   "type": "module",
   "main": "electron/main.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "start": "node server.js",
@@ -95,7 +95,7 @@
     "electron-builder": "^26.15.7"
   },
   "allowScripts": {
-    "better-sqlite3@12.11.1": true,
-    "electron@43.4.0": true
+    "electron@43.4.0": true,
+    "better-sqlite3@13.0.3": true
   }
 }

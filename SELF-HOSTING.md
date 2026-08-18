@@ -155,7 +155,7 @@ server {
 要求：
 
 - Node.js 22 LTS 推荐，最低版本见 `package.json`；
-- 支持编译或安装 better-sqlite3 的系统环境；
+- 能安装 better-sqlite3 的系统环境（v13 起随包自带 glibc / musl 预编译产物，通常无需编译工具链）；
 - 持久、受限权限的本地目录。
 
 ```sh
