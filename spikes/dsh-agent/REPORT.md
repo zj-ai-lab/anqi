@@ -3,7 +3,7 @@
 日期：2026-08-19
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**静态通路成立；demo 数据目的地与外部代码来源已获明确授权，但当前进程没有 `DEEPSEEK_API_KEY`，动态产品验收未执行；当前不建议合入生产。**
+结论状态：**通路成立并已实跑（2026-08-19 由 anqi 主会话用 `secretctl run anjian.local` 注入 key 补跑 B/C/D/E/F，见 §12）；仍不建议合入生产——需先解决 §12.5 列出的四个设计问题与打包裁剪。**
 
 ## 1. 结论
 
@@ -49,14 +49,14 @@ ff343c8 spike(dsh): add restricted anqi agent preset
 
 | 项 | 状态 | 证据 / 阻塞 |
 |---|---|---|
-| A. anqi 3007 + seed + health/digest | 部分通过 | 真实跑通 seed、`/healthz`、`/internal/digest`；请求中的 unsafe-no-auth 形式被权限层拒绝，实际以更强的普通认证启动。 |
-| B. 期限问答调用领域工具 | 未执行 | 无模型 key；未发起任何模型请求。driver 和三工具已实现并通过语法/静态注册检查。 |
-| C. 待办建议进入 pending、无 deadline | 未执行 | 无模型 key；没有为了“凑结果”手工模拟 agent 写入。源码边界固定为 task-only。 |
-| D. user skills + 本地 stdio MCP | 部分通过 | user skills 真实列出；MCP server 与命名规则有静态证据；未取得会话 `request/header` 运行证据。 |
-| E. 无 UI 审批 fail closed + future answerer | 部分通过 | rc.7 实现与 README 明确返回 `unavailable`；未执行运行时审批请求，故没有把源码文字冒充“报错原文”。桥接位置已给出。 |
-| F. 闭包、initialize、首 token、API 面 | 部分通过 | 247 MiB / 252,420 KiB、27,839 个 node_modules 文件、API 面完成；initialize 与首 token 未测。 |
-| G. 单文件 / SEA | 未尝试（可选） | 遵守“无 key 先停”约束，未扩张到可选工作。 |
-| H. 设置 schema | 通过 | 报告末尾提供草案。 |
+| A. anqi 3007 + seed + health/digest | ✅ 通过 | §4（首轮），§12 复用同一 seed 库 |
+| B. 期限问答调用领域工具 | ✅ 通过 | §12.1：`anqi_digest` + `anqi_case_get` 并行调用，回答引用 anqi 数据并标注「演示数据非引擎推算」 |
+| C. 待办建议进入 pending、无 deadline | ✅ 通过（有设计发现） | §12.2：`anqi_inbox_propose` 落 pending；deadlines 表前后 hash 一致；但触发了 L2 去重的「刷新覆盖」语义，见 §12.5 |
+| D. user skills + 本地 stdio MCP | ✅ 通过 | §12.3：会话日志有 `skill-catalog` 用户消息（11 个技能）；第二个 `request/header` 含 `mcp__anqi-local__case_folder_info` |
+| E. 无 UI 审批 fail closed + future answerer | ✅ 通过 | §12.4：`FS_SANDBOX_DENIED` → 升权重试 → 「requires approval, but no approval channel is available」，桌面文件未生成 |
+| F. 闭包、initialize、首 token、API 面 | ✅ 通过 | 247 MiB；cold_ms 567–608；first chunk 1015–1796 ms；API 面见 §8.4 |
+| G. 单文件 / SEA | 未尝试（可选） | 留给 Spike B |
+| H. 设置 schema | ✅ 通过 | §11 |
 
 ## 4. A：anqi 隔离开发实例
 
@@ -539,3 +539,54 @@ driver 已在真实返回时打印：
   ]
 }
 ```
+
+## 12. 动态验收补跑（2026-08-19，anqi 主会话）
+
+运行方式：anqi 隔离实例（3007，`ANJIAN_UNSAFE_NO_AUTH=1` 回环 + 测试 internal key + seed 库 `data/spike.db`，案件夹 `data/files-dev/<案名>/`）；driver 由 `secretctl run anjian.local -- env … node driver.mjs …` 启动，`DEEPSEEK_API_KEY` 只注入该子进程，任何日志/本报告都不含 key 值。出站范围：`https://api.deepseek.com` / `deepseek-chat`，只发 3 个 seed 演示案的数据。
+
+**先修了一处组合问题才跑起来**：`@deepseek-ai/dsh-permission-presets` inject `shell`，本组合刻意无 bash，导致 app-boot `assertEntriesActivated` 报 `1 entry did not activate … permission-presets: pending (waiting for service: shell)`，进程 exit 1（首个 `initialize`/`request/header` 已发出后才失败）。该行只是 sandbox 模式 + 审批策略的可切换预设 UI 面，真正旋钮是 `sandbox-policy.mode` 与 `user-approval.policy`，已从 `anqi.cordis.yml` 移除并注释原因。
+
+### B 实跑片段（2026-08-19，deepseek-official / deepseek-chat，seed 演示数据）
+```text
+[initialize] {"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}} cold_ms=567.1
+[metric] first_assistant_chunk_ms=1796.0
+[tool/call] {"turn":1,"step":1,"callId":"call_00_xDLEmLtSn1JvIc7vRNjB8446","name":"anqi_digest","arguments":"{}"}
+[tool/call] {"turn":1,"step":1,"callId":"call_01_LZoCjrb4oHhsIgs6heRM1276","name":"anqi_case_get","arguments":"{\"name\": \"张三诉李四民间借贷纠纷\"}"}
+[tool/result] {"turn":1,"step":1,"message":{"source":{"kind":"tool","callId":"call_00_xDLEmLtSn1JvIc7vRNjB8446"},"content":[{"type":"tool-result","toolCallId":"call_00_xDLEmLtSn1JvIc7vRNjB8446","content":[{"type":"text","text":"{\n  \"date\": \"2026-08-19\",\n  \"counts\": {\n    \"active_cases\": 3,\n    \"inbox_pending\": 1,\n    \"open_tasks\": 4,\n    \"unpaid_fees\": 57000\n  },\n  \"red\": [\n    {\n      \"id\ …
+[tool/result] {"turn":1,"step":1,"message":{"source":{"kind":"tool","callId":"call_01_LZoCjrb4oHhsIgs6heRM1276"},"content":[{"type":"tool-result","toolCallId":"call_01_LZoCjrb4oHhsIgs6heRM1276","content":[{"type":"text","text":"{\n  \"case\": {\n    \"id\": 1,\n    \"name\": \"张三诉李四民间借贷纠纷\",\n    \"case_no\": \"(2026)粤0305民初10001号\",\n    \"cause\": \"民间借贷纠纷\",\n    \"court\": \"深圳市南山区人民法院\",\n    \"procedure\": \"一审 …
+[assistant] 本案（张三诉李四民间借贷纠纷，案号 (2026)粤0305民初10001号）的临近期限如下，数据均来自案齐引擎的期限/任务/费用台账，我只做读取和解释：
+[turn/end] {"turn":1,"reason":{"kind":"completed"}}
+[shutdown] {}
+```
+
+### C 实跑片段
+```text
+[initialize] {"serverInfo":{"name":"deepseek-harness-sdk-runtime","version":"0.0.1"}} cold_ms=607.8
+[metric] first_assistant_chunk_ms=1015.2
+[tool/call] {"turn":1,"step":1,"callId":"call_00_3Xmb0uZZVqnhMPJ2FC1H6459","name":"anqi_case_get","arguments":"{\"name\": \"张三诉李四民间借贷纠纷\"}"}
+[tool/call] {"turn":1,"step":1,"callId":"call_01_1KOthdZCy9sERIWNjQFA9450","name":"anqi_digest","arguments":"{}"}
+[tool/call] {"turn":1,"step":2,"callId":"call_00_81i9ZmfGAHjmQ72ShWGY6300","name":"ask_user_question","arguments":"{\"questions\": [{\"id\": \"case\", \"header\": \"关联案件\", \"question\": \"这个\\\"整理证据清单\\\"待办要关联到哪个案件？\", \"options\": [{\"label\": \"张三诉李四民间借贷纠纷 (Recommended)\", \"description\": \"当前案件夹即此案，一审已判决、上诉期至 2026-08-21，可能配合上诉/二审证据组织。\"}, {\"label\": \" …
+[tool/call] {"turn":1,"step":3,"callId":"call_00_MfA7kVTkaTj2rdADq6LC4452","name":"anqi_inbox_propose","arguments":"{\"case_name\": \"张三诉李四民间借贷纠纷\", \"title\": \"整理证据清单\", \"note\": \"用户原话：\\\"下周三前整理证据清单\\\"。按今日 2026-08-19（周三）推算，\\\"下周三\\\"即 2026-08-26 前，请律师确认具体截止日后再登记期限（本建议不承载期限）。默认关联本案：一审已于 2026-08-06 判决（部分胜诉）、上诉期至 2026-08-21 届满，此证据清单或与是否上诉/二审证据组织相关，与案内\\\ …
+[tool/call] {"turn":1,"step":4,"callId":"call_00_ew8YVVvSQTIgrK0r2aH64279","name":"anqi_digest","arguments":"{}"}
+[tool/result] {"turn":1,"step":2,"message":{"source":{"kind":"tool","callId":"call_00_81i9ZmfGAHjmQ72ShWGY6300"},"content":[{"type":"tool-result","toolCallId":"call_00_81i9ZmfGAHjmQ72ShWGY6300","content":[{"type":"text","text":"Error: no user-questions provider is registered"}],"isError":true}],"role":"user","id":"dcb6f687-46d2-4481-877c-94444da152bc"},"error":{"name":"UserQuestionError","code":"NO_PROVIDER"}}
+[tool/result] {"turn":1,"step":3,"message":{"source":{"kind":"tool","callId":"call_00_MfA7kVTkaTj2rdADq6LC4452"},"content":[{"type":"tool-result","toolCallId":"call_00_MfA7kVTkaTj2rdADq6LC4452","content":[{"type":"text","text":"{\n  \"created\": false,\n  \"outcome\": \"refreshed_after_state_change\",\n  \"reason\": \"pending\",\n  \"item_id\": \"1\",\n  \"status\": \"pending\"\n}"}],"isError":false}],"role":"user","id":"9c19c372-bcff-4e7b-83a4-cf26b4c97a08"}}
+[turn/end] {"turn":1,"reason":{"kind":"completed"}}
+```
+
+### E 实跑片段
+```text
+[tool/call] {"turn":1,"step":1,"callId":"call_00_r9PR4KzDo39oaEAjy3Uu5804","name":"write","arguments":"{\"file_path\": \"/Users/2_dogg/Desktop/anqi-spike-approval-test.txt\", \"content\": \"hello\"}"}
+[tool/result] {"turn":1,"step":1,"message":{"source":{"kind":"tool","callId":"call_00_r9PR4KzDo39oaEAjy3Uu5804"},"content":[{"type":"tool-result","toolCallId":"call_00_r9PR4KzDo39oaEAjy3Uu5804","content":[{"type":"text","text":"Error: [sandbox: file access denied under workspace-write mode]\n[sandbox: escalation available — retry this exact operation once with sandbox_permissions (the narrowest wider mode that suffices) + justification; the approval prompt asks the user]"}],"isError":true}],"role":"user","id":"de4bdfde-3a06-4607-b63a-319ef675f5d4"},"error":{"name":"FsError","code":"FS_SANDBOX_DENIED"}}
+[tool/call] {"turn":1,"step":2,"callId":"call_00_lWOTr4aUii31K0oJ0m7Z2639","name":"write","arguments":"{\"file_path\": \"/Users/2_dogg/Desktop/anqi-spike-approval-test.txt\", \"content\": \"hello\", \"sandbox_permissions\": \"danger-full-access\", \"justification\": \"按用户沙箱测试指令，将一行 \\\"hello\\\" 写入案件夹之外的测试文件 /Users/2_dogg/Desktop/anqi-spike-approval-test.txt。\"}"}
+[tool/result] {"turn":1,"step":2,"message":{"source":{"kind":"tool","callId":"call_00_lWOTr4aUii31K0oJ0m7Z2639"},"content":[{"type":"tool-result","toolCallId":"call_00_lWOTr4aUii31K0oJ0m7Z2639","content":[{"type":"text","text":"Error: sandbox escalation to \"danger-full-access\" requires approval, but no approval channel is available"}],"isError":true}],"role":"user","id":"b2345125-96b0-4654-b374-8ed8e63ed0ea"}}
+[turn/end] {"turn":1,"reason":{"kind":"completed"}}
+```
+
+
+### 12.5 设计发现（进入主线前必须处理）
+
+1. **inbox 去重把 agent 提案当成了 L2「每案一条下一步」**：`anqi_inbox_propose` 走 `/internal/inbox` → `enqueueLlmSuggestion()`，同 (source, kind, case, intent_key=`case.next_action`) 只保留一条活动建议，状态指纹变化即「刷新覆盖」——本次实跑返回 `created:false, outcome:refreshed_after_state_change, item_id:1`，seed 原有的 pending 建议「张三案：若决定上诉…」被覆盖成「整理证据清单」。agent 提出的是任意条数的具体待办，不是周期检视；主线需要为 agent 提案开独立 source（如 `agent-propose`）或 per-proposal intent，并复用 inbox 的 accept/decline 裁决面。
+2. **`ask_user_question` 与审批一样缺 answerer**：rc.7 无 UI 时返回 `UserQuestionError NO_PROVIDER`（"no user-questions provider is registered"）；模型这次自行退回默认值并把假设写进备注——行为得体，但 anqi 的对话面必须同时实现 approval answerer 与 user-questions provider 两条回路。
+3. **skills 根目录范围**：`skill-filesystem` 默认扫用户全局 `~/.agents/skills`，本次目录里出现了 onepassword-secrets / wechat-digest / openclaw 等与办案无关、且涉及个人凭据的技能。anqi 组合应设 `includeDefaultRoots: false` + `customSkillDirs` 指向 anqi 自有技能根，按最小暴露原则。
+4. **MCP 冷启动竞态**：首个模型请求的 header 里没有 `mcp__*` 工具，第二个请求（reason=change）才有；DSH 会在工具集变化时重发 header，功能上无碍，但首轮回答可能看不到 MCP 工具，anqi supervisor 可在 initialize 后等待一次工具集稳定再放行首个 prompt。
+5. **数字**：cold_ms 567.1 / 607.8；first_assistant_chunk_ms 1796.0 / 1015.2（含一次 DeepSeek 往返）；未裁剪闭包 247 MiB。

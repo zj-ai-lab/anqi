@@ -43,19 +43,10 @@
   config:
     policy: !!js "(process.env.DSH_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access' ? 'never' : 'ask'"
 
-- id: permission
-  name: '@deepseek-ai/dsh-permission-presets'
-  config:
-    presets:
-      read-only:
-        sandbox: read-only
-        approval: ask
-      workspace-write:
-        sandbox: workspace-write
-        approval: ask
-      danger-full-access:
-        sandbox: danger-full-access
-        approval: never
+# `dsh-permission-presets` 只是把 sandbox 模式 + 审批策略打包成可切换预设的 UI 面，
+# 它 inject `shell`（bash 执行器）；本组合刻意不挂 bash，挂上它会让整棵树在
+# app-boot 的 assertEntriesActivated 处失败（实测 rc.7：pending waiting for service: shell）。
+# 真正生效的旋钮是上面的 sandbox-policy.mode 与 user-approval.policy，这里不再挂它。
 
 - id: fs-observation-policy
   name: '@deepseek-ai/dsh-fs-observation-policy'
