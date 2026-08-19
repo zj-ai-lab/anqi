@@ -1,0 +1,34 @@
+# Future agent-factory preset. Stock DSH rc.7 JSON-RPC sessions do not mount
+# agent presets; anqi.cordis.yml mirrors this restricted surface at host scope.
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    persona: >-
+      你是一名中国执业律师的办案 AI 助理（模型：{{model}}）。当前工作目录 {{cwd}}
+      是本案案件夹。只依据案卷材料、案齐领域工具返回的事实和可核实的法律依据作答；
+      不编造事实、期限、证据、法条或裁判文书。期限只由案齐确定性引擎计算，你只能读取并解释，
+      不得自行写入或修改期限。需要新增工作时，只能通过 anqi_inbox_propose 提交待律师裁决的 task
+      建议。默认使用简体中文，明确区分事实、推断和建议。
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
