@@ -22,27 +22,40 @@ const ALLOWED_CONFIG_KEYS = new Set(['enabled', 'provider', 'baseURL', 'model', 
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
 
 function usage() {
-  return `Usage: node driver.mjs --case <exact-case-folder-name> --ask <question> [--config <yaml>]
+  return `Usage: node driver.mjs --case <exact-case-folder-name> --ask <question> [options]
+
+Options:
+  --config <yaml>             Agent configuration (default: agent.config.yaml)
+  --approval <policy>         reject or allow-once (default: reject)
+  --question-answer <text>    Answer user questions; separate multiple answers with " / "
 
 The sidecar is fail-closed: agent.config.yaml must exist, enabled must be true,
-and apiKeyEnv must name a populated environment variable. Key values are never printed.`;
+and apiKeyEnv must name a populated environment variable. Approval defaults to
+rejection, unanswered questions fail, and key values are never printed.`;
 }
 
 function parseArgs(argv) {
-  const result = {};
+  const result = { approval: 'reject' };
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '--help' || token === '-h') return { help: true };
-    if (!['--case', '--ask', '--config'].includes(token)) {
+    if (!['--case', '--ask', '--config', '--approval', '--question-answer'].includes(token)) {
       throw new Error(`unknown argument: ${token}`);
     }
     const value = argv[index + 1];
     if (value === undefined || value.startsWith('--')) throw new Error(`${token} requires a value`);
-    result[token.slice(2)] = value;
+    const key = token === '--question-answer' ? 'questionAnswer' : token.slice(2);
+    result[key] = value;
     index += 1;
   }
   if (!result.case) throw new Error('--case is required');
   if (!result.ask) throw new Error('--ask is required');
+  if (!['reject', 'allow-once'].includes(result.approval)) {
+    throw new Error('--approval must be reject or allow-once');
+  }
+  if (result.questionAnswer !== undefined && !String(result.questionAnswer).trim()) {
+    throw new Error('--question-answer must not be empty');
+  }
   return result;
 }
 
@@ -135,7 +148,9 @@ function timeoutPromise(ms, message) {
 }
 
 function waitForExit(child, ms) {
-  if (child.exitCode !== null) return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return Promise.resolve({ code: child.exitCode, signal: child.signalCode });
+  }
   const timeout = timeoutPromise(ms, 'DSH process did not exit after shutdown');
   return Promise.race([
     new Promise((resolveExit) => child.once('exit', (code, signal) => resolveExit({ code, signal }))),
@@ -154,16 +169,19 @@ function printContentBlocks(prefix, blocks, redact) {
   }
 }
 
-function createRpcClient(child, secretValues) {
+function createRpcClient(child, secretValues, interactionPolicy) {
   let nextId = 1;
   let closed = false;
   let promptStartedAt;
   let activeSessionId;
   let firstTokenRecorded = false;
   let sawRunning = false;
+  let sawIdle = false;
+  let sawCompletedTurnEnd = false;
   let resolveTurn;
   let rejectTurn;
   const pending = new Map();
+  const handledChildRequests = new Set();
   const turnDone = new Promise((resolveDone, rejectDone) => {
     resolveTurn = resolveDone;
     rejectTurn = rejectDone;
@@ -184,12 +202,142 @@ function createRpcClient(child, secretValues) {
     rejectTurn(error);
   }
 
+  function maybeResolveTurn() {
+    if (sawRunning && sawIdle && sawCompletedTurnEnd) resolveTurn();
+  }
+
+  function childRequestError(message, code = -32602) {
+    const error = new Error(message);
+    error.rpcCode = code;
+    return error;
+  }
+
+  function writeChildResponse(frame) {
+    if (closed || !child.stdin.writable) {
+      failAll(new Error('cannot answer DSH request: JSON-RPC client is closed'));
+      return;
+    }
+    child.stdin.write(`${JSON.stringify(frame)}\n`, (error) => {
+      if (error) failAll(error);
+    });
+  }
+
+  function requireActiveSession(params) {
+    if (!activeSessionId || params?.sessionId !== activeSessionId) {
+      throw childRequestError('request does not belong to the active session', -32001);
+    }
+  }
+
+  function approvalResult(params) {
+    requireActiveSession(params);
+    if (typeof params.approvalId !== 'string' || !params.approvalId) {
+      throw childRequestError('approvalId must be a non-empty string');
+    }
+    if (typeof params.toolName !== 'string' || !params.toolName) {
+      throw childRequestError('toolName must be a non-empty string');
+    }
+    return {
+      sessionId: activeSessionId,
+      approvalId: params.approvalId,
+      outcome: interactionPolicy.approval === 'allow-once' ? 'allowed-once' : 'rejected',
+    };
+  }
+
+  function questionResult(params) {
+    requireActiveSession(params);
+    if (!Array.isArray(params.questions) || params.questions.length === 0) {
+      throw childRequestError('questions must be a non-empty array');
+    }
+    if (interactionPolicy.questionAnswer === undefined) {
+      throw childRequestError('no --question-answer was configured', -32004);
+    }
+
+    const questions = params.questions;
+    const ids = new Set();
+    for (const question of questions) {
+      if (!question || typeof question !== 'object' || Array.isArray(question)) {
+        throw childRequestError('each question must be an object');
+      }
+      if (typeof question.id !== 'string' || !question.id || ids.has(question.id)) {
+        throw childRequestError('question ids must be unique non-empty strings');
+      }
+      if (typeof question.question !== 'string' || !question.question.trim()) {
+        throw childRequestError('question text must be a non-empty string');
+      }
+      ids.add(question.id);
+    }
+
+    const configured = String(interactionPolicy.questionAnswer).trim();
+    const parts = questions.length === 1
+      ? [configured]
+      : configured.split(/\s*\/\s*/u).map((part) => part.trim());
+    if (parts.length !== questions.length || parts.some((part) => !part)) {
+      throw childRequestError(
+        `--question-answer must contain ${questions.length} non-empty slash-separated answer(s)`,
+        -32004,
+      );
+    }
+
+    return {
+      sessionId: activeSessionId,
+      answer: {
+        answers: questions.map((question, index) => ({
+          id: question.id,
+          selected: [],
+          custom: parts[index],
+        })),
+      },
+    };
+  }
+
+  function handleChildRequest(message) {
+    const requestKey = `${typeof message.id}:${String(message.id)}`;
+    if (handledChildRequests.has(requestKey)) {
+      writeChildResponse({
+        jsonrpc: '2.0',
+        id: message.id,
+        error: { code: -32600, message: 'duplicate JSON-RPC request id' },
+      });
+      return;
+    }
+    handledChildRequests.add(requestKey);
+
+    try {
+      const params = message.params || {};
+      let result;
+      if (message.method === 'approval/request') {
+        process.stdout.write(`[approval/request] ${redact(JSON.stringify(params))}\n`);
+        result = approvalResult(params);
+        process.stdout.write(`[approval/response] ${redact(JSON.stringify(result))}\n`);
+      } else if (message.method === 'user-question/request') {
+        process.stdout.write(`[user-question/request] ${redact(JSON.stringify(params))}\n`);
+        result = questionResult(params);
+        process.stdout.write(`[user-question/response] ${redact(JSON.stringify(result))}\n`);
+      } else {
+        throw childRequestError(`unknown DSH request method: ${message.method}`, -32601);
+      }
+      writeChildResponse({ jsonrpc: '2.0', id: message.id, result });
+    } catch (error) {
+      const code = Number.isInteger(error.rpcCode) ? error.rpcCode : -32603;
+      const detail = redact(error.message || String(error));
+      process.stdout.write(`[${redact(message.method)}/error] ${detail}\n`);
+      writeChildResponse({
+        jsonrpc: '2.0',
+        id: message.id,
+        error: { code, message: detail },
+      });
+    }
+  }
+
   function handleNotification(message) {
     const params = message.params || {};
     if (message.method === 'session.status') {
       process.stdout.write(`[session.status] ${redact(params.sessionId)} ${redact(params.status)}\n`);
       if (params.sessionId === activeSessionId && params.status === 'running') sawRunning = true;
-      if (params.sessionId === activeSessionId && params.status === 'idle' && sawRunning) resolveTurn();
+      if (params.sessionId === activeSessionId && params.status === 'idle') {
+        sawIdle = true;
+        maybeResolveTurn();
+      }
       return;
     }
     if (message.method === 'subagent.started' || message.method === 'subagent.finished') {
@@ -218,6 +366,9 @@ function createRpcClient(child, secretValues) {
       process.stdout.write(`[turn/end] ${redact(JSON.stringify(event.data))}\n`);
       if (event.data?.reason?.kind !== 'completed') {
         rejectTurn(new Error(`DSH turn ended with ${redact(JSON.stringify(event.data?.reason || {}))}`));
+      } else {
+        sawCompletedTurnEnd = true;
+        maybeResolveTurn();
       }
     } else if (event.type === 'assistant/message') {
       if (!firstTokenRecorded) {
@@ -236,6 +387,10 @@ function createRpcClient(child, secretValues) {
       message = JSON.parse(line);
     } catch {
       failAll(new Error(`non-JSON data on DSH stdout: ${redact(line)}`));
+      return;
+    }
+    if (message.id !== undefined && typeof message.method === 'string') {
+      handleChildRequest(message);
       return;
     }
     if (message.id !== undefined && ('result' in message || 'error' in message)) {
@@ -332,7 +487,10 @@ async function main() {
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
-  const rpc = createRpcClient(child, secretValues);
+  const rpc = createRpcClient(child, secretValues, {
+    approval: args.approval,
+    questionAnswer: args.questionAnswer,
+  });
   const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
   stderr.on('line', (line) => process.stderr.write(`[dsh] ${rpc.redact(line)}\n`));
 

@@ -14,6 +14,15 @@
 - id: agent
   name: '@deepseek-ai/dsh-agent'
 
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config:
+    default: anqi
+    roots:
+      - path: !!js process.cwd() + '/preset'
+        trust: system
+    includeUserRoot: false
+
 - id: llm-retry
   name: '@deepseek-ai/dsh-llm-retry'
 
@@ -59,21 +68,13 @@
 - id: skill
   name: '@deepseek-ai/dsh-skill'
 
-- id: skill-filesystem
-  name: '@deepseek-ai/dsh-skill-filesystem'
-
 - id: tools
   name: '@deepseek-ai/dsh-tools'
 
+# The registry is host-owned; the mounted preset shadows its empty persona in
+# the exact agent scope instead of publishing another process-global service.
 - id: system-prompt
   name: '@deepseek-ai/dsh-system-prompt'
-  config:
-    persona: >-
-      你是一名中国执业律师的办案 AI 助理（模型：{{model}}）。当前工作目录 {{cwd}}
-      是本案案件夹。只依据案卷材料、案齐领域工具返回的事实和可核实的法律依据作答；
-      不编造事实、期限、证据、法条或裁判文书。期限只由案齐确定性引擎计算，你只能读取并解释，
-      不得自行写入或修改期限。需要新增工作时，只能通过 anqi_inbox_propose 提交待律师裁决的 task
-      建议。默认使用简体中文，明确区分事实、推断和建议。
 
 - id: agent-loop
   name: '@deepseek-ai/dsh-agent-loop'
@@ -85,28 +86,9 @@
   config:
     cwd: !!js process.env.DSH_CWD ?? process.cwd()
 
-- id: tool-fs
-  name: '@deepseek-ai/dsh-tool-fs'
-
-- id: tool-fs-search
-  name: '@deepseek-ai/dsh-tool-fs-search'
-  config:
-    sampleOverCapGlobResults: false
-
-- id: tool-skill
-  name: '@deepseek-ai/dsh-tool-skill'
-
-- id: tool-ask-user
-  name: '@deepseek-ai/dsh-tool-ask-user'
-
-- id: tool-todo
-  name: '@deepseek-ai/dsh-tool-todo'
-  config:
-    allowParallelInProgress: true
-
-# Stock rc.7 JSON-RPC does not mount agent presets. These rows mirror the
-# restricted preset at host scope so this spike's actual session has the same
-# tool surface and never receives bash/pwsh/subagent/workflow/ralph/web tools.
+# Model-facing filesystem, skill, question, todo, and anqi domain tools live
+# only in preset/anqi; the JSON-RPC server mounts that preset before publishing
+# each session. No bash/pwsh/subagent/workflow/ralph/web tools are mounted.
 
 - id: llm-deepseek
   name: '@deepseek-ai/dsh-llm-deepseek'
@@ -144,13 +126,7 @@
     toolCallTimeoutMs: 60000
     failOnStartupError: true
 
-- id: dsh-anqi
-  name: './plugins/dsh-anqi/index.js'
-  config:
-    baseURL: !!js process.env.ANQI_BASE_URL ?? 'http://127.0.0.1:3007'
-    internalKeyEnv: !!js process.env.ANQI_INTERNAL_KEY_ENV ?? 'ANJIAN_INTERNAL_KEY'
-
 - id: sdk-jsonrpc-server
-  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  name: './plugins/dsh-anqi-jsonrpc/index.js'
   config:
     maxTokensAsSuccess: false

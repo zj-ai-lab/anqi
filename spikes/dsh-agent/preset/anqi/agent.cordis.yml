@@ -1,10 +1,10 @@
-# Future agent-factory preset. Stock DSH rc.7 JSON-RPC sessions do not mount
-# agent presets; anqi.cordis.yml mirrors this restricted surface at host scope.
+# Restricted model-facing surface mounted into each JSON-RPC agent through the
+# factory setup hook. Host-plane registries/services remain in anqi.cordis.yml.
 
-- id: system-prompt
-  name: '@deepseek-ai/dsh-system-prompt'
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
   config:
-    persona: >-
+    text: >-
       你是一名中国执业律师的办案 AI 助理（模型：{{model}}）。当前工作目录 {{cwd}}
       是本案案件夹。只依据案卷材料、案齐领域工具返回的事实和可核实的法律依据作答；
       不编造事实、期限、证据、法条或裁判文书。期限只由案齐确定性引擎计算，你只能读取并解释，
@@ -32,3 +32,9 @@
 
 - id: tool-ask-user
   name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: dsh-anqi
+  name: '../../plugins/dsh-anqi/index.js'
+  config:
+    baseURL: !!js process.env.ANQI_BASE_URL ?? 'http://127.0.0.1:3007'
+    internalKeyEnv: !!js process.env.ANQI_INTERNAL_KEY_ENV ?? 'ANJIAN_INTERNAL_KEY'

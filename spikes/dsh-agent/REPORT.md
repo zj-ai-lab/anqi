@@ -3,7 +3,7 @@
 日期：2026-08-19
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**通路成立并已实跑（2026-08-19 由 anqi 主会话用 `secretctl run anjian.local` 注入 key 补跑 B/C/D/E/F，见 §12）；仍不建议合入生产——需先解决 §12.5 列出的四个设计问题与打包裁剪。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 已选定保留完整审计事件的扩展 JSON-RPC，并完成 response-loop / real-preset-mount 的源码实现（§13），但本轮最终动态复验被执行权限层拦截，不能把源码通过写成运行通过。仍不建议合入生产。**
 
 ## 1. 结论
 
@@ -361,14 +361,20 @@ find spikes/dsh-agent/node_modules -type f | wc -l
 所有直接 DSH 依赖均精确钉在 `0.1.0-rc.7`：
 
 ```text
+@deepseek-ai/dsh-agent-presets@0.1.0-rc.7
 @deepseek-ai/dsh-app-boot@0.1.0-rc.7
 @deepseek-ai/dsh-base@0.1.0-rc.7
 @deepseek-ai/dsh-llm-pi-ai@0.1.0-rc.7
 @deepseek-ai/dsh-mcp-client@0.1.0-rc.7
+@deepseek-ai/dsh-persona@0.1.0-rc.7
 @deepseek-ai/dsh-sdk-jsonrpc-demo@0.1.0-rc.7
 @deepseek-ai/dsh-sdk-jsonrpc-server@0.1.0-rc.7
+@deepseek-ai/dsh-sdk-protocol@0.1.0-rc.7
+@deepseek-ai/dsh-session@0.1.0-rc.7
 @deepseek-ai/dsh-tool-ask-user@0.1.0-rc.7
 @deepseek-ai/dsh-tools@0.1.0-rc.7
+@deepseek-ai/dsh-user-questions@0.1.0-rc.7
+@deepseek-ai/schemastery@3.18.1
 ```
 
 辅助依赖：
@@ -401,8 +407,12 @@ found 0 vulnerabilities
 | `dsh-llm-pi-ai` | `providers` 字典；`api: openai-completions`；`baseURL`、`apiKeyEnv`、`models`。 |
 | `dsh-llm-deepseek`（由 base 闭包安装） | `apiKeyEnv`、`baseURL`、`models[].id`。 |
 | `dsh-base` | 作为 rc.7 引擎闭包来源；其 patch 不是可直接作为 Cordis row 加载的插件，因此实际配置复制最小服务行。 |
-| `dsh-agent-presets`（rc.7 间接包） | `agent.cordis.yml` 文件格式；未来 factory 需显式 `mount(agentCtx, id)`。stock server 未调用。 |
-| `dsh-user-approval`（rc.7 间接包） | `policy: ask/never`；`approval/request` waterfall；缺 answerer → `unavailable`。 |
+| `dsh-agent-presets` | `roots/includeUserRoot`；factory `setup(agentCtx)` 中真实 `mount(agentCtx, 'anqi')`；standing composition 与 agent scope 绑定。 |
+| `dsh-persona` | 在 mounted agent scope 覆盖 host-owned system-prompt registry 的 persona section，不发布新的 process-global service。 |
+| `dsh-sdk-protocol` | `JsonRpcLineTransport.request()` 复用同一 stdio stream 发送 child-originated approval/question request；由 transport 管理 ID、pending、abort 与 close rejection。 |
+| `dsh-session` | `SessionId()` branded ID；读取 session audit events 认领既有 `approval/asked.id`。 |
+| `dsh-user-approval`（rc.7 间接包） | `policy: ask/never`；exact-agent `approval/request` waterfall；闭集 outcome；缺 answerer → `unavailable`。 |
+| `dsh-user-questions` | 单个 host provider；exact live root-agent ownership；`UserQuestionError` 分类；严格 question/answer 匹配。 |
 | `@modelcontextprotocol/sdk` | `McpServer`、`StdioServerTransport`、`registerTool()`。 |
 | `js-yaml` | driver 的 `yaml.load()`，只解析五字段本地配置，并另做 unknown-field/type 校验。 |
 
@@ -472,6 +482,12 @@ driver 已在真实返回时打印：
 12. MCP/skill/persona 在 host scope 复刻只是 rc.7 stock server 的兼容办法；它不是 preset 挂载成功的证据。
 13. 当前配置依靠 `dsh-base` 的一致版本闭包提供若干转移插件。正式化时应生成/校验完整 runtime manifest，避免未来 npm 嵌套布局改变后 bare plugin resolution 失效。
 14. 当前闭包 247 MiB；在没有裁剪数据前，不能把“sidecar 可嵌入”推导成“适合直接塞进 Electron 安装包”。
+15. rc.7 ACP 的 session cwd、cancel、断线 dispose 与 permission bridge 比 stock JSON-RPC 完整，但它有意只发 committed assistant message chunk；`request/header`、tool call/result、reasoning/raw chunk 与 `turn/end` 都不出 wire。anqi 的律师侧工具审计因此选择扩展 JSON-RPC，完整对照见 `docs/protocol-decision.md`。
+16. `@deepseek-ai/dsh-system-prompt` 是 host service，不可作为普通 preset row 发布到 root realm；真实 mount 会拒绝 service leak。host 保留空 registry/service，preset 改用 scope-only `@deepseek-ai/dsh-persona`。
+17. preset include 会把自己的 `baseUrl` 改到 `agent.cordis.yml` 所在目录；以 `.` 开头的 plugin 名相对此处解析。`../../plugins/dsh-anqi/index.js` 可静态确定为本 spike 插件 URL。rc.7 的 `PresetTree.import()` 源码也明确支持绝对路径，所以此前“绝对 `!!js process.cwd()` 行加入后 mount 同步停住”的观察**尚不能归因为绝对路径本身**；相对路径完整组合仍待动态复验。
+18. stock class 的 `.d.ts` 把 `ctx/cwd/provider/model/maxTokens/sessions` 声明为 private，rc.7 编译 JS 却是普通属性。本 PoC subclass 访问这些字段并复制 stock `apply()` wiring；这是 exact-version spike 耦合，不是可升级的扩展 API。
+19. approval/question 的反向请求必须复用 `JsonRpcLineTransport.request()`；child plugin 另建 ID/pending map 会与 transport 的 response classification、abort cleanup、close rejection 冲突。plugin 只保存 live agent↔session 与已认领 approval ID；driver 复用原有 client-request pending map，并额外记 active session 与已处理 child request ID。
+20. `session/prompt` receipt 和 `idle` 都不单独代表成功。Phase 2 driver 同时要求目标 session 已出现 `running`、`idle` 与 `turn/end(reason.kind=completed)`；异常 turn/end 立即失败。
 
 ## 10. 后续动态验收步骤
 
@@ -590,3 +606,71 @@ driver 已在真实返回时打印：
 3. **skills 根目录范围**：`skill-filesystem` 默认扫用户全局 `~/.agents/skills`，本次目录里出现了 onepassword-secrets / wechat-digest / openclaw 等与办案无关、且涉及个人凭据的技能。anqi 组合应设 `includeDefaultRoots: false` + `customSkillDirs` 指向 anqi 自有技能根，按最小暴露原则。
 4. **MCP 冷启动竞态**：首个模型请求的 header 里没有 `mcp__*` 工具，第二个请求（reason=change）才有；DSH 会在工具集变化时重发 header，功能上无碍，但首轮回答可能看不到 MCP 工具，anqi supervisor 可在 initialize 后等待一次工具集稳定再放行首个 prompt。
 5. **数字**：cold_ms 567.1 / 607.8；first_assistant_chunk_ms 1796.0 / 1015.2（含一次 DeepSeek 往返）；未裁剪闭包 247 MiB。
+
+## 13. Phase 2 / Commit 1：扩展 JSON-RPC 与真实 preset mount
+
+### 13.1 决策与实现
+
+协议决策见 `docs/protocol-decision.md`。简要结论：继续使用 NDJSON JSON-RPC，并保留 stock server 对完整 `session.event` 的原样转发；不把 rc.7 ACP 用作唯一 anqi wire，因为 ACP 丢弃律师侧审计所需的 header/tool/result/turn 事件。
+
+spike-local `plugins/dsh-anqi-jsonrpc/index.js` subclass `HarnessSdkJsonRpcServer`，只替换 session factory，并复刻 stock `apply()` 中无法注入 subclass 的 stdio wiring。factory 在 agent 发布前通过 `setup(agentCtx)` await `agentPresets.mount(agentCtx, 'anqi')`。审批 listener 安装在该 exact agent scope，question provider 只接受由本 server 持有且仍 live 的 root agent。两类交互都在原 stdio transport 上由 server 发 request、driver 回普通 JSON-RPC result/error；失败、断线、超时和畸形响应不会变成允许或伪造答案。
+
+### 13.2 分级验收矩阵
+
+| 验收项 | 状态 | 证据等级与结果 |
+|---|---|---|
+| local server / driver 语法 | ✅ 通过 | **[本机实测]** 两个 `node --check` 均 exit 0、无输出。 |
+| direct dependency 钉版本 | ✅ 通过 | **[本机实测]** 13 个 DSH direct package 均为 `0.1.0-rc.7`；`schemastery@3.18.1`、`js-yaml@4.3.1`；`npm audit --omit=dev` 为 0 vulnerabilities。 |
+| driver 默认拒绝与 CLI 校验 | ✅ 通过 | **[本机实测]** help 明示 default reject；非法 `--approval always` 在 spawn 前 exit 1。 |
+| bidirectional request、agent ownership、失败关闭 | ✅ 源码通过 | **[源码核实]** 复用 transport pending/abort/close；闭集 outcome；session/approval/question ID 与 exact live agent 校验。尚非动态验收替代。 |
+| real mount：persona + fs/search + skill + todo + ask-user 子集 | ✅ 通过 | **[本机 no-secret smoke]** dummy key、模型 endpoint `127.0.0.1:9`；逐行增加 preset 后，首个 initial header 实际出现 persona 及 `read/write/glob/grep/edit/read_image/skill/todo_write/ask_user_question`。没有模型成功请求或 demo 数据外发。 |
+| real mount：完整 preset（含 dsh-anqi 三工具） | ⚠️ 部分 | **[本机 no-secret smoke]** 使用绝对 `!!js process.cwd()` 名称时 `session/prompt` 未回 receipt，15 s 后 smoke 杀进程；逐行二分只定位到加入该 row 后出现。源码同时表明 absolute 与 relative 均应受支持，故不能声称根因已确定。已改为 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`，静态解析到正确 file URL；最终动态复验被权限层拦截。 |
+| reject：Desktop write 不落盘 | ⛔ 未复验 | 需要模型实际发起 sandbox escalation；当前 DSH 执行权限被拒，未创建或改动 Desktop 文件。 |
+| allow-once：只写 exact `hello` 并删除 | ⛔ 未复验 | 同上；没有把源码路径写成实际批准证据。 |
+| ask-user：`关联张三案 / 2026-08-26` | ⛔ 未复验 | reverse request/response 已实现，尚无真实 `tool/result` 与 assistant 复述。 |
+| 首个 initial header 来自完整 mounted preset | ⛔ 未复验 | 子集有实测，完整组合尚无动态 header；Task 3 的 MCP readiness 也不在本 commit 冒充完成。 |
+
+最后一次 full-preset smoke 被权限层以执行外部 package code 为由拒绝。本会话没有换工具或委托其他 session 绕过。以上矩阵故意把 **源码核实 / 子集 smoke / 完整动态** 分开；被拦的行保持未复验。
+
+### 13.3 待有权限会话原样复跑的命令
+
+前置条件：已按 §12 运行 seed 隔离 anqi（3007），`spikes/dsh-agent/agent.config.yaml` 只写 `enabled/provider/baseURL/model/apiKeyEnv` 且不含 key；`secretctl run anjian.local` 只向子进程注入 `DEEPSEEK_API_KEY` 与测试 `ANJIAN_INTERNAL_KEY`。下列命令都只使用 seed demo 案件，并按本机默认 zsh 语法执行：
+
+```zsh
+# 1. 默认 reject：先确认目标不存在；结束后仍须不存在。
+test ! -e /Users/2_dogg/Desktop/anqi-spike-approval-test.txt
+secretctl run anjian.local -- env \
+  ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
+  ANQI_BASE_URL=http://127.0.0.1:3007 \
+  DSH_PERMISSION_MODE=workspace-write \
+  node spikes/dsh-agent/driver.mjs \
+  --case '张三诉李四民间借贷纠纷' \
+  --approval reject \
+  --ask '请尝试将内容严格为 hello 的文件写入 /Users/2_dogg/Desktop/anqi-spike-approval-test.txt；如果沙箱要求审批，请按工具要求原样重试。不要改写其他文件。'
+test ! -e /Users/2_dogg/Desktop/anqi-spike-approval-test.txt
+
+# 2. allow-once：文件内容必须逐字节等于 hello；核验后立即删除。
+test ! -e /Users/2_dogg/Desktop/anqi-spike-approval-test.txt
+secretctl run anjian.local -- env \
+  ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
+  ANQI_BASE_URL=http://127.0.0.1:3007 \
+  DSH_PERMISSION_MODE=workspace-write \
+  node spikes/dsh-agent/driver.mjs \
+  --case '张三诉李四民间借贷纠纷' \
+  --approval allow-once \
+  --ask '请尝试将内容严格为 hello 的文件写入 /Users/2_dogg/Desktop/anqi-spike-approval-test.txt；如果沙箱要求审批，请按工具要求原样重试。不要改写其他文件。'
+cmp -s /Users/2_dogg/Desktop/anqi-spike-approval-test.txt <(printf %s hello)
+rm -- /Users/2_dogg/Desktop/anqi-spike-approval-test.txt
+
+# 3. ask_user_question：必须出现 request、response、非错误 tool/result 与最终复述。
+secretctl run anjian.local -- env \
+  ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
+  ANQI_BASE_URL=http://127.0.0.1:3007 \
+  DSH_PERMISSION_MODE=workspace-write \
+  node spikes/dsh-agent/driver.mjs \
+  --case '张三诉李四民间借贷纠纷' \
+  --question-answer '关联张三案 / 2026-08-26' \
+  --ask '对于“下周三前整理证据清单”这项待办，请先且只调用一次 ask_user_question，一次提出两个问题：关联案件、计划日期。不要自行代答；收到回答后逐字复述两个答案，不调用其他工具，也不要提交待办。'
+```
+
+复跑还必须检查同一 session 的第一个 `request/header`：`reason` 为 `initial`，system 含“中国执业律师”，tools 至少含 `anqi_case_get`、`anqi_digest`、`anqi_inbox_propose`、`ask_user_question`，且不含 bash/subagent/workflow/web。Task 3 另行要求这个**第一个** header 同时含 MCP 工具；不能用后续 `reason: change` 代替。
