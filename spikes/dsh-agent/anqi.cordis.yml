@@ -1,0 +1,165 @@
+# Flat sidecar composition for @deepseek-ai/dsh-sdk-jsonrpc-demo.
+# The engine/service rows below are the smallest runnable subset copied from
+# @deepseek-ai/dsh-base@0.1.0-rc.7. stdout is reserved for JSON-RPC frames.
+
+- id: llm
+  name: '@deepseek-ai/dsh-llm'
+
+- id: session
+  name: '@deepseek-ai/dsh-session'
+
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent'
+
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
+
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.runtime/sessions'
+    compression: none
+
+- id: attachment-local
+  name: '@deepseek-ai/dsh-attachment-local'
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: !!js process.env.DSH_PERMISSION_MODE ?? 'workspace-write'
+    workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: !!js "(process.env.DSH_PERMISSION_MODE ?? 'workspace-write') === 'danger-full-access' ? 'never' : 'ask'"
+
+- id: permission
+  name: '@deepseek-ai/dsh-permission-presets'
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+- id: skill
+  name: '@deepseek-ai/dsh-skill'
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+  config:
+    persona: >-
+      你是一名中国执业律师的办案 AI 助理（模型：{{model}}）。当前工作目录 {{cwd}}
+      是本案案件夹。只依据案卷材料、案齐领域工具返回的事实和可核实的法律依据作答；
+      不编造事实、期限、证据、法条或裁判文书。期限只由案齐确定性引擎计算，你只能读取并解释，
+      不得自行写入或修改期限。需要新增工作时，只能通过 anqi_inbox_propose 提交待律师裁决的 task
+      建议。默认使用简体中文，明确区分事实、推断和建议。
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+  config:
+    agents: []
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# Stock rc.7 JSON-RPC does not mount agent presets. These rows mirror the
+# restricted preset at host scope so this spike's actual session has the same
+# tool surface and never receives bash/pwsh/subagent/workflow/ralph/web tools.
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  disabled: !!js (process.env.DSH_PROVIDER_KIND ?? 'deepseek-official') !== 'deepseek-official'
+  config:
+    apiKeyEnv: !!js process.env.DSH_API_KEY_ENV ?? 'DEEPSEEK_API_KEY'
+    baseURL: !!js process.env.DSH_BASE_URL ?? 'https://api.deepseek.com'
+    models:
+      - id: !!js process.env.DSH_MODEL ?? 'deepseek-chat'
+
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  disabled: !!js (process.env.DSH_PROVIDER_KIND ?? 'deepseek-official') !== 'openai-completions'
+  config:
+    providers:
+      anqi-openai:
+        displayName: Anqi OpenAI-compatible endpoint
+        apiKeyEnv: !!js process.env.DSH_API_KEY_ENV ?? 'OPENAI_API_KEY'
+        api: openai-completions
+        baseURL: !!js process.env.DSH_BASE_URL
+        models:
+          - id: !!js process.env.DSH_MODEL
+            name: !!js process.env.DSH_MODEL
+
+- id: mcp-anqi-local
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: anqi-local
+    transport: stdio
+    command: !!js process.execPath
+    args:
+      - !!js process.cwd() + '/mcp/server.mjs'
+    env: {}
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    toolCallTimeoutMs: 60000
+    failOnStartupError: true
+
+- id: dsh-anqi
+  name: './plugins/dsh-anqi/index.js'
+  config:
+    baseURL: !!js process.env.ANQI_BASE_URL ?? 'http://127.0.0.1:3007'
+    internalKeyEnv: !!js process.env.ANQI_INTERNAL_KEY_ENV ?? 'ANJIAN_INTERNAL_KEY'
+
+- id: sdk-jsonrpc-server
+  name: '@deepseek-ai/dsh-sdk-jsonrpc-server'
+  config:
+    maxTokensAsSuccess: false

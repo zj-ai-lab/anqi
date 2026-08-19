@@ -1,0 +1,4 @@
+agent.config.yaml
+.runtime/
+.sessions/
+.env

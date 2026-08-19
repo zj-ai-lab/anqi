@@ -1,0 +1,13 @@
+# Copy to agent.config.yaml. The driver reads values from this file but never stores a key.
+enabled: false
+provider: deepseek-official
+baseURL: https://api.deepseek.com
+model: deepseek-chat
+apiKeyEnv: DEEPSEEK_API_KEY
+
+# Custom OpenAI-compatible endpoint:
+# enabled: true
+# provider: openai-completions
+# baseURL: https://llm.example.test/v1
+# model: your-model-id
+# apiKeyEnv: OPENAI_API_KEY

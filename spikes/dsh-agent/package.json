@@ -15,6 +15,10 @@
     "@deepseek-ai/dsh-llm-pi-ai": "0.1.0-rc.7",
     "@deepseek-ai/dsh-mcp-client": "0.1.0-rc.7",
     "@deepseek-ai/dsh-sdk-jsonrpc-demo": "0.1.0-rc.7",
-    "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.0-rc.7"
+    "@deepseek-ai/dsh-sdk-jsonrpc-server": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-tool-ask-user": "0.1.0-rc.7",
+    "@deepseek-ai/dsh-tools": "0.1.0-rc.7",
+    "@modelcontextprotocol/sdk": "1.30.0",
+    "js-yaml": "4.3.1"
   }
 }
