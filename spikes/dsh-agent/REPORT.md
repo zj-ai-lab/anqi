@@ -3,7 +3,7 @@
 日期：2026-08-19
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 已完成扩展 JSON-RPC response loop / real preset mount（§13），并实现 CJS+ESM actual-load tracer、测量 full staging 与尝试 exact rc.7 SEA route（§14）。但 actual B trace、trace-derived scratch 和 SEA build/runtime 均被执行权限边界阻塞，不能把 fixture、源码分类或 full closure 写成裁剪 runtime 通过。仍不建议合入生产。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）、Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。actual B trace、trace-derived scratch、SEA build/runtime，以及 Commit 3 的模型-backed readiness run 均被执行权限边界阻塞，不能把 fixture、源码分类、full closure 或静态 gate 写成动态通过。仍不建议合入生产。**
 
 ## 1. 结论
 
@@ -11,12 +11,12 @@ DSH rc.7 可以作为 anqi 的进程外 sidecar：anqi 可用一个 Node supervi
 
 本次尚不能给出“可上线”的结论，原因有四项：
 
-1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F，但 Phase 2 的 real-preset interactive response loop 只完成源码与 no-secret 子集 smoke；完整组合动态复验被当前 DSH execution permission boundary 拦截。
-2. Phase 1 证明首个 `request/header` 可能早于 MCP ready，且默认 skills root 会暴露用户技能；必须先完成 exact-agent preflight 与 anqi-owned skills root 隔离。
+1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F；Phase 2 的 real-preset interactive response loop 与 Commit 3 readiness gate 已完成源码和 no-secret/static 验证，但完整组合动态复验被当前 DSH execution permission boundary 拦截。
+2. Phase 1 证明首个 `request/header` 可能早于 MCP ready，且默认 skills root 会暴露用户技能；Commit 3 已实现 exact-agent preflight 与 anqi-owned skills root 隔离，仍待获准会话用首 header 和实际 MCP call 做动态证明。
 3. 未裁剪安装闭包为 252,160 KiB / 179,023,145 regular-file bytes。actual B loaded trace 与 trace-derived scratch B 复跑均未获执行，fixture 不能替代它们。
 4. symlink-free full staging 与压缩测量已完成；exact `@yao-pkg/pkg@6.21.0 --sea` 启动在执行外部 package code 前被权限层拒绝，因此没有 SEA executable、签名或 runtime 数字。
 
-因此产品判断是：**sidecar 方向可继续；现有全闭包不随 DMG bundled、暂按首次启用下载，但在 actual B trace、validated scratch、skills/MCP readiness 与 SEA runtime 补齐前不进入生产主线。**
+因此产品判断是：**sidecar 方向可继续；现有全闭包不随 DMG bundled、暂按首次启用下载，但在 actual B trace、validated scratch、Commit 3 的动态 skills/MCP readiness 与 SEA runtime 补齐前不进入生产主线。**
 
 ## 2. 实现边界
 
@@ -845,3 +845,72 @@ node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin
 ```
 
 这个 `/private/tmp` scratch 随时可能被系统清理；不存在时应按 `docs/packaging-numbers.md` 所述 upstream route 重建。packager 需要另行直接授权点名 package/source；DSH execution 也必须由可承载此前授权的会话运行。两者都不得由本会话换入口规避。
+
+## 15. Phase 2 / Commit 3：isolated skills 与 first-request readiness
+
+### 15.1 实现边界
+
+Commit 3 仍只修改 `spikes/dsh-agent/`，没有触碰 `src/`、`server.js`、`public/`、根 `package.json` 或 `electron/`。DSH 依赖仍钉在 `0.1.0-rc.7`；没有启动 DSH、MCP、外部 provider 或模型请求。
+
+新增的 `skills/anqi-case-brief/SKILL.md` 是 spike-owned 唯一技能。其 frontmatter 的 `name` 为 `anqi-case-brief`，正文要求在分析案卷前先调用 `mcp__anqi-local__case_folder_info`，以运行时返回的精确 `cwd` 建立案件夹上下文；它明确禁止模型计算/写入 deadline 或 event，新增工作只能提交 task-only 的 `anqi_inbox_propose` 建议，不能直接创建 task。
+
+preset 的 `skill-filesystem` 现在使用 `includeDefaultRoots: false`、`watchFollowSymlinks: false` 与唯一的 `customSkillDirs: [process.env.DSH_ANQI_SKILLS_ROOT]`，并固定 `providerName: anqi-filesystem`。因此 preset 不扫描 project `.dsh/skills`、project `.agents/skills`、`~/.dsh/skills`、`~/.agents/skills` 或 `DSH_BUNDLED_SKILL_DIR`；YAML 不能提供该路径。driver 在 spawn 前由 `SIDECAR_DIR/skills` 计算一个绝对 source root，递归 `lstat` 每个 descendant，拒绝任何 nested symlink 和非 regular entry；随后只把已核验的 `anqi-case-brief/SKILL.md` materialize 到新的 `0700` 临时 runtime root（文件 `0600`），以消除 provider 在 child 生命周期内跟随 source-tree alias 的竞态。child env 的 `DSH_ANQI_SKILLS_ROOT` 始终指向该 driver-owned runtime root，退出时递归清理。
+
+### 15.2 session/create → session/preflight → session/prompt
+
+local JSON-RPC server 额外 inject `tools` 与 `skills`，并复用 rc.7 compiled `getOrCreateSession()` 的 single-flight seam。`session/create` 只接受 bounded、无控制字符的非空 session id；返回前要求 `record.handle.agent` 与 `ctx.agents.get(agent.id)` 是同一 exact live object。agent factory 的 `setup(agentCtx)` 仍 await `agentPresets.mount(agentCtx, 'anqi')`，所以 setup 完成、agent 发布和首个 prompt assembly 之前不会暴露半成品 scope。
+
+`session/preflight` 不 prompt 模型。它针对同一个 exact root agent 检查：
+
+- `ctx.tools.schemas(agent)` 含精确名称 `mcp__anqi-local__case_folder_info`；
+- `ctx.skills.snapshot({ scope: agent, cwd: this.cwd, signal })` 的 `complete` 为 true，且 skill names 精确为 `['anqi-case-brief']`；
+- snapshot 前后都重新验证 agent 的 exact live identity。
+
+preflight 先 check，再安装 `tools/change`、`skills/change` 与 `agent/disposed` listeners，再 check；每个异步 snapshot 前后都比较 local change version。变化会唤醒重新检查，未变化才等待下一次 invalidation；没有 fixed sleep。`AbortSignal.timeout(60s)` 与 server shutdown signal 组成 bounded cancellation。当前 rc.7 `JsonRpcLineTransport` 的 inbound handler 没有 request signal，因此 wire 层没有可组合的第三个 request signal；transport 可用的 shutdown/timeout 已明确接入。超时、shutdown、agent disposal、未知 session、incomplete skill snapshot 或 listener race 都不会放行 prompt，finally 会移除 listeners。
+
+driver 的 wire 顺序固定为：
+
+```text
+initialize
+session/create
+session/preflight
+session/prompt
+```
+
+driver 同时复核 preflight 返回的 exact skill/tool 条件；turn 完成时还要求同一 session 的第一个 `request/header` 的 `reason` 是 `initial`、`header.tools` 含精确 MCP 工具名，并要求 event stream 实际出现 `tool/call.data.name === "mcp__anqi-local__case_folder_info"`。后续 `reason: change` header 不能满足首请求门禁；仅 schema visibility 也不能冒充实际调用。
+
+### 15.3 Commit 3 验收矩阵
+
+| 验收项 | 状态 | 证据等级与结果 |
+|---|---|---|
+| changed JS syntax / diff whitespace | ✅ 通过 | **[本机实测]** `node --check` 对 driver 与 local JSON-RPC plugin 均 exit 0；`git diff --check` 无输出。 |
+| disabled sidecar no-credential/no-spawn gate | ✅ 通过 | **[本机 no-secret smoke]** 用 `agent.config.example.yaml`（`enabled: false`）运行，driver 立即返回 `DSH sidecar is disabled`；即使进程带 synthetic key 和不存在的 case root，也没有进入 case/root 校验或 child spawn。synthetic value 未输出。 |
+| exact rc.7 dependency pin | ✅ 通过 | **[源码/已提交基线]** Commit 3 没有修改 package manifest 或 lockfile；依赖仍为 Phase 2 基线。 |
+| skill root ownership | ✅ 源码通过 | **[源码核实]** driver 只接受固定 `SIDECAR_DIR/skills`，递归拒绝 root 内任何 symlink / 非 regular entry；child env 改为指向 driver-owned、退出即清理的 materialized runtime root，并覆盖 user-provided value。 |
+| skill filesystem isolation | ✅ 源码/config 通过 | **[静态检查]** `includeDefaultRoots: false`、`watchFollowSymlinks: false`，唯一 custom root 和唯一 `anqi-case-brief` frontmatter；没有默认 user/project roots。 |
+| session/create exact identity | ✅ 源码通过 | **[源码核实]** 复用 inherited single-flight `getOrCreateSession()`，返回前核对 `record.handle.agent === ctx.agents.get(agent.id)`。 |
+| preflight scoped tool + skill readiness | ✅ 源码通过 | **[源码核实]** exact agent-scoped `tools.schemas` / `skills.snapshot`，complete 与 names 双重门禁；不启动模型。 |
+| server-side prompt preflight gate | ✅ 源码通过 | **[审查修复/源码核实]** `session/prompt` 不再落回 inherited lazy path；要求 exact live session 且 `preflightedSessions.get(sessionId) === agent`，否则拒绝。 |
+| preflight race/cancellation cleanup | ✅ 源码通过 | **[源码核实]** check-before-listen/check-after-listen、version accounting、payload-free invalidations、timeout/shutdown/disposal handling、finally cleanup；无 fixed sleep。 |
+| driver wire order and first-header gate | ✅ 源码通过 | **[源码核实]** 明确 create→preflight→prompt；只接受首个 `reason: initial` header，且必须含 MCP tool。 |
+| actual MCP tool call in same turn | ⛔ blocked | 需要模型-backed DSH run；本会话权限边界不允许启动 DSH，不能以 preflight schema 或 Phase 1 的后续 `reason: change` 代替。 |
+| only anqi skill discoverable / no user skill | ⛔ blocked | 代码和 config 已隔离，但需要实际 DSH `skills.snapshot` wire evidence；本轮不读取 `~/.agents/skills`，也不声明 live result。 |
+| first initial header with MCP tool | ⛔ blocked | 需要同一 session 的实际 `request/header`；driver assertion 已写入，但没有启动 DSH 取得动态证据。 |
+
+上述 blocked 项是执行权限限制，不是把未运行的模型行为写成通过。Commit 3 的静态/源码证据成立；动态验收保持 partial，待获准会话原样复跑。
+
+### 15.4 待权限会话原样复跑
+
+只使用 Phase 1 seed demo 案件，key 仍只由 `secretctl` 注入，任何 key 值不回显、不落盘、不写报告：
+
+```zsh
+secretctl run anjian.local -- env \
+  ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
+  ANQI_BASE_URL=http://127.0.0.1:3007 \
+  DSH_PERMISSION_MODE=workspace-write \
+  node spikes/dsh-agent/driver.mjs \
+  --case '张三诉李四民间借贷纠纷' \
+  --ask '先调用 mcp__anqi-local__case_folder_info 确认当前案件夹，再回答本案有哪些临近期限；只能读取和解释 anqi 返回的期限，不要自行计算或写入 deadline/event。'
+```
+
+获准复跑必须同时保留并核对：`session/create`、`session/preflight` 的 redacted JSON；唯一 `anqi-case-brief` skill；首个 `request/header.data.reason=initial` 与 `header.tools` 中的 MCP 名称；同一 session/turn 的实际 `tool/call.data.name`；随后才能把 skills/MCP readiness 标为动态通过。若 preflight timeout、snapshot incomplete、首 header 为 `change`/缺 MCP，或实际 tool call 缺失，整项 fail closed。

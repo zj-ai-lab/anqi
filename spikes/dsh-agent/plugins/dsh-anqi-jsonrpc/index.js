@@ -5,11 +5,22 @@ import { SessionId } from '@deepseek-ai/dsh-session';
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions';
 
 export const name = 'dsh-anqi-jsonrpc';
-export const inject = ['agents', 'agentPresets', 'userQuestions', 'approval'];
+export const inject = [
+  'agents',
+  'agentPresets',
+  'userQuestions',
+  'approval',
+  'tools',
+  'skills',
+];
 export const Config = Schema.object({
   maxTokensAsSuccess: Schema.boolean().default(false),
   interactionTimeoutMs: Schema.number().step(1).min(1_000).default(120_000),
+  preflightTimeoutMs: Schema.number().step(1).min(1_000).default(60_000),
 });
+
+const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
+const REQUIRED_SKILL = 'anqi-case-brief';
 
 const APPROVAL_OUTCOMES = new Set([
   'allowed-once',
@@ -20,6 +31,24 @@ const APPROVAL_OUTCOMES = new Set([
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function sessionIdFromParams(params, method) {
+  const sessionId = params?.sessionId;
+  if (
+    typeof sessionId !== 'string'
+    || sessionId.length === 0
+    || sessionId.length > 512
+    || /[\0-\x1f\x7f]/u.test(sessionId)
+  ) {
+    throw new Error(`${method} requires a valid sessionId`);
+  }
+  return sessionId;
+}
+
+function abortReason(signal) {
+  if (signal.reason instanceof Error) return signal.reason;
+  return new Error('preflight was aborted');
 }
 
 function validateQuestionAnswer(value, sessionId, questions) {
@@ -72,8 +101,10 @@ class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
   constructor(ctx, transport, options = {}) {
     super(ctx, transport, options);
     this.interactionTimeoutMs = options.interactionTimeoutMs ?? 120_000;
+    this.preflightTimeoutMs = options.preflightTimeoutMs ?? 60_000;
     this.shutdownController = new AbortController();
     this.sessionByAgent = new WeakMap();
+    this.preflightedSessions = new Map();
     this.claimedApprovalIds = new Set();
   }
 
@@ -106,7 +137,161 @@ class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
     return record;
   }
 
+  assertLiveSession(sessionId, expectedAgent) {
+    const record = this.sessions.get(sessionId);
+    const agent = expectedAgent ?? record?.handle?.agent;
+    if (
+      agent === undefined
+      || record?.handle?.agent !== agent
+      || this.ctx.agents.get(agent.id) !== agent
+    ) {
+      throw new Error(`session is unknown or no longer live: ${sessionId}`);
+    }
+    return { record, agent };
+  }
+
+  async createSessionRequest(params) {
+    const sessionId = sessionIdFromParams(params, 'session/create');
+    const record = await this.getOrCreateSession(sessionId);
+    this.assertLiveSession(sessionId, record.handle.agent);
+    return { sessionId };
+  }
+
+  async promptSession(params) {
+    const sessionId = sessionIdFromParams(params, 'session/prompt');
+    const { agent } = this.assertLiveSession(sessionId);
+    if (this.preflightedSessions.get(sessionId) !== agent) {
+      throw new Error(`session/preflight is required before session/prompt: ${sessionId}`);
+    }
+    return super.handleRequest('session/prompt', params);
+  }
+
+  completePreflight(sessionId, agent, observation) {
+    this.assertLiveSession(sessionId, agent);
+    this.preflightedSessions.set(sessionId, agent);
+    return { sessionId, ...observation };
+  }
+
+  async inspectReadiness(sessionId, agent, signal) {
+    this.assertLiveSession(sessionId, agent);
+    const toolNames = this.ctx.tools.schemas(agent).map((schema) => schema.name);
+    const skillSnapshot = await this.ctx.skills.snapshot({
+      scope: agent,
+      cwd: this.cwd,
+      signal,
+    });
+    this.assertLiveSession(sessionId, agent);
+    const skillNames = skillSnapshot.skills.map((skill) => skill.name);
+    const toolsReady = toolNames.includes(REQUIRED_MCP_TOOL);
+    const skillsReady = skillSnapshot.complete === true
+      && skillNames.length === 1
+      && skillNames[0] === REQUIRED_SKILL;
+    return {
+      ready: toolsReady && skillsReady,
+      tools: {
+        required: REQUIRED_MCP_TOOL,
+        visibleNames: toolNames,
+        ready: toolsReady,
+      },
+      skills: {
+        complete: skillSnapshot.complete === true,
+        names: skillNames,
+        required: [REQUIRED_SKILL],
+        ready: skillsReady,
+      },
+    };
+  }
+
+  async preflightSession(params) {
+    const sessionId = sessionIdFromParams(params, 'session/preflight');
+    const { agent } = this.assertLiveSession(sessionId);
+    // The current rc.7 transport handler does not expose a request signal. The
+    // server shutdown signal and this bounded timeout are the only cancellation
+    // sources available at this wire boundary.
+    const timeoutSignal = AbortSignal.timeout(this.preflightTimeoutMs);
+    const signal = AbortSignal.any([this.shutdownController.signal, timeoutSignal]);
+    let changeVersion = 0;
+    let waiter;
+    let disposalError;
+    const invalidate = () => {
+      changeVersion += 1;
+      waiter?.();
+    };
+    const onAgentDisposed = (payload) => {
+      if (payload?.agent !== agent) return;
+      disposalError = new Error(`session agent was disposed during preflight: ${sessionId}`);
+      changeVersion += 1;
+      waiter?.(disposalError);
+    };
+
+    // First observe before subscribing, then subscribe and observe again in the
+    // loop below. The second check closes the event-registration race.
+    let observation = await this.inspectReadiness(sessionId, agent, signal);
+    if (observation.ready) return this.completePreflight(sessionId, agent, observation);
+
+    const disposeToolsListener = this.ctx.on('tools/change', invalidate);
+    const disposeSkillsListener = this.ctx.on('skills/change', invalidate);
+    const disposeAgentListener = this.ctx.on('agent/disposed', onAgentDisposed);
+
+    const waitForChange = (observedVersion) => new Promise((resolve, reject) => {
+      let settled = false;
+      const cleanup = () => {
+        signal.removeEventListener('abort', onAbort);
+        if (waiter === settle) waiter = undefined;
+      };
+      const settle = (error) => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        if (error instanceof Error) reject(error);
+        else resolve();
+      };
+      const onAbort = () => settle(abortReason(signal));
+      waiter = settle;
+      signal.addEventListener('abort', onAbort, { once: true });
+      if (signal.aborted) {
+        settle(abortReason(signal));
+        return;
+      }
+      if (disposalError !== undefined) {
+        settle(disposalError);
+        return;
+      }
+      if (changeVersion !== observedVersion) settle();
+    });
+
+    try {
+      for (;;) {
+        const beforeVersion = changeVersion;
+        observation = await this.inspectReadiness(sessionId, agent, signal);
+        if (observation.ready) return this.completePreflight(sessionId, agent, observation);
+        if (disposalError !== undefined) throw disposalError;
+        const afterVersion = changeVersion;
+        if (afterVersion !== beforeVersion) continue;
+        await waitForChange(afterVersion);
+      }
+    } finally {
+      disposeToolsListener();
+      disposeSkillsListener();
+      disposeAgentListener();
+    }
+  }
+
+  async handleRequest(method, params) {
+    switch (method) {
+      case 'session/create':
+        return this.createSessionRequest(params);
+      case 'session/preflight':
+        return this.preflightSession(params);
+      case 'session/prompt':
+        return this.promptSession(params);
+      default:
+        return super.handleRequest(method, params);
+    }
+  }
+
   shutdown() {
+    this.preflightedSessions.clear();
     if (!this.shutdownController.signal.aborted) {
       this.shutdownController.abort(new Error('JSON-RPC server is shutting down'));
     }
@@ -218,6 +403,7 @@ export function apply(ctx, config) {
   const server = new AnqiJsonRpcServer(ctx, transport, {
     maxTokensAsSuccess: resolvedConfig.maxTokensAsSuccess,
     interactionTimeoutMs: resolvedConfig.interactionTimeoutMs,
+    preflightTimeoutMs: resolvedConfig.preflightTimeoutMs,
   });
   let exitTask;
 

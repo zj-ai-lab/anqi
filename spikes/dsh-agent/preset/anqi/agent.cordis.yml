@@ -21,6 +21,12 @@
 
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    providerName: anqi-filesystem
+    includeDefaultRoots: false
+    watchFollowSymlinks: false
+    customSkillDirs:
+      - !!js process.env.DSH_ANQI_SKILLS_ROOT
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

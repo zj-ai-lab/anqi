@@ -3,11 +3,15 @@ import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
+  copyFileSync,
   existsSync,
   lstatSync,
+  mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
 } from 'node:fs';
 import * as nodeModule from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -31,8 +35,90 @@ const DSH_BIN = join(
 const TRACE_PRELOAD = join(SIDECAR_DIR, 'trace-loaded', 'preload.mjs');
 const MCP_BIN = join(SIDECAR_DIR, 'mcp', 'server.mjs');
 const DEPENDENCY_ROOT = join(SIDECAR_DIR, 'node_modules');
+const ANQI_SKILLS_ROOT = join(SIDECAR_DIR, 'skills');
+const REQUIRED_ANQI_SKILL = join(ANQI_SKILLS_ROOT, 'anqi-case-brief', 'SKILL.md');
+const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
 const ALLOWED_CONFIG_KEYS = new Set(['enabled', 'provider', 'baseURL', 'model', 'apiKeyEnv']);
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
+const PREFLIGHT_REQUEST_TIMEOUT_MS = 90_000;
+
+function verifyTrustedSkillsRoot() {
+  let rootStat;
+  try {
+    rootStat = lstatSync(ANQI_SKILLS_ROOT);
+  } catch {
+    throw new Error(`trusted anqi skill root not found: ${ANQI_SKILLS_ROOT}`);
+  }
+  if (!rootStat.isDirectory() || rootStat.isSymbolicLink()) {
+    throw new Error(`trusted anqi skill root must be a real directory: ${ANQI_SKILLS_ROOT}`);
+  }
+
+  const root = realpathSync(ANQI_SKILLS_ROOT);
+  const pendingDirectories = [root];
+  while (pendingDirectories.length > 0) {
+    const directory = pendingDirectories.pop();
+    let entries;
+    try {
+      entries = readdirSync(directory);
+    } catch (error) {
+      throw new Error(`trusted anqi skill root could not be read: ${directory}`, { cause: error });
+    }
+    for (const name of entries) {
+      const entryPath = join(directory, name);
+      let entryStat;
+      try {
+        entryStat = lstatSync(entryPath);
+      } catch (error) {
+        throw new Error(`trusted anqi skill entry could not be inspected: ${entryPath}`, { cause: error });
+      }
+      if (entryStat.isSymbolicLink()) {
+        throw new Error(`trusted anqi skill tree must not contain symlinks: ${entryPath}`);
+      }
+      if (entryStat.isDirectory()) {
+        pendingDirectories.push(entryPath);
+      } else if (!entryStat.isFile()) {
+        throw new Error(`trusted anqi skill tree contains a non-regular entry: ${entryPath}`);
+      }
+    }
+  }
+
+  const skillDirectory = join(root, 'anqi-case-brief');
+  const skillPath = join(skillDirectory, 'SKILL.md');
+  let skillDirectoryStat;
+  let skillStat;
+  try {
+    skillDirectoryStat = lstatSync(skillDirectory);
+    skillStat = lstatSync(skillPath);
+  } catch {
+    throw new Error(`required anqi skill not found: ${REQUIRED_ANQI_SKILL}`);
+  }
+  if (!skillDirectoryStat.isDirectory() || skillDirectoryStat.isSymbolicLink()) {
+    throw new Error(`required anqi skill directory must be real: ${skillDirectory}`);
+  }
+  if (!skillStat.isFile() || skillStat.isSymbolicLink()) {
+    throw new Error(`required anqi skill must be a real file: ${REQUIRED_ANQI_SKILL}`);
+  }
+  return root;
+}
+
+function materializeTrustedSkillsRoot(sourceRoot) {
+  const runtimeRoot = mkdtempSync(join(tmpdir(), 'anqi-dsh-skills-'));
+  try {
+    chmodSync(runtimeRoot, 0o700);
+    const runtimeSkillDirectory = join(runtimeRoot, 'anqi-case-brief');
+    mkdirSync(runtimeSkillDirectory, { mode: 0o700 });
+    chmodSync(runtimeSkillDirectory, 0o700);
+    copyFileSync(
+      join(sourceRoot, 'anqi-case-brief', 'SKILL.md'),
+      join(runtimeSkillDirectory, 'SKILL.md'),
+    );
+    chmodSync(join(runtimeSkillDirectory, 'SKILL.md'), 0o600);
+    return runtimeRoot;
+  } catch (error) {
+    rmSync(runtimeRoot, { recursive: true, force: true });
+    throw new Error(`could not materialize trusted anqi skills: ${sourceRoot}`, { cause: error });
+  }
+}
 
 function usage() {
   return `Usage: node driver.mjs --case <exact-case-folder-name> --ask <question> [options]
@@ -256,6 +342,8 @@ function createRpcClient(child, secretValues, interactionPolicy) {
   let sawRunning = false;
   let sawIdle = false;
   let sawCompletedTurnEnd = false;
+  let firstRequestHeader;
+  let sawRequiredMcpToolCall = false;
   let resolveTurn;
   let rejectTurn;
   const pending = new Map();
@@ -272,6 +360,19 @@ function createRpcClient(child, secretValues, interactionPolicy) {
     String(input),
   );
 
+  function assertFirstRequestReadiness() {
+    if (!firstRequestHeader || firstRequestHeader.reason !== 'initial') {
+      throw new Error('first request/header must have reason=initial');
+    }
+    const tools = firstRequestHeader.header?.tools;
+    if (!Array.isArray(tools) || !tools.some((tool) => tool?.name === REQUIRED_MCP_TOOL)) {
+      throw new Error(`first request/header is missing ${REQUIRED_MCP_TOOL}`);
+    }
+    if (!sawRequiredMcpToolCall) {
+      throw new Error(`turn did not call ${REQUIRED_MCP_TOOL}`);
+    }
+  }
+
   function failAll(error) {
     if (closed) return;
     closed = true;
@@ -281,7 +382,13 @@ function createRpcClient(child, secretValues, interactionPolicy) {
   }
 
   function maybeResolveTurn() {
-    if (sawRunning && sawIdle && sawCompletedTurnEnd) resolveTurn();
+    if (!sawRunning || !sawIdle || !sawCompletedTurnEnd) return;
+    try {
+      assertFirstRequestReadiness();
+      resolveTurn();
+    } catch (error) {
+      rejectTurn(error);
+    }
   }
 
   function childRequestError(message, code = -32602) {
@@ -435,8 +542,10 @@ function createRpcClient(child, secretValues, interactionPolicy) {
       if (latency !== null) process.stdout.write(`[metric] first_assistant_chunk_ms=${latency.toFixed(1)}\n`);
     }
     if (event.type === 'request/header') {
+      if (firstRequestHeader === undefined) firstRequestHeader = event.data;
       process.stdout.write(`[request/header] ${redact(JSON.stringify(event.data))}\n`);
     } else if (event.type === 'tool/call') {
+      if (event.data?.name === REQUIRED_MCP_TOOL) sawRequiredMcpToolCall = true;
       process.stdout.write(`[tool/call] ${redact(JSON.stringify(event.data))}\n`);
     } else if (event.type === 'tool/result') {
       process.stdout.write(`[tool/result] ${redact(JSON.stringify(event.data))}\n`);
@@ -546,11 +655,13 @@ async function main() {
   const configPath = resolve(args.config || DEFAULT_CONFIG);
   const config = readConfig(configPath);
   const caseDirectory = resolveCaseDirectory(args.case);
+  const trustedSkillsRoot = verifyTrustedSkillsRoot();
   const requiredRuntimePaths = [CORDIS_CONFIG, DSH_BIN];
   if (args.traceLoaded) requiredRuntimePaths.push(TRACE_PRELOAD, MCP_BIN);
   for (const path of requiredRuntimePaths) {
     if (!existsSync(path)) throw new Error(`required DSH runtime file not found: ${path}`);
   }
+  const anqiSkillsRoot = materializeTrustedSkillsRoot(trustedSkillsRoot);
 
   const traceDirectory = args.traceLoaded
     ? mkdtempSync(join(tmpdir(), 'anqi-dsh-load-trace-'))
@@ -574,6 +685,7 @@ async function main() {
       DSH_BASE_URL: config.baseURL,
       DSH_MODEL: config.model,
       DSH_CWD: caseDirectory,
+      DSH_ANQI_SKILLS_ROOT: anqiSkillsRoot,
       DSH_SESSION_ROOT: join(SIDECAR_DIR, '.runtime', 'sessions'),
       ...(traceDirectory === null ? {} : { ANQI_DSH_LOAD_TRACE_DIR: traceDirectory }),
     },
@@ -610,6 +722,33 @@ async function main() {
     );
 
     const sessionId = `anqi-${randomUUID()}`;
+    const created = await rpc.request('session/create', { sessionId }, 120_000);
+    if (created?.sessionId !== sessionId) throw new Error('session/create returned the wrong session identity');
+    process.stdout.write(`[session/create] ${rpc.redact(JSON.stringify(created))}\n`);
+
+    const preflight = await rpc.request(
+      'session/preflight',
+      { sessionId },
+      PREFLIGHT_REQUEST_TIMEOUT_MS,
+    );
+    const skillNames = preflight?.skills?.names;
+    const visibleToolNames = preflight?.tools?.visibleNames;
+    if (
+      preflight?.ready !== true
+      || preflight.tools?.required !== REQUIRED_MCP_TOOL
+      || preflight.tools?.ready !== true
+      || !Array.isArray(visibleToolNames)
+      || !visibleToolNames.includes(REQUIRED_MCP_TOOL)
+      || preflight.skills?.complete !== true
+      || !Array.isArray(skillNames)
+      || skillNames.length !== 1
+      || skillNames[0] !== 'anqi-case-brief'
+      || preflight.skills?.ready !== true
+    ) {
+      throw new Error('session/preflight did not establish the required scoped tools and skill');
+    }
+    process.stdout.write(`[session/preflight] ${rpc.redact(JSON.stringify(preflight))}\n`);
+
     rpc.markPromptStart(sessionId);
     const receipt = await rpc.request('session/prompt', {
       sessionId,
@@ -640,6 +779,7 @@ async function main() {
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
     await finalizeLoadedTrace(traceDirectory, childClosed);
+    rmSync(anqiSkillsRoot, { recursive: true, force: true });
   }
 }
 
