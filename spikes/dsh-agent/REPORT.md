@@ -3,7 +3,7 @@
 日期：2026-08-19
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 已选定保留完整审计事件的扩展 JSON-RPC，并完成 response-loop / real-preset-mount 的源码实现（§13），但本轮最终动态复验被执行权限层拦截，不能把源码通过写成运行通过。仍不建议合入生产。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 已完成扩展 JSON-RPC response loop / real preset mount（§13），并实现 CJS+ESM actual-load tracer、测量 full staging 与尝试 exact rc.7 SEA route（§14）。但 actual B trace、trace-derived scratch 和 SEA build/runtime 均被执行权限边界阻塞，不能把 fixture、源码分类或 full closure 写成裁剪 runtime 通过。仍不建议合入生产。**
 
 ## 1. 结论
 
@@ -11,12 +11,12 @@ DSH rc.7 可以作为 anqi 的进程外 sidecar：anqi 可用一个 Node supervi
 
 本次尚不能给出“可上线”的结论，原因有四项：
 
-1. 当前 Claude Code 进程没有继承 `DEEPSEEK_API_KEY`。按任务书约束，没有 key 时不得空转或伪造 B/C/F 的动态结果。
-2. 用户已将数据目的地明确限定为 `https://api.deepseek.com` / `deepseek-chat`，并授权执行 package-lock 完整性钉定的 DSH rc.7 与 js-yaml 4.3.1 闭包；但因 key gate 未通过，没有发生模型请求或模型侧数据传输。
-3. rc.7 stock JSON-RPC 不挂载 agent preset，也没有审批/问答的 request-response RPC；这两项需要 anqi 自己扩展 agent factory / RPC bridge。
-4. 未裁剪安装闭包为 247 MiB，直接装进桌面包偏重，仍需做依赖裁剪或单文件测量。
+1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F，但 Phase 2 的 real-preset interactive response loop 只完成源码与 no-secret 子集 smoke；完整组合动态复验被当前 DSH execution permission boundary 拦截。
+2. Phase 1 证明首个 `request/header` 可能早于 MCP ready，且默认 skills root 会暴露用户技能；必须先完成 exact-agent preflight 与 anqi-owned skills root 隔离。
+3. 未裁剪安装闭包为 252,160 KiB / 179,023,145 regular-file bytes。actual B loaded trace 与 trace-derived scratch B 复跑均未获执行，fixture 不能替代它们。
+4. symlink-free full staging 与压缩测量已完成；exact `@yao-pkg/pkg@6.21.0 --sea` 启动在执行外部 package code 前被权限层拒绝，因此没有 SEA executable、签名或 runtime 数字。
 
-因此产品判断是：**sidecar 方向可继续，但须先完成 B/C 的去标识演示数据实跑、审批桥和打包裁剪，再决定进入主线。**
+因此产品判断是：**sidecar 方向可继续；现有全闭包不随 DMG bundled、暂按首次启用下载，但在 actual B trace、validated scratch、skills/MCP readiness 与 SEA runtime 补齐前不进入生产主线。**
 
 ## 2. 实现边界
 
@@ -54,8 +54,8 @@ ff343c8 spike(dsh): add restricted anqi agent preset
 | C. 待办建议进入 pending、无 deadline | ✅ 通过（有设计发现） | §12.2：`anqi_inbox_propose` 落 pending；deadlines 表前后 hash 一致；但触发了 L2 去重的「刷新覆盖」语义，见 §12.5 |
 | D. user skills + 本地 stdio MCP | ✅ 通过 | §12.3：会话日志有 `skill-catalog` 用户消息（11 个技能）；第二个 `request/header` 含 `mcp__anqi-local__case_folder_info` |
 | E. 无 UI 审批 fail closed + future answerer | ✅ 通过 | §12.4：`FS_SANDBOX_DENIED` → 升权重试 → 「requires approval, but no approval channel is available」，桌面文件未生成 |
-| F. 闭包、initialize、首 token、API 面 | ✅ 通过 | 247 MiB；cold_ms 567–608；first chunk 1015–1796 ms；API 面见 §8.4 |
-| G. 单文件 / SEA | 未尝试（可选） | 留给 Spike B |
+| F. 闭包、initialize、首 token、API 面 | ✅ Phase 1 / ⚠️ Phase 2 部分 | Phase 1：247 MiB、cold_ms 567–608、first chunk 1015–1796 ms。Phase 2：full closure/staging 已量化；actual B trace 与 validated scratch 被阻塞，见 §14。 |
+| G. 单文件 / SEA | ⚠️ 部分 | exact upstream route 与 symlink-free staging 已核实；packager 启动前被权限层拒绝，无 executable/runtime 证据，见 §14.5。 |
 | H. 设置 schema | ✅ 通过 | §11 |
 
 ## 4. A：anqi 隔离开发实例
@@ -674,3 +674,174 @@ secretctl run anjian.local -- env \
 ```
 
 复跑还必须检查同一 session 的第一个 `request/header`：`reason` 为 `initial`，system 含“中国执业律师”，tools 至少含 `anqi_case_get`、`anqi_digest`、`anqi_inbox_propose`、`ask_user_question`，且不含 bash/subagent/workflow/web。Task 3 另行要求这个**第一个** header 同时含 MCP 工具；不能用后续 `reason: change` 代替。
+
+## 14. Phase 2 / Commit 2：loaded closure 与 SEA attempt
+
+完整数字、口径与决策闸见 `docs/packaging-numbers.md`。本节只记录实现、验收矩阵与可复跑入口。
+
+### 14.1 `--trace-loaded` 实现
+
+`driver.mjs --trace-loaded` 在 DSH spawn 前创建 mode `0700` 的系统临时目录，并要求 inherited `NODE_OPTIONS` 为空；非空即在读取 case/config 与 spawn 之前 fail closed。随后它只向 DSH 环境写入一个 percent-encoded `--import=<trace preload URL>`，并通过 `ANQI_DSH_LOAD_TRACE_DIR` 传入目录；每个 `(pid, threadId)` 写独立 mode `0600` JSONL。这里不能保留用户的 `--require` / `--loader` 等选项：它们可能先于 tracer 执行，使漏载仍被误报为 complete。使用受控 `NODE_OPTIONS` 而不是只给 DSH CLI 加 `--import`，目标是覆盖 Node MCP stdio child。rc.7 `dsh-mcp-client` 的 `buildChildEnv()` / `scrubbedParentEnv()` 与 MCP SDK spawn 路径经源码核实会保留这个 tracer-only `NODE_OPTIONS` 和 `ANQI_DSH_LOAD_TRACE_DIR`，同时剔除 credential-shaped / `DSH_*` env（包括 key）；这是 source evidence，actual MCP instrumentation 仍未运行。
+
+`trace-loaded/preload.mjs` 同时覆盖：
+
+- `Module._resolveFilename` / `Module._load` 的 CJS 与 `createRequire()` parent/resolution/outcome；
+- 同步 `node:module.registerHooks({ resolve, load })` 的 ESM edge 与 universal loader file/source-byte 证据；
+- `trace.start` / `trace.exit` / `trace.dropped` 完整性标记；32 MiB 上限前固定预留 512 B 给 terminal drop record，失败后停诊断而不改变目标异常路径；
+- 每个完整文本字段（含截断标记）最多 4 KiB；`data:` specifier 只记 `data:`，绝对 URL 与可按 parent 解析的相对 path-like specifier 都移除 userinfo/query/hash，其他带 query/hash 后缀的失败 specifier 只保留前缀与固定移除标记；known API/internal key values 在 decoded file path 与普通 text 上二次替换。若 redaction 改写 process/load/parent 等 identity URL，closed schema 会拒绝该 record 并令 summary incomplete，而不是拿改写后的路径继续计数；不记录模块 source、完整环境、JSON-RPC frame 或模型输入输出。
+
+`trace-loaded/summarize.mjs` 在 target stdio close 后再读 raw JSONL，按 physical realpath 去重 loaded files，区分 loader source bytes 与 post-exit stat fallback，映射 package root，计算 reached package 的 regular-file installed bytes，并保留最多 8 条 representative parent/import edge。它逐 event type 使用 closed schema 校验必需/允许字段、bounded text、URL、integer/null/outcome vocab；`file:` URL 还必须能经 `fileURLToPath()` 转成本机路径，remote-host 或 redacted identity URL 都不能进入 accounting。之后再校验 filename PID/TID、连续 sequence、start/terminal 结构；unknown event 或 payload（例如 number URL、string byte count）会增加 `recordValidationErrors`，不能静默消失。node_modules 内文件以最内层 package boundary 为 install root，不再向上穿越到 host project；该 boundary 的 manifest 缺失、不可读、畸形或无 name 会去重计入 `packageResolutionErrors`。它还把 package traversal 读错显式计数，从 spike manifest 区分 top-level direct dependency 与 hoisted/nested transitive，并要求 exact DSH/MCP process entries 都出现。结构/schema 错误、unknown file bytes、installed-byte errors、package-resolution errors、missing entry、drop、malformed 或 start/exit 不闭合任一项都会令 `complete=false`。CJS file 同时产生 `module.load` 与 `cjs.load` 时只算一次 load instance；native addon 若没有 source，则由 successful CJS load + post-exit stat 补证。`summary.json` mode `0600` 且 exclusive-create；summary 失败只输出 `[trace-loaded/error]`，不会遮蔽原 DSH outcome。
+
+这些是 diagnostic consistency checks，不是 cryptographic authentication：被测 child 与 tracer 同 uid、可写 trace directory，恶意 child 仍可伪造结构正确的记录。因此本 trace 只用于 pinned closure 的体积诊断，不替代 anqi 的可信审计日志。
+
+固定 B prompt 已冻结在 `fixtures/scenario-b-prompt.txt`：
+
+```text
+本案有哪些临近期限？
+```
+
+### 14.2 自有 fixture（真实运行，但不是 DSH）
+
+fixture 同时做 ESM entry、`createRequire()` CJS load 和一个继承 tracer-only `NODE_OPTIONS` 的 Node subprocess。修复审查发现后于 2026-08-20 完整重跑，仍得到：
+
+```json
+{
+  "traceFiles": 2,
+  "records": 22,
+  "malformedLines": 0,
+  "completeness": {
+    "startRecords": 2,
+    "exitRecords": 2,
+    "droppedRecords": 0,
+    "recordValidationErrors": 0,
+    "installedByteErrors": 0,
+    "packageResolutionErrors": 0,
+    "traceRecordsComplete": true,
+    "loadedBytesComplete": true,
+    "installedBytesComplete": true,
+    "packageResolutionComplete": true,
+    "requiredEntriesObserved": true,
+    "complete": true
+  },
+  "edges": {
+    "esmResolve": 5,
+    "cjsResolve": 2,
+    "cjsResolveErrors": 0
+  },
+  "loads": {
+    "moduleLoadEvents": 7,
+    "cjsLoadEvents": 4,
+    "successfulCjsLoads": 4
+  },
+  "loaded": {
+    "uniqueFiles": 2,
+    "loadInstances": 3,
+    "observedSourceBytes": 726,
+    "statFallbackBytes": 0,
+    "measuredBytes": 726,
+    "unknownByteFiles": 0
+  }
+}
+```
+
+两个 unique files 是 `fixture.mjs`（1 instance / 584 B）和 `fixture.cjs`（父、子进程各 1 instance / 142 B）；所以 3 instances 正确。此 fixture 的 required-entry gate 只要求并观察到 `fixture.mjs`；`node -e` child 没有 `argv[1]`，但由独立 start/exit file 证明已继承 tracer。负向 fixture 证明 PID/sequence mismatch 或 missing required entry 会失败；unreadable package child 会报告 `installedByteErrors=1`，同时仍正确标出 reached direct package 并令 `complete=false`。审查修复回归还证明：非空 inherited `NODE_OPTIONS` 在 spawn 前 exit 1；schema-valid identity/sequence 中插入 `module.load { url: 42, sourceBytes: "invalid" }` 得到 `recordValidationErrors=1`、entries 仍命中但 `complete=false`；两个 remote-host `file:` loads 得到 2 errors、0 loaded files、`complete=false`；已加载 `node_modules/bad/index.mjs` 缺 package manifest 时得到 `packageResolutionErrors=1`、不再误归 host project；relative ESM query sentinel 不进入 raw JSONL；5000-byte failed CJS specifier 的完整字段为 4095 B，所有字段都不超过 4096 B；known-key sentinel 出现在 synthetic CJS parent path 时 raw 中只剩 redaction marker，identity record 被拒绝且 `complete=false`。data/query/known-key 三类 privacy sentinel 均不进入 raw JSONL。这个 run **只证明 tracer 的 mechanics 与门禁，不是 DSH/MCP actual-load measurement**。
+
+### 14.3 full closure 与四类 native 源码分类
+
+本机 Node `v26.3.1` / npm `11.16.0` / macOS arm64。当前 closure：
+
+- `node_modules`: 252,160 KiB、179,023,145 regular-file bytes、27,848 files；
+- `npm ls --all --parseable`: 364 行，即 project root + 363 installed dependency roots；
+
+源码与文件测量的 provisional 分类：
+
+- `node-pty`：26,877,238 B；当前 mounted `dsh-subprocess-local` 顶层 import，macOS startup 会加载 `pty.node`（86,904 B）；terminal spawn 另需相邻可执行 `spawn-helper`（50,480 B）。restricted text preset 不暴露 shell/code/subagent，MCP stdio 也不走 PTY，所以移除整个 subprocess row 后理论可裁，但没有 omission B run。
+- `sharp` + `@img/sharp-darwin-arm64`：958,466 + 292,231 B；mounted `dsh-attachment-local` 顶层 import，用于 image probing/read。固定 B 为 text-only，理论可连 attachment row / `read_image` 一起裁，但没有 omission B run。
+- `koffi` + `@koromix/koffi-darwin-arm64`：1,798,526 + 1,241,345 B；本 composition 的 fs-local / JSONL persistence 只在 Win32 helper 中 dynamic import；eager Windows ACL path 所属 sandbox-local 没挂载。macOS 理论可裁，但仍需 actual trace + scratch proof。
+- `node-addon-require-builtin@0.1.4`：当前未安装；Cordis loader 的 optional peer attempt 被 catch。它不是已证明需要的 runtime dependency。
+
+这些结论只有 **[源码核实 + installed-file measurement]**，没有 actual B trace 与 controlled retained/omitted execution，因此不把“理论可裁”写成“validated optional”。
+
+### 14.4 actual B trace 与 scratch runtime：blocked
+
+此前 full-preset DSH execution 被当前权限层拒绝。本 commit 没有通过另一个工具、packaging route 或 peer session 绕过，也没有拿 Phase 1 未 instrument 的 B run冒充 loaded trace。因此下列要求保持未完成：
+
+- DSH B 的 unique loaded files/bytes；
+- reached package roots/installed bytes 与真实 parent/import evidence；
+- loaded/theoretical floor；
+- 从 trace reached direct packages + required transitives 生成的 scratch manifest；
+- `npm install --ignore-scripts` 后的 scratch installed/compressed size；
+- scratch B end-to-end 与 cold initialize samples；
+- 四类 native 的 controlled omission/retention 结论。
+
+没有 actual trace 就不创建猜测 manifest，也不把 full closure staging 称为 trimmed runtime。
+
+### 14.5 upstream rc.7 SEA route 与本机 attempt
+
+exact upstream tag `dsh-v0.1.0-rc.7`（commit `99f6f02fecdb7dff40c3fbc9470f5907c29f74ca`）的 `scripts/build-exe-for-python-sdk.ts` 规定：production legacy/hoisted deploy → 补 direct deps → materialize symlinks / remove `.bin` → 注入 `dsh-sdk-jsonrpc-demo/lib/packaged-bin.js` entry 与 whole-tree JS/CJS/MJS/package-manifest/JSON/native/WASM assets → `@yao-pkg/pkg@6.21.0 --sea --targets node24-macos-arm64` → 把 Darwin arm64 `node-pty/spawn-helper` 单独复制到 main executable 相邻路径并 chmod `0755`。所以产品是 executable + helper，不是严格单文件。
+
+本 spike 不是 DSH monorepo，没有 upstream Python deploy root、workspace source 与 closure verifier。本轮在仓库外做的是 **adapted post-deploy equivalent**：
+
+- `/private/tmp/anqi-dsh-sea.3ksg7R/staging`：252,164 KiB / 179,023,624 B，零 symlink；packaged entry、`pty.node`、executable `spawn-helper` 均存在；
+- exact `@yao-pkg/pkg@6.21.0` 只以 `--ignore-scripts --no-save --package-lock=false` 安装到仓库外 tool dir：44,220 KiB / 37,413,121 B；
+- `/usr/bin/codesign` 存在，但没有 executable 可签名或检查。
+
+随后尝试启动 packager。权限层在 process start **之前**拒绝，理由是现有直接授权点名 DSH rc.7 / js-yaml，不包含执行 `@yao-pkg/pkg@6.21.0` 外部代码。本会话没有重试绕过。该状态是 **build 未执行 / blocked**，不是 compiler/packager 返回失败：没有 main executable、没有 copied helper product、没有 code-sign/runtime/cold-start/B evidence。
+
+full staging 的 canonical 压缩值为：
+
+| 对象 | bytes | 相对 v2.6.0 arm64 DMG |
+|---|---:|---:|
+| `full-staging.tar.gz` | 41,153,091 | 29.31% |
+| `full-staging-relative.zip` (`zip -9`) | 57,118,441 | 40.69% |
+| `anqi-2.6.0-arm64.dmg` | 140,389,719 | baseline |
+| DMG + tar 简单相加 | 181,542,810 | 仅 transport approximation |
+| DMG + zip 简单相加 | 197,508,160 | 仅 transport approximation |
+
+这不是 regenerated DMG measurement。没有 SEA product set，所以不生成假的 SEA `tar.gz` / `zip -9` 数字。
+
+### 14.6 Commit 2 验收矩阵
+
+| 验收项 | 状态 | 证据等级与结果 |
+|---|---|---|
+| driver / preload / summarizer / fixtures syntax | ✅ 通过 | **[本机实测]** 全部 `node --check` exit 0。 |
+| CJS + ESM + inherited Node child trace | ✅ 通过 | **[fixture 实测]** tracer-only `NODE_OPTIONS` 下 2 trace files、22 records、0 malformed/dropped/schema/structural/byte/package-resolution errors、start=exit=2、required fixture entry observed；unique=2 / instances=3 / 726 B。非空 inherited options、畸形/remote-file event、结构/missing-entry/byte/package-boundary gates、relative-query/secret-path privacy 与 exact 4 KiB bound 均通过；不是 DSH/MCP evidence。 |
+| fixed B prompt | ✅ 通过 | **[仓库 fixture]** 与 Phase 1 B “本案有哪些临近期限？”逐字一致。 |
+| full installed closure | ✅ 通过 | **[本机实测]** 252,160 KiB / 179,023,145 B / 363 roots。 |
+| actual DSH B trace | ⛔ blocked | 当前权限边界不允许启动 DSH；无 loaded/reached 数字。 |
+| trace-derived scratch + B rerun | ⛔ blocked | 必须依赖上一行；未创建猜测 runtime。 |
+| native classifications | ⚠️ 部分 | **[源码 + 文件测量]** parent/import 与 native size 已核；缺 actual reach + controlled scratch execution。 |
+| symlink-free full staging | ✅ 通过 | **[本机实测]** external adapted staging；零 symlink，entry/native/helper 齐全。不是 exact monorepo deploy。 |
+| exact SEA packaging route | ✅ 源码核实 | tag/commit、packager、target、assets、helper copy 均核实。 |
+| SEA build | ⛔ blocked | packager process 启动前 permission denied；无产物。 |
+| SEA runtime / cold initialize | ⛔ blocked | 无 executable，未启动。 |
+| full staging tar/zip + DMG comparison | ✅ 通过 | **[本机实测]** 41,153,091 / 57,118,441 / 140,389,719 B。 |
+| validated scratch / SEA compressed forms | ⛔ blocked | 无对应 validated product set，不推算。 |
+
+### 14.7 待权限会话原样执行
+
+actual B trace（只允许 seed demo 数据、secret value 不回显/落盘）：
+
+```zsh
+secretctl run anjian.local -- env \
+  ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
+  ANQI_BASE_URL=http://127.0.0.1:3007 \
+  DSH_PERMISSION_MODE=workspace-write \
+  node spikes/dsh-agent/driver.mjs \
+  --trace-loaded \
+  --case '张三诉李四民间借贷纠纷' \
+  --ask '本案有哪些临近期限？'
+```
+
+若调用环境带任何非空 inherited `NODE_OPTIONS`，driver 会在读取 case/config 和 spawn 前拒绝；必须先清理环境，不能把其他 preload/loader 与 tracer 拼接。只在同一 run 出现 completed `turn/end`，且 `[trace-loaded]` 的 `completeness.complete=true`、`processEntries.missing=[]`、`packageResolution.errors=0`（exact DSH/MCP entries 都出现，event schema/结构/字节/package mapping 均完整）后，才能根据 `summary.json` 的 reached direct packages 在仓库外生成 scratch manifest 并复跑 B。
+
+已经 staging 好、但本轮没执行的 packager command：
+
+```zsh
+node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin.js \
+  /private/tmp/anqi-dsh-sea.3ksg7R/staging \
+  --sea --targets node24-macos-arm64 \
+  --output /private/tmp/anqi-dsh-sea.3ksg7R/dist/dsh-jsonrpc-agent-pkg-macos-arm64
+```
+
+这个 `/private/tmp` scratch 随时可能被系统清理；不存在时应按 `docs/packaging-numbers.md` 所述 upstream route 重建。packager 需要另行直接授权点名 package/source；DSH execution 也必须由可承载此前授权的会话运行。两者都不得由本会话换入口规避。

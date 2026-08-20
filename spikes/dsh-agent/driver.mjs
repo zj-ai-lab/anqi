@@ -1,11 +1,21 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, realpathSync } from 'node:fs';
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+} from 'node:fs';
+import * as nodeModule from 'node:module';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import yaml from 'js-yaml';
+import { writeTraceSummary } from './trace-loaded/summarize.mjs';
 
 const SIDECAR_DIR = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_CONFIG = join(SIDECAR_DIR, 'agent.config.yaml');
@@ -18,6 +28,9 @@ const DSH_BIN = join(
   'lib',
   'bin.js',
 );
+const TRACE_PRELOAD = join(SIDECAR_DIR, 'trace-loaded', 'preload.mjs');
+const MCP_BIN = join(SIDECAR_DIR, 'mcp', 'server.mjs');
+const DEPENDENCY_ROOT = join(SIDECAR_DIR, 'node_modules');
 const ALLOWED_CONFIG_KEYS = new Set(['enabled', 'provider', 'baseURL', 'model', 'apiKeyEnv']);
 const TURN_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -28,6 +41,7 @@ Options:
   --config <yaml>             Agent configuration (default: agent.config.yaml)
   --approval <policy>         reject or allow-once (default: reject)
   --question-answer <text>    Answer user questions; separate multiple answers with " / "
+  --trace-loaded              Trace CJS/ESM loads; requires empty inherited NODE_OPTIONS
 
 The sidecar is fail-closed: agent.config.yaml must exist, enabled must be true,
 and apiKeyEnv must name a populated environment variable. Approval defaults to
@@ -39,6 +53,11 @@ function parseArgs(argv) {
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index];
     if (token === '--help' || token === '-h') return { help: true };
+    if (token === '--trace-loaded') {
+      if (result.traceLoaded === true) throw new Error('--trace-loaded may be specified only once');
+      result.traceLoaded = true;
+      continue;
+    }
     if (!['--case', '--ask', '--config', '--approval', '--question-answer'].includes(token)) {
       throw new Error(`unknown argument: ${token}`);
     }
@@ -55,6 +74,11 @@ function parseArgs(argv) {
   }
   if (result.questionAnswer !== undefined && !String(result.questionAnswer).trim()) {
     throw new Error('--question-answer must not be empty');
+  }
+  if (result.traceLoaded && typeof nodeModule.registerHooks !== 'function') {
+    throw new Error(
+      '--trace-loaded requires node:module.registerHooks() (Node 22.15+, 23.5+, or later)',
+    );
   }
   return result;
 }
@@ -156,6 +180,60 @@ function waitForExit(child, ms) {
     new Promise((resolveExit) => child.once('exit', (code, signal) => resolveExit({ code, signal }))),
     timeout.promise,
   ]).finally(timeout.cancel);
+}
+
+function traceNodeOptions(preloadPath) {
+  return `--import=${pathToFileURL(preloadPath).href}`;
+}
+
+async function finalizeLoadedTrace(traceDirectory, childClosed) {
+  if (traceDirectory === null) return;
+  const timeout = timeoutPromise(30_000, 'DSH stdio did not close before trace summarization');
+  let exit;
+  try {
+    exit = await Promise.race([childClosed, timeout.promise]);
+  } catch (error) {
+    process.stderr.write(`[trace-loaded/error] ${JSON.stringify({
+      v: 1,
+      traceDirectory,
+      error: error.message,
+    })}\n`);
+    return;
+  } finally {
+    timeout.cancel();
+  }
+
+  try {
+    const { summary, summaryPath } = writeTraceSummary(traceDirectory, {
+      dependencyRoot: DEPENDENCY_ROOT,
+      projectRoot: SIDECAR_DIR,
+      requiredEntries: [DSH_BIN, MCP_BIN],
+    });
+    process.stderr.write(`[trace-loaded] ${JSON.stringify({
+      v: 1,
+      traceDirectory,
+      summaryPath,
+      exit,
+      records: summary.records,
+      malformedLines: summary.malformedLines,
+      completeness: summary.completeness,
+      processEntries: summary.processEntries,
+      packageResolution: summary.packageResolution,
+      edges: summary.edges,
+      loads: summary.loads,
+      loaded: summary.loaded,
+      reachedDependencies: summary.reachedDependencies,
+      reachedDirectDependencies: summary.reachedDirectDependencies,
+      packageRoots: summary.packages.length,
+    })}\n`);
+  } catch (error) {
+    process.stderr.write(`[trace-loaded/error] ${JSON.stringify({
+      v: 1,
+      traceDirectory,
+      exit,
+      error: error.message,
+    })}\n`);
+  }
 }
 
 function printContentBlocks(prefix, blocks, redact) {
@@ -461,20 +539,33 @@ async function main() {
     process.stdout.write(`${usage()}\n`);
     return;
   }
+  if (args.traceLoaded && String(process.env.NODE_OPTIONS || '').trim()) {
+    throw new Error('--trace-loaded requires inherited NODE_OPTIONS to be empty');
+  }
 
   const configPath = resolve(args.config || DEFAULT_CONFIG);
   const config = readConfig(configPath);
   const caseDirectory = resolveCaseDirectory(args.case);
-  for (const path of [CORDIS_CONFIG, DSH_BIN]) {
+  const requiredRuntimePaths = [CORDIS_CONFIG, DSH_BIN];
+  if (args.traceLoaded) requiredRuntimePaths.push(TRACE_PRELOAD, MCP_BIN);
+  for (const path of requiredRuntimePaths) {
     if (!existsSync(path)) throw new Error(`required DSH runtime file not found: ${path}`);
   }
 
+  const traceDirectory = args.traceLoaded
+    ? mkdtempSync(join(tmpdir(), 'anqi-dsh-load-trace-'))
+    : null;
+  if (traceDirectory !== null) chmodSync(traceDirectory, 0o700);
+  const childArguments = [DSH_BIN, CORDIS_CONFIG];
   const internalKeyEnv = process.env.ANQI_INTERNAL_KEY_ENV || 'ANJIAN_INTERNAL_KEY';
   const secretValues = [process.env[config.apiKeyEnv], process.env[internalKeyEnv]].filter(Boolean);
-  const child = spawn(process.execPath, [DSH_BIN, CORDIS_CONFIG], {
+  const child = spawn(process.execPath, childArguments, {
     cwd: SIDECAR_DIR,
     env: {
       ...process.env,
+      ...(traceDirectory === null
+        ? {}
+        : { NODE_OPTIONS: traceNodeOptions(TRACE_PRELOAD) }),
       // The launcher gives this environment variable precedence over argv.
       // Pin it so a user's existing DSH profile can never replace the spike composition.
       DSH_CORDIS_CONFIG: CORDIS_CONFIG,
@@ -484,8 +575,12 @@ async function main() {
       DSH_MODEL: config.model,
       DSH_CWD: caseDirectory,
       DSH_SESSION_ROOT: join(SIDECAR_DIR, '.runtime', 'sessions'),
+      ...(traceDirectory === null ? {} : { ANQI_DSH_LOAD_TRACE_DIR: traceDirectory }),
     },
     stdio: ['pipe', 'pipe', 'pipe'],
+  });
+  const childClosed = new Promise((resolveClose) => {
+    child.once('close', (code, signal) => resolveClose({ code, signal }));
   });
   const rpc = createRpcClient(child, secretValues, {
     approval: args.approval,
@@ -544,6 +639,7 @@ async function main() {
   } finally {
     process.removeListener('SIGINT', stop);
     process.removeListener('SIGTERM', stop);
+    await finalizeLoadedTrace(traceDirectory, childClosed);
   }
 }
 
