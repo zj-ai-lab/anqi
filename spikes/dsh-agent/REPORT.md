@@ -1,9 +1,10 @@
 # Spike A：anqi 内置 DSH sidecar 可行性报告
 
 日期：2026-08-19
+最后更新：2026-08-21（Commit 3 model-backed readiness redacted run）
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）、Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。actual B trace、trace-derived scratch、SEA build/runtime，以及 Commit 3 的模型-backed readiness run 均被执行权限边界阻塞，不能把 fixture、源码分类、full closure 或静态 gate 写成动态通过。仍不建议合入生产。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）、Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同次复跑的 `anqi_case_get` / `anqi_digest` 因 `ANJIAN_INTERNAL_KEY` 未注入而失败。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
 
 ## 1. 结论
 
@@ -11,12 +12,12 @@ DSH rc.7 可以作为 anqi 的进程外 sidecar：anqi 可用一个 Node supervi
 
 本次尚不能给出“可上线”的结论，原因有四项：
 
-1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F；Phase 2 的 real-preset interactive response loop 与 Commit 3 readiness gate 已完成源码和 no-secret/static 验证，但完整组合动态复验被当前 DSH execution permission boundary 拦截。
-2. Phase 1 证明首个 `request/header` 可能早于 MCP ready，且默认 skills root 会暴露用户技能；Commit 3 已实现 exact-agent preflight 与 anqi-owned skills root 隔离，仍待获准会话用首 header 和实际 MCP call 做动态证明。
+1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F；Phase 2 的 real-preset interactive response loop 与 Commit 3 readiness gate 已完成源码和 no-secret/static 验证，Commit 3 readiness 又在 2026-08-21 获得了真实模型-backed wire 证据。
+2. 首个 `request/header` 早于 MCP ready、默认 skills root 暴露用户技能的 Phase 1 问题，已由 Commit 3 的 exact-agent preflight、materialized anqi-owned skill root、首 header 门禁和同 turn MCP call 动态复验覆盖；本次复跑的 anqi domain data read 另受 `ANJIAN_INTERNAL_KEY` 注入缺失阻塞。
 3. 未裁剪安装闭包为 252,160 KiB / 179,023,145 regular-file bytes。actual B loaded trace 与 trace-derived scratch B 复跑均未获执行，fixture 不能替代它们。
 4. symlink-free full staging 与压缩测量已完成；exact `@yao-pkg/pkg@6.21.0 --sea` 启动在执行外部 package code 前被权限层拒绝，因此没有 SEA executable、签名或 runtime 数字。
 
-因此产品判断是：**sidecar 方向可继续；现有全闭包不随 DMG bundled、暂按首次启用下载，但在 actual B trace、validated scratch、Commit 3 的动态 skills/MCP readiness 与 SEA runtime 补齐前不进入生产主线。**
+因此产品判断是：**sidecar 方向可继续；现有全闭包不随 DMG bundled、暂按首次启用下载，但在 actual B trace、validated scratch、SEA runtime，以及 anqi 内部认证配置下的完整领域工具复跑补齐前不进入生产主线。**
 
 ## 2. 实现边界
 
@@ -893,13 +894,26 @@ driver 同时复核 preflight 返回的 exact skill/tool 条件；turn 完成时
 | server-side prompt preflight gate | ✅ 源码通过 | **[审查修复/源码核实]** `session/prompt` 不再落回 inherited lazy path；要求 exact live session 且 `preflightedSessions.get(sessionId) === agent`，否则拒绝。 |
 | preflight race/cancellation cleanup | ✅ 源码通过 | **[源码核实]** check-before-listen/check-after-listen、version accounting、payload-free invalidations、timeout/shutdown/disposal handling、finally cleanup；无 fixed sleep。 |
 | driver wire order and first-header gate | ✅ 源码通过 | **[源码核实]** 明确 create→preflight→prompt；只接受首个 `reason: initial` header，且必须含 MCP tool。 |
-| actual MCP tool call in same turn | ⛔ blocked | 需要模型-backed DSH run；本会话权限边界不允许启动 DSH，不能以 preflight schema 或 Phase 1 的后续 `reason: change` 代替。 |
-| only anqi skill discoverable / no user skill | ⛔ blocked | 代码和 config 已隔离，但需要实际 DSH `skills.snapshot` wire evidence；本轮不读取 `~/.agents/skills`，也不声明 live result。 |
-| first initial header with MCP tool | ⛔ blocked | 需要同一 session 的实际 `request/header`；driver assertion 已写入，但没有启动 DSH 取得动态证据。 |
+| actual MCP tool call in same turn | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** 同一 session/turn 出现 `tool/call.data.name === "mcp__anqi-local__case_folder_info"`，随后收到成功 `tool/result`，driver 正常完成 turn 并 shutdown。 |
+| only anqi skill discoverable / no user skill | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** `session/preflight` 返回 `complete:true` 且 names 精确为 `['anqi-case-brief']`；scoped tool list 也按预期返回。 |
+| first initial header with MCP tool | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** 同一 session 首个 `request/header` 的 `reason` 为 `initial`，`header.tools` 含精确 MCP 名称；不是后续 `reason: change` header。 |
+| anqi domain tools read deadlines | ⛔ blocked | **[2026-08-21 redacted wire]** `anqi_case_get` 与 `anqi_digest` 均返回 `Error: ANJIAN_INTERNAL_KEY is not set`；未自行计算或编造期限。 |
 
-上述 blocked 项是执行权限限制，不是把未运行的模型行为写成通过。Commit 3 的静态/源码证据成立；动态验收保持 partial，待获准会话原样复跑。
+上述三项 Commit 3 readiness 已由真实模型-backed run 通过；期限读取项仍因 anqi 内部认证变量未注入而 blocked。actual B trace、trace-derived scratch 与 SEA runtime 的 blocked 状态不变。
 
-### 15.4 待权限会话原样复跑
+### 15.4 2026-08-21 动态 readiness run
+
+只使用 Phase 1 seed demo 案件。以下是用户从 worktree 执行的 redacted wire 结果摘要，key 值未进入终端或报告：
+
+- `initialize` 成功，`cold_ms=513.9`；
+- `session/create` 返回与请求一致的唯一 session ID；
+- `session/preflight` 返回 `ready:true`，scoped tools 含 `mcp__anqi-local__case_folder_info`，skills 为完整且唯一的 `anqi-case-brief`；
+- 首个 `request/header` 为 `reason=initial`，header tools 含精确 MCP 工具；
+- 同一 turn 实际调用 `mcp__anqi-local__case_folder_info`，结果返回精确 seed 案件夹 cwd；
+- `anqi_case_get` 与 `anqi_digest` 各自失败并返回 `ANJIAN_INTERNAL_KEY is not set`；
+- turn 正常结束，随后 `shutdown` 成功；driver 未计算、写入或修改 deadline/event。
+
+### 15.5 待 anqi 内部 key 注入后原样复跑
 
 只使用 Phase 1 seed demo 案件，key 仍只由 `secretctl` 注入，任何 key 值不回显、不落盘、不写报告：
 
