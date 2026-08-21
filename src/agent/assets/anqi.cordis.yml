@@ -52,11 +52,18 @@
 # dsh-sandbox-policy 的 schema 默认值，这里显式写出防止未来改动误删；'never' 让
 # 任何升级到 workspace-write/danger-full-access 的 escalation 请求走确定性拒绝
 # （不产生 wire round-trip，不落 supervisor 的 pending-interaction 表）。
+#
+# workspaceRoot/fs-sandbox.cwd/mcp cwd 三处都必须 fail-closed，不能给
+# process.env.DSH_CWD 兜底成 process.cwd()：supervisor.js 的 buildSpawnEnv 每次
+# spawn 都会设置 DSH_CWD，正常路径下这个变量永远存在；一旦某条未来的 spawn 路径
+# 漏传它，`?? process.cwd()` 会让模型的沙箱根悄悄变成本文件所在的 anqi 源码
+# assets 目录而不是报错退出——那是比"进程直接崩掉"危险得多的静默降级。下面三处
+# 改成"缺失就抛错"，让配置装载在那种情况下直接失败。
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
     mode: read-only
-    workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
+    workspaceRoot: !!js (() => { if (!process.env.DSH_CWD) throw new Error('DSH_CWD is required'); return process.env.DSH_CWD; })()
 
 - id: approval
   name: '@deepseek-ai/dsh-user-approval'
@@ -95,7 +102,7 @@
 - id: fs-sandbox
   name: '@deepseek-ai/dsh-fs-sandbox'
   config:
-    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    cwd: !!js (() => { if (!process.env.DSH_CWD) throw new Error('DSH_CWD is required'); return process.env.DSH_CWD; })()
 
 # 模型可见的 filesystem/skill/question/todo 与 anqi 领域工具只在 preset/anqi 里
 # 挂载；宿主面不挂 bash/web/subagent/workflow/ralph 中任何一个。
@@ -132,7 +139,7 @@
     args:
       - !!js process.cwd() + '/mcp/server.mjs'
     env: {}
-    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    cwd: !!js (() => { if (!process.env.DSH_CWD) throw new Error('DSH_CWD is required'); return process.env.DSH_CWD; })()
     toolCallTimeoutMs: 60000
     failOnStartupError: true
 

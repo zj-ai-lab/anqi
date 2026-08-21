@@ -1,8 +1,21 @@
 // DSH sidecar 设置白名单读取的最小自检：enabled 门、provider 白名单、
-// baseURL 协议 + 无 userinfo 校验、apiKeyEnv 只是变量名（不读值）。
+// baseURL 协议 + 无 userinfo + 允许域策略校验、apiKeyEnv 只是变量名（不读值）
+// 且排除保留名。
+//
+// DB_PATH 隔离到临时文件：这个脚本会写 settings 表，不能落在仓库真实的
+// data/anjian.db——db.js 的 DB_PATH 在模块首次执行时读一次 process.env，必须
+// 在任何静态 import 触发它加载之前设置好，所以这里延后到动态 import（与
+// tools/test-auth-security.js 同一套写法）。
 import assert from 'node:assert/strict';
-import { db } from '../src/db.js';
-import { AGENT_SETTINGS_KEYS, loadAgentConfig } from '../src/agent/config.js';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-config-'));
+process.env.DB_PATH = path.join(scratch, 'agent-config.db');
+
+const { db } = await import('../src/db.js');
+const { AGENT_SETTINGS_KEYS, loadAgentConfig } = await import('../src/agent/config.js');
 
 function setSetting(key, value) {
   db.prepare(
@@ -67,6 +80,35 @@ setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://my-endpoint.example.com');
 result = loadAgentConfig();
 assert.equal(result.enabled, true);
 assert.equal(result.runtimeProvider, 'anqi-openai');
+
+// 10) apiKeyEnv 格式合法但是保留名/保留前缀——必须拒绝，防止把 anqi 自身的
+//     内部密钥（ANJIAN_INTERNAL_KEY 之类）当模型 provider 的 Authorization
+//     bearer 发给用户填的 baseURL。
+for (const reserved of ['ANJIAN_INTERNAL_KEY', 'ANJIAN_STATIC_TOKEN', 'ANQI_ANYTHING', 'DSH_ANYTHING', 'PATH', 'HOME']) {
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, reserved);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `apiKeyEnv=${reserved} 必须被拒绝`);
+  assert.ok(rejected.error, `apiKeyEnv=${reserved} 必须带 error`);
+}
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'MY_OPENAI_KEY');
+
+// 11) baseURL 指向内网/回环地址必须拒绝（SSRF 风格拦截，防止 baseURL 被指回
+//     anqi 自己的 internal API 或宿主机上的其它本地服务）。
+for (const host of ['http://127.0.0.1:3007', 'http://localhost:9999', 'http://10.0.0.5', 'http://192.168.1.1', 'http://internal.local']) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝`);
+}
+
+// 12) deepseek-official 的 baseURL 只允许官方域名，不能被覆盖成任意第三方
+//     host（否则等于把 deepseek 的 key 发给攻击者服务器）。
+setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'DEEPSEEK_API_KEY');
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://attacker.example.com');
+assert.equal(loadAgentConfig().enabled, false, 'deepseek-official 不得覆盖成非官方 baseURL');
+// 官方域名本身必须仍然放行。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://api.deepseek.com');
+assert.equal(loadAgentConfig().enabled, true, 'deepseek-official 官方域名必须放行');
 
 clearAgentSettings();
 console.log('agent config 自检全部通过');

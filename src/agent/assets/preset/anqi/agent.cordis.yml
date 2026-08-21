@@ -13,9 +13,13 @@
 # DSH 上游提供可拆分的只读 fs 工具包时，再把这里换成真正的最小工具集。
 #
 # `dsh-anqi` 这一行必须用 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`
-# （相对本文件所在目录解析，即 assets/plugins/dsh-anqi/index.js）——spike 踩坑
-# #17 记录过：早前误用绝对路径一度让 mount 卡死，相对路径才是稳定通过动态验收
-# 的写法。同样刻意不挂 `dsh-permission-presets`（会额外 inject shell 工具）。
+# （相对本文件所在目录解析，即 assets/plugins/dsh-anqi/index.js）。注意引用
+# 精度：REPORT.md §9 踩坑 #17 本身记录的是"当时把绝对路径加进去后 mount 卡死"
+# 的观察，但原文明确说这"尚不能归因为绝对路径本身"，相对路径当时也"仍待动态
+# 复验"——#17 这一条不能读成"已经证实相对路径才对"。真正的动态确认在 §13.2/
+# §13.4：2026-08-21 的真实模型-backed 跑用的就是这份相对路径配置，未复现该
+# 卡死现象。这里沿用相对路径写法，依据的是那次动态确认，不是 #17 本身的结论。
+# 同样刻意不挂 `dsh-permission-presets`（会额外 inject shell 工具）。
 
 - id: persona
   name: '@deepseek-ai/dsh-persona'

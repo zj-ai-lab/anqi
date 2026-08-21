@@ -36,6 +36,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
+  readFileSync,
   realpathSync,
   rmSync,
 } from 'node:fs';
@@ -57,6 +58,23 @@ const DSH_BIN = path.join(
 const TRUSTED_SKILLS_ROOT = path.join(ASSETS_DIR, 'skills');
 const REQUIRED_SKILL_NAME = 'anqi-case-brief';
 const REQUIRED_SKILL_FILE = path.join(TRUSTED_SKILLS_ROOT, REQUIRED_SKILL_NAME, 'SKILL.md');
+
+// 设计稿 §3.1 要求固定记录的字段之一：DSH 版本。initialize 的 wire 协议不
+// 回传版本号，rc.7 也没有单独的 version RPC，所以在模块加载时读一次自己钉死
+// 的运行时依赖版本（package.json 里的 "version" 字段，与 runtime/package.json
+// 锁定的 0.1.0-rc.7 一致），失败也不阻塞——status() 里用 'unknown' 兜底。
+function readDshVersion() {
+  try {
+    const pkgPath = path.join(
+      RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-sdk-jsonrpc-demo', 'package.json'
+    );
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
+    return typeof pkg.version === 'string' ? pkg.version : 'unknown';
+  } catch {
+    return 'unknown';
+  }
+}
+const DSH_VERSION = readDshVersion();
 const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
 // repo-root/data：与 src/db.js 的 DB_PATH 默认值同一目录，已经被 .gitignore 的
 // `data/` 规则覆盖，不需要额外忽略规则。
@@ -281,7 +299,10 @@ export class AgentSupervisor {
       status: worker.status,
       caseId: worker.caseId,
       caseName: worker.caseName,
+      cwd: worker.cwd,
       sessionId: worker.sessionId,
+      pid: worker.pid,
+      dshVersion: DSH_VERSION,
       startedAt: worker.startedAt,
       provider: worker.provider,
       model: worker.model,
@@ -441,6 +462,24 @@ export class AgentSupervisor {
       error.code = 'worker_not_running';
       throw error;
     }
+    // §3.1 固定启动顺序在 supervisor 侧也必须成立：LIVE_STATUSES 把 'starting'
+    // 算作"活着"（用于去重重复 open 请求），但 prompt 决不能抢在 initialize/
+    // session-create/preflight 完成前把帧写进 stdin——否则顺序保证全押在子进程
+    // 侧的 promptSession 断言上，供应链的这一端应该自己也 fail-closed。这里等
+    // readyPromise 落定后重新判定，不假设"starting 之后必然是 ready"。
+    if (worker.status === 'starting') {
+      if (!worker.readyPromise) {
+        const error = new Error('worker is not ready yet');
+        error.code = 'worker_not_running';
+        throw error;
+      }
+      await worker.readyPromise;
+      if (worker.status !== 'ready') {
+        const error = new Error('worker failed to become ready');
+        error.code = 'worker_not_running';
+        throw error;
+      }
+    }
     const run = () => this._runTurn(worker, text);
     const turnPromise = worker.turnLock.then(run, run);
     // 后续 turn 排队；任何一个 turn 失败不阻塞下一个 turn 排队执行。
@@ -465,28 +504,39 @@ export class AgentSupervisor {
     });
     turnDone.catch(() => {});
 
+    const abortListener = () => worker._turnResolvers?.rejectTurn(new Error('turn cancelled'));
+    controller.signal.addEventListener('abort', abortListener, { once: true });
+
     try {
       await this._request(worker, 'session/prompt', {
         sessionId: worker.sessionId,
         contentBlocks: [{ type: 'text', text }],
       }, 60_000);
-      const abortListener = () => worker._turnResolvers?.rejectTurn(new Error('turn cancelled'));
-      controller.signal.addEventListener('abort', abortListener, { once: true });
       const timeout = timeoutPromise(this.turnTimeoutMs, 'turn timed out');
       try {
         await Promise.race([turnDone, timeout.promise]);
       } finally {
         timeout.cancel();
-        controller.signal.removeEventListener('abort', abortListener);
       }
       worker.status = 'ready';
       worker.emit('turn/end', { turnId, outcome: 'completed' });
       return { turnId };
     } catch (error) {
+      // 超时、取消、turn 异常结束（非 completed 的 reason）都必须真正打断在飞
+      // 的模型调用——cancelTurn() 上方注释已经解释过：rc.7 没有 turn 级取消
+      // 协议，唯一手段是终止整个 worker 进程，防止一个已经判定失败的 turn
+      // 之后还悄悄跑到 anqi_inbox_propose。之前这里只把 status 改回 ready、
+      // 从不 abort/kill，导致超时后子进程继续跑，迟到的 running/idle/turn-end
+      // 会被下一个 turn 的 resolver 误当成自己的完成事件（wire 事件不带 turn
+      // id）。现在任何 turn 失败都统一走：本地 abort（立即生效）+ 终止整个
+      // worker（异步收尾）。下一次 start() 必然是全新 session。
+      if (!controller.signal.aborted) controller.abort(error);
       if (LIVE_STATUSES.has(worker.status)) worker.status = 'ready';
       worker.emit('turn/end', { turnId, outcome: 'failed', reason: worker.redact(error.message) });
+      this.stop(worker.caseId, `turn_failed:${worker.redact(error.message)}`.slice(0, 200)).catch(() => {});
       throw error;
     } finally {
+      controller.signal.removeEventListener('abort', abortListener);
       worker._turnResolvers = null;
       if (worker.currentAbort === controller) worker.currentAbort = null;
     }
@@ -501,18 +551,27 @@ export class AgentSupervisor {
   // 因此取消 = 本地 abort（立即生效）+ 终止 worker（异步收尾）。下一次
   // start() 必须是全新 session——与设计稿 §3.2「重启只允许从新的 turn 开始」
   // 一致，调用方不应该假设旧 session 还能继续用。
+  //
+  // 这里只 abort，不直接调用 stop()：abort 会经由 _runTurn 里挂的
+  // abortListener 拒绝 turnDone，进而落进 _runTurn 自己的 catch 分支——那里
+  // 统一处理"任何 turn 失败都终止 worker"，避免这里再重复调一次 stop()
+  // 造成两次并发关闭（虽然 _finalizeWorker 本身幂等，但没必要制造竞态）。
   cancelTurn(caseId, reason = 'cancelled by user') {
     const worker = this.workers.get(caseId);
     if (!worker?.currentAbort) return false;
     worker.currentAbort.abort(new Error(reason));
-    this.stop(caseId, reason).catch(() => {});
     return true;
   }
 
   // ---- approval / user-question：one-shot、fail-closed ----
+  // 两个方法都先查 worker 是否仍处于 LIVE_STATUSES：worker 一旦终态化
+  // （stopped/crashed/error/disabled）就必须拒绝，不能让一条迟到的审批被写进
+  // 一个已经死掉（或正在死掉窗口期）的子进程 stdin——见 §4「worker 已退出时
+  // 返回拒绝」。仅凭 pendingInteractions 里还残留记录来判断是不够的：
+  // _handleFatal 之前不落终态、不清表，留了一段可被 allow 的窗口。
   resolveApproval(caseId, interactionId, outcome) {
     const worker = this.workers.get(caseId);
-    if (!worker) return { ok: false, reason: 'unavailable' };
+    if (!worker || !LIVE_STATUSES.has(worker.status)) return { ok: false, reason: 'unavailable' };
     const record = worker.pendingInteractions.get(interactionId);
     if (!record || record.type !== 'approval' || record.sessionId !== worker.sessionId) {
       return { ok: false, reason: 'unavailable' };
@@ -526,7 +585,7 @@ export class AgentSupervisor {
 
   resolveQuestion(caseId, interactionId, answer) {
     const worker = this.workers.get(caseId);
-    if (!worker) return { ok: false, reason: 'unavailable' };
+    if (!worker || !LIVE_STATUSES.has(worker.status)) return { ok: false, reason: 'unavailable' };
     const record = worker.pendingInteractions.get(interactionId);
     if (!record || record.type !== 'question' || record.sessionId !== worker.sessionId) {
       return { ok: false, reason: 'unavailable' };
@@ -546,14 +605,21 @@ export class AgentSupervisor {
       try {
         await this._request(worker, 'shutdown', undefined, 30_000);
       } catch { /* 走到下面的强制终止兜底 */ }
-      const { promise, cancel } = timeoutPromise(10_000, 'shutdown wait timed out');
-      try {
-        await Promise.race([
-          new Promise((r) => worker.child.once('exit', r)),
-          promise,
-        ]);
-      } catch { /* 超时兜底 */ }
-      cancel();
+      // 子进程可能在上面这次 await 期间就已经退出（exit 事件在 _wireChild
+      // 注册的那个 listener 里被消费掉了）——'exit' 只会触发一次，这里如果
+      // 无条件挂 `child.once('exit', r)` 会注册得太晚，永远等不到那个已经
+      // 过去的事件，导致白白等满 10 秒才发现子进程早就没了。所以先查一次
+      // 当前 exitCode，已经退出就不再挂新的 once 监听器。
+      if (worker.child.exitCode === null) {
+        const { promise, cancel } = timeoutPromise(10_000, 'shutdown wait timed out');
+        try {
+          await Promise.race([
+            new Promise((r) => worker.child.once('exit', r)),
+            promise,
+          ]);
+        } catch { /* 超时兜底 */ }
+        cancel();
+      }
       if (worker.child.exitCode === null) worker.child.kill('SIGTERM');
     }
     this._finalizeWorker(worker, worker.status === 'crashed' ? 'crashed' : 'stopped', reason);
@@ -643,12 +709,22 @@ export class AgentSupervisor {
       return;
     }
     if (message.method !== 'session.event') {
-      worker.emit('notification', { method: message.method, data: worker.redact(JSON.stringify(params)) });
+      // method 本身也是子进程可控字段（wire 上任意字符串），之前只有 data
+      // 走 redact()，method 原样透出——子进程把 key 值塞进 method 就能绕过
+      // 「所有 wire 事件做 secret redaction」。
+      worker.emit('notification', {
+        method: worker.redact(String(message.method)),
+        data: worker.redact(JSON.stringify(params)),
+      });
       return;
     }
     if (params.sessionId !== worker.sessionId) return;
     const event = params.event || {};
-    worker.emit(event.type || 'session.event', this._redactEventData(worker, event.data));
+    // event.type 同理是子进程可控字段；emit() 把它当成对外事件的 type 字段，
+    // 必须先过 redact() 才能广播出去。注意下面 request/header / tool/call /
+    // turn/end 的判断仍然用原始 event.type（未 redact），因为那是内部状态机
+    // 比对，不是对外可见字段——两者互不影响。
+    worker.emit(worker.redact(String(event.type || 'session.event')), this._redactEventData(worker, event.data));
 
     if (event.type === 'request/header') {
       if (!worker.firstTurnChecked) {
@@ -672,16 +748,21 @@ export class AgentSupervisor {
     const state = worker._turnResolvers;
     if (!state || !state.sawRunning || !state.sawIdle || !state.sawEnd) return;
     if (!worker.firstTurnChecked) {
-      worker.firstTurnChecked = true;
       const header = worker._firstRequestHeader;
       const tools = header?.tools;
       const ready = header?.reason === 'initial'
         && Array.isArray(tools) && tools.some((tool) => tool?.name === REQUIRED_MCP_TOOL)
         && worker._sawRequiredMcpCall === true;
       if (!ready) {
+        // firstTurnChecked 只有在门禁真正通过之后才置 true——之前这里无条件
+        // 置 true，一次失败的首个 turn 会让门禁对第二个 turn 永久失效（一次
+        // 重试即可绕过）。现在失败分支不置位，且 _runTurn 的 catch 会因为
+        // rejectTurn 而终止整个 worker（见上方 turn 失败统一处理），下一次
+        // start() 必然是全新 worker/firstTurnChecked=false，双重保险。
         state.rejectTurn(new Error('first turn did not establish the required MCP tool readiness'));
         return;
       }
+      worker.firstTurnChecked = true;
     }
     state.resolveTurn();
   }
@@ -716,9 +797,26 @@ export class AgentSupervisor {
   // worker（案件+固定 session）的 map 里查得到；record.sessionId 必须等于
   // worker 当前 sessionId；record 一旦被消费（resolveApproval/Question 命中，
   // 或超时兜底）立即从 map 删除，第二次用同一个 interactionId 必然查不到。
+  // 两个 _enqueue* 都先校验 params.sessionId === worker.sessionId 再入表——
+  // 之前是先 set 进 pendingInteractions、先 emit interaction/pending，只在
+  // resolve 时才 fail-closed。结果是一条跨 session（不可能被任何合法调用方
+  // 应答）的反向请求会先出现在 UI 待办里、占用 one-shot 表直到 TTL 才清理。
+  // 现在会话不匹配时直接原地回 unavailable/rejected，不入表、不广播。
   _enqueueApproval(worker, message, params) {
+    if (params.sessionId !== worker.sessionId) {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'unavailable' },
+      });
+      return;
+    }
     const interactionId = randomUUID();
     const expiresAt = Date.now() + this.interactionTtlMs;
+    // toolName 存进 map 前就 redact：listPendingInteractions() 直接把这张表
+    // 的字段吐给下阶段的 HTTP/UI 层，之前只在 emit('interaction/pending', ...)
+    // 这一条路径上 redact，map 里存的仍是原值——子进程把 key 值塞进 toolName
+    // 就能靠这条查询接口把它读出来，绕开 SSE 那条已经过滤的路径。
+    const toolName = worker.redact(String(params.toolName || ''));
     const timer = setTimeout(() => {
       if (!worker.pendingInteractions.has(interactionId)) return;
       worker.pendingInteractions.delete(interactionId);
@@ -732,7 +830,7 @@ export class AgentSupervisor {
     worker.pendingInteractions.set(interactionId, {
       type: 'approval',
       sessionId: params.sessionId,
-      toolName: params.toolName,
+      toolName,
       createdAt: nowIso(),
       expiresAt: new Date(expiresAt).toISOString(),
       timer,
@@ -743,14 +841,29 @@ export class AgentSupervisor {
         });
       },
     });
-    worker.emit('interaction/pending', {
-      interactionId, type: 'approval', toolName: worker.redact(String(params.toolName || '')),
-    });
+    worker.emit('interaction/pending', { interactionId, type: 'approval', toolName });
   }
 
   _enqueueQuestion(worker, message, params) {
+    if (params.sessionId !== worker.sessionId) {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        error: { code: -32004, message: 'ask_user_question session mismatch' },
+      });
+      return;
+    }
     const interactionId = randomUUID();
     const questions = Array.isArray(params.questions) ? params.questions : [];
+    // id 仍然需要在回答时原样回传给子进程做匹配，不能整体丢弃；但
+    // worker.redact() 只是"把已知 secret 值的出现替换成 [REDACTED]"的字符串
+    // 变换，正常 id 不含 key 值时完全不受影响。只有子进程刻意把 key 值编码进
+    // id（攻击场景）才会被替换掉——那种情况下外部应答者拿到的也只能是
+    // [REDACTED]，回传时天然对不上原始 id，子进程侧会拒绝，是期望的
+    // fail-closed 结果，不是误伤正常流程。
+    const redactedQuestions = questions.map((q) => ({
+      id: worker.redact(String(q?.id ?? '')),
+      question: worker.redact(String(q?.question || '')),
+    }));
     const timer = setTimeout(() => {
       if (!worker.pendingInteractions.has(interactionId)) return;
       worker.pendingInteractions.delete(interactionId);
@@ -764,7 +877,7 @@ export class AgentSupervisor {
     worker.pendingInteractions.set(interactionId, {
       type: 'question',
       sessionId: params.sessionId,
-      questions: questions.map((q) => ({ id: q?.id, question: worker.redact(String(q?.question || '')) })),
+      questions: redactedQuestions,
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + this.interactionTtlMs).toISOString(),
       timer,
@@ -782,6 +895,19 @@ export class AgentSupervisor {
     for (const entry of worker.pendingRpc.values()) entry.reject(error);
     worker.pendingRpc.clear();
     worker._turnResolvers?.rejectTurn(error);
+    // 子进程 'error' 事件（或 stdout/stderr 读取失败）不保证紧跟着来一个
+    // 'exit' 事件——中间可能有一段窗口子进程还没真正退出。不能指望只靠
+    // _handleExit 来落终态/清 pendingInteractions：resolveApproval/
+    // resolveQuestion 会在这段窗口里把一条本该 fail-closed 的审批放行给一个
+    // 已经出故障的 worker。这里立刻让 worker 离开 LIVE_STATUSES 并清空未消费
+    // 的反向请求；真正的 exit 事件到达后 _finalizeWorker 仍会按 code/signal
+    // 落一次准确的最终状态（stopped/crashed），不冲突。
+    if (LIVE_STATUSES.has(worker.status)) worker.status = 'error';
+    for (const [interactionId, record] of worker.pendingInteractions) {
+      clearTimeout(record.timer);
+      worker.emit('interaction/expired', { interactionId, type: record.type, reason: 'worker_fatal' });
+    }
+    worker.pendingInteractions.clear();
   }
 
   _handleExit(worker, code, signal) {
