@@ -628,7 +628,7 @@ spike-local `plugins/dsh-anqi-jsonrpc/index.js` subclass `HarnessSdkJsonRpcServe
 | real mount：完整 preset（含 dsh-anqi 三工具） | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(a)]** preset 已固定为 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`；真实 `--case '张三诉李四民间借贷纠纷' --ask '本案有哪些临近期限？'` 跑通：同一 session `session/prompt` 正常返回 receipt，未再出现无 receipt 卡死。此前的绝对路径卡死现象未复现，本次改动后可稳定动态通过。 |
 | reject：Desktop write 不落盘 | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(b)]** `--approval reject` 下模型两次尝试写入（先无 escalation 被 sandbox 拒绝，再带 `sandbox_permissions: danger-full-access` 重试），`approval/response.outcome` 为 `rejected`，对应 `tool/result` 原文含 `Error: the user rejected escalating this operation to "danger-full-access"`；跑前跑后 `/Users/2_dogg/Desktop/anqi-spike-approval-test.txt` 均确认不存在。 |
 | allow-once：只写 exact `hello` 并删除 | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(c)]** `--approval allow-once` 下同一 escalation 请求的 `approval/response.outcome` 为 `allowed-once`；`cmp` 核验目标文件内容逐字节等于 `hello`，取证后立即 `rm` 并以 `test !` 确认已删除。 |
-| ask-user：`关联张三案 / 2026-08-26` | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(d)]** `ask_user_question` 的 `tool/result` 精确回显注入答案 `{"target_case":"关联张三案","due_date":"2026-08-26"}`；assistant 复述并把两个答案写入 `anqi_inbox_propose` 的 `note` 参数；`deadlines` 表跑前跑后 hash 均为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，未被写入或修改。 |
+| ask-user：`关联张三案 / 2026-08-26` | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(d)]** `ask_user_question` 的 `tool/result` 精确回显注入答案 `{"target_case":"关联张三案","due_date":"2026-08-26"}`；assistant 复述并把两个答案写入 `anqi_inbox_propose` 的 `note` 参数；`deadlines` 表内容与已知 seed 基线哈希 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21` 比对一致，未被写入或修改（该次跑无独立留痕的跑前/跑后成对快照，证据等级说明见 §13.4 run(d) 末尾）。 |
 | 首个 initial header 来自完整 mounted preset | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(a)]** run(a) 首个 `[request/header]` 的 `reason` 为 `initial`，`system` 含持久化人设文本（"中国执业律师"），`tools` 数组同时含 `anqi_case_get`/`anqi_digest`/`anqi_inbox_propose`（dsh-anqi 三工具）与 `mcp__anqi-local__case_folder_info`（MCP），且同一 turn 内该 MCP 工具被实际调用（`tool/call`→`tool/result`）。 |
 
 以上四项 ⛔ 与一项 ⚠️ 均已由 2026-08-21 的真实模型-backed 动态跑替换为 ✅；跑法与脱敏证据见 §13.4。跑前的绝对路径 preset smoke 卡死问题未在本次相对路径配置下复现，§9 踩坑 #17 的结论（相对路径不受此前观察到的现象影响）得到动态确认。
@@ -678,9 +678,9 @@ secretctl run anjian.local -- env \
 
 ### 13.4 2026-08-21 动态复验：four ⛔ + 一项 ⚠️
 
-按 §13.3 命令原样跑（命令 3 的 prompt 已按上条说明调整），只用 seed 三案；隔离 anqi（`ANJIAN_UNSAFE_NO_AUTH=1` 回环 + 测试 internal key + `data/spike.db`）在 3007 起停；`secretctl run anjian.local` 只向 driver 子进程注入 `DEEPSEEK_API_KEY`/`ANJIAN_INTERNAL_KEY`，key 值全程未回显、未落盘；跑前对四个日志与 key 值均做过 grep 复查，零命中。每次跑完后 driver 子进程自然退出（`[shutdown]` 后 exit），下一跑前不遗留常驻进程；3007 在全部四跑结束后 `kill` 并以 `lsof -iTCP:3007 -sTCP:LISTEN` 确认端口已释放。
+按 §13.3 命令原样跑（命令 3 的 prompt 已按上条说明调整），只用 seed 三案；隔离 anqi（`ANJIAN_UNSAFE_NO_AUTH=1` 回环 + 测试 internal key + `data/spike.db`）在 3007 起停；`secretctl run anjian.local` 只向 driver 子进程注入 `DEEPSEEK_API_KEY`/`ANJIAN_INTERNAL_KEY`，key 值全程未回显、未落盘；跑前对四个日志与 key 值均做过 grep 复查，零命中。每次跑完后 driver 子进程自然退出：run(a)/(d) 以 `[shutdown]` 后 exit 0 结束；run(b)/(c) 因下文 run(b) 末尾所述的 MCP 门禁提前以 exit 1 结束，日志末行是 `driver: turn did not call mcp__anqi-local__case_folder_info` 而非 `[shutdown]`——四跑均未遗留常驻进程，只是退出路径不同；3007 在全部四跑结束后 `kill` 并以 `lsof -iTCP:3007 -sTCP:LISTEN` 确认端口已释放（本行连同下方 run(b)/(c) 的文件核验、`cmp`/`rm`、四跑 exit code 均属叙述性描述，无独立 shell 侧留痕，证据等级说明见 run(d) 之后）。
 
-**run(a) full-preset + B 问题**（`--case '张三诉李四民间借贷纠纷' --ask '本案有哪些临近期限？'`，无 `--approval`/`--question-answer`）：
+**run(a) full-preset + B 问题**（`verify13-a-fullpreset-B.log`；`--case '张三诉李四民间借贷纠纷' --ask '本案有哪些临近期限？'`，无 `--approval`/`--question-answer`）：
 
 - `[session/preflight]` 的 `tools.visibleNames` 一次性含 `mcp__anqi-local__case_folder_info`、`anqi_case_get`、`anqi_digest`、`anqi_inbox_propose`、`ask_user_question`、`read/write/edit/glob/grep/skill/todo_write/read_image`；`skills.names` 精确为 `['anqi-case-brief']`；
 - 首个 `[request/header]` 的 `"reason":"initial"`；`system` 含持久化人设原文“你是一名中国执业律师的办案 AI 助理”；`tools` 数组同时含 dsh-anqi 三工具与 `mcp__anqi-local__case_folder_info`（无 bash/subagent/workflow/web）；
@@ -688,7 +688,7 @@ secretctl run anjian.local -- env \
 - 最终 assistant 回答逐项引用上诉期（判决，due 2026-08-21，民诉法 §171，critical，今日到期）、一审代理费尾款逾期、周律师分成未逾期等 anqi 返回字段，并提示一条既有 pending 建议，未自行计算或编造期限；
 - `[turn/end].reason.kind` 为 `completed`，随后 `[shutdown]` 成功，driver exit 0。
 
-**run(b) reject**（`--approval reject`，Desktop write 场景 E 原话）：
+**run(b) reject**（`verify13-b-reject.log`；`--approval reject`，Desktop write 场景 E 原话）：
 
 - 模型先无 escalation 尝试 `write`，`tool/result` 为 `Error: [sandbox: file access denied under workspace-write mode]`（`FS_SANDBOX_DENIED`）；
 - 按工具要求带 `sandbox_permissions: danger-full-access` + `justification` 重试，触发 `[approval/request]`；driver 按 `--approval reject` 应答 `[approval/response] {"outcome":"rejected"}`；
@@ -696,7 +696,7 @@ secretctl run anjian.local -- env \
 - `test ! -e /Users/2_dogg/Desktop/anqi-spike-approval-test.txt` 在跑前、跑后均为真（目标文件始终不存在）；
 - `[turn/end].reason.kind` 为 `completed`。driver 自身以 exit 1 结束，原因是 driver 内置的“同一 turn 必须调用 `mcp__anqi-local__case_folder_info`”门禁未满足——该门禁只服务 Task 3 的 skill/MCP readiness 场景，与本场景的审批断言无关，不影响上述审批证据的有效性。
 
-**run(c) allow-once**（`--approval allow-once`，同一 Desktop write 场景原话）：
+**run(c) allow-once**（`verify13-c-allowonce.log`；`--approval allow-once`，同一 Desktop write 场景原话）：
 
 - 同一 escalation 请求这次应答 `[approval/response] {"outcome":"allowed-once"}`；
 - `cmp -s /Users/2_dogg/Desktop/anqi-spike-approval-test.txt <(printf %s hello)` 通过，确认文件内容逐字节等于 `hello`；核验后立即 `rm` 并以 `test !` 确认已删除；
@@ -704,12 +704,14 @@ secretctl run anjian.local -- env \
 
 **run(d) ask-user**（`--question-answer '关联张三案 / 2026-08-26'`，`--ask '帮我登记一个待办：下周三前整理证据清单'`）：
 
-- 首次两次复跑（保留在同批日志中）中模型分别表现为：一次完全未调用 `ask_user_question`（直接依据既有 pending 建议给出答复）、一次把两问合并成一个问题（此时 driver 按 `questions.length===1` 分支把整段 `--question-answer` 原样作为单一 `custom` 答案回传）——这两种真实存在的模型路径已记入下方设计观察，不作为本项通过证据；
-- 第三次复跑（run(d) 采信证据）中模型按预期提问两问：`target_case`（归属案件）、`due_date`（截止日期）；`[user-question/response]` 精确为 `{"answers":[{"id":"target_case","selected":[],"custom":"关联张三案"},{"id":"due_date","selected":[],"custom":"2026-08-26"}]}`，即 `tool/result` 精确回显本次注入的两个答案；
-- assistant 复述“归属本案（张三诉李四民间借贷纠纷）”“截止参考日 2026-08-26”，并调用 `anqi_inbox_propose`，其 `note` 参数原文包含“经向用户确认：归属本案（张三诉李四民间借贷纠纷），截止参考日 2026-08-26（下周三）”——即 inbox 提案 note 反映了注入答案；
-- 该次提交因命中先前一条同状态历史（本机为准备干净复验环境，跑前经 `/api/inbox/1/decline` 手动关闭了 §12 遗留的同名 pending 建议）被 anqi 服务端去重逻辑判定为 `outcome:"suppressed", reason:"declined_same_state"`，未新建 inbox 行；assistant 如实告知用户“未生成新建议”，未把此结果包装为成功登记；
-- `deadlines` 表在 run(d) 跑前、跑后的 `sha256(id|case_id|name|due_on|basis|calc_note|severity|status|done_at 逐行拼接)` 均为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，完全一致，确认全程未写入或修改任何 deadline；
-- `[turn/end].reason.kind` 为 `completed`，driver exit 0（本次 turn 内确实调用了 `mcp__anqi-local__case_folder_info`）。
+本场景实际保留了 **4 份**日志，不是 3 份：`verify13-d-askuser.log`（第 1 次，用 §13.3 原始受约束 prompt——约束模型「先且只调用一次 `ask_user_question`，问 `关联案件`/`计划日期` 两问，收到回答后逐字复述、不调用其他工具、不提交待办」）、`verify13-d-askuser-v2.log`／`verify13-d-askuser-v3.log`／`verify13-d-askuser-v4.log`（第 2–4 次，改用 §13.3 尾注所述的无约束 prompt，模型自主决定工具调用顺序与是否调用 `ask_user_question`）：
+
+- 第 1 次（`verify13-d-askuser.log`，受约束 prompt）：模型只调用一次 `ask_user_question`，问 `related_case`（关联案件）与 `planned_date`（计划日期）两问；`[user-question/response]` 精确回显注入答案 `{"related_case":"关联张三案","planned_date":"2026-08-26"}`；assistant 逐字复述两答案后未调用任何其他工具、未调用 `anqi_inbox_propose`；`[turn/end].reason.kind=completed`，driver 因 MCP 门禁 exit 1（无 `[shutdown]`）。**这一次正是 §13.3 「受控约束语句反而会让模型跳过真实写路径（`anqi_inbox_propose`）」一句的唯一证据来源**，此前版本的 §13.4 未提及这份日志；
+- 第 2 次（`verify13-d-askuser-v2.log`，无约束 prompt）：模型完全未调用 `ask_user_question`——依据 `anqi_case_get`/`anqi_digest`/`glob` 读到的既有 pending 建议，直接调用 `anqi_inbox_propose` 给出答复；
+- 第 3 次（`verify13-d-askuser-v3.log`，无约束 prompt）：模型把两问合并成一个问题（`register_mode`／登记方式），`[user-question/response]` 的 `custom` 字段整段回传 `"关联张三案 / 2026-08-26"`（driver 按 `questions.length===1` 分支把整段 `--question-answer` 原样作为单一答案回传）；
+- 第 4 次（`verify13-d-askuser-v4.log`，无约束 prompt，**run(d) 采信证据**）：模型按预期提问两问：`target_case`（归属案件）、`due_date`（截止日期）；`[user-question/response]` 精确为 `{"answers":[{"id":"target_case","selected":[],"custom":"关联张三案"},{"id":"due_date","selected":[],"custom":"2026-08-26"}]}`，即 `tool/result` 精确回显本次注入的两个答案；assistant 复述"归属本案（张三诉李四民间借贷纠纷）""截止参考日 2026-08-26"，并调用 `anqi_inbox_propose`，其 `note` 参数原文包含"经向用户确认：归属本案（张三诉李四民间借贷纠纷），截止参考日 2026-08-26（下周三）"——即 inbox 提案 note 反映了注入答案；该次提交因命中先前一条同状态历史（本机为准备干净复验环境，跑前经 `/api/inbox/1/decline` 手动关闭了 §12 遗留的同名 pending 建议）被 anqi 服务端去重逻辑判定为 `outcome:"suppressed", reason:"declined_same_state"`，未新建 inbox 行；assistant 如实告知用户"未生成新建议"，未把此结果包装为成功登记；`deadlines` 表内容的 `sha256(id|case_id|name|due_on|basis|calc_note|severity|status|done_at 逐行拼接)` 为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，与已知 seed 基线一致，确认未被写入或修改；但 verify13 批次（11:11–11:23 时间窗）当时没有把跑前/跑后 hash 计算结果各自写入日志留痕（wf-logs 中最早的 hash artifact 是 12:40 之后修复轮才产生的），因此本行的确切证据等级同 §14.4/§15.4bis 的口径——是「与已知基线比对未变化」，而不是「该次运行独立记录的成对快照」；`[turn/end].reason.kind` 为 `completed`，driver exit 0（本次 turn 内确实调用了 `mcp__anqi-local__case_folder_info`）。
+
+**证据等级说明（本轮修复补记）**：上文 run(b)/(c) 的 `test ! -e ~/Desktop/anqi-spike-approval-test.txt`（跑前/跑后）、`cmp -s ... <(printf %s hello)`、`rm`、四次 driver exit code（0/0/1/1）、结束后 `kill` + `lsof -iTCP:3007 -sTCP:LISTEN` 端口释放核验、以及本节开头「跑前对四个日志与 key 值 grep 复查零命中」，均是叙述性描述——`verify13-*.log` 都是纯 driver stdout，不回显外层 shell 命令，这些 shell 侧断言在 wf-logs 中没有独立留痕的 artifact，与 §14.5 因「首次跑日志无显式 EXIT 标记」而被要求补 `echo EXIT=$?` 是同一类缺口。可交叉验证的旁证：本轮复核时 `/Users/2_dogg/Desktop/anqi-spike-approval-test.txt` 现仍不存在；`verify13-c-allowonce.log` 的 `tool/result` 内嵌读回内容为 `1: hello`（total 1 lines），支持"内容为 hello 且事后已删"这一结论；四跑各自有无 `[shutdown]` 行可间接支撑对应 exit code 是 0 还是 1。以上应视为 **[B] 未独立留痕、但有旁证支撑**，而非实测断言。
 
 **本次复验发现的新设计点（追加进 §12.5 同类清单）**：inbox 去重指纹同时覆盖 `declined` 状态——一条已被拒绝的建议若内容/状态指纹不变，之后同 (source, kind, case, intent_key) 的新提案会被 `suppressed/declined_same_state` 直接拦下，而不会作为“新的一次征询结果”重新进入待审。主线若要支持“律师拒绝过一次，后续 agent 仍可基于新的用户确认重新发起”，需要让指纹纳入本次会话新增的事实（如本例的确认截止日）或提供显式的“重新提交”入口，而不是让相同 intent_key 永久沉默。
 
@@ -880,9 +882,9 @@ full staging 的 canonical 压缩值为：
 
 **2026-08-21 真实执行结果**：当前会话的权限边界已放行执行 `@yao-pkg/pkg@6.21.0`。用 §14.7 已 staging 好的原样命令跑 packager，**exit 0**（此前的 "process start 之前 permission denied" 状态已不复现；这是这一次会话真实测到的结果，不是声称权限规则已变）。首次执行的 `sea-build-1787285103.log` 末行停在 `Injecting the blob into ...`，没有显式 `EXIT` 标记；本轮修复复核用同一命令换 `--output` 文件名重跑一次并显式 `echo EXIT=$?`，捕获 `EXIT=0`。该次复核用的 `-fixup` 输出文件事后已从临时目录清理，无法逐字节复核其体积。同日随后的 verify 系列重跑分三次：`wf-logs/sea-build-verify-1787291298.log`（`--output` 名 `dsh-jsonrpc-agent-pkg-macos-arm64-verify-1787291298`，`basename … | wc -c` 实测 **51 字符**——此前本节与 `docs/packaging-numbers.md` 均误记为「52 字符」，本轮已按实测值改正）成功；紧接着一次同类重跑因 pkg 自身 `TypeError: fetch failed` 以 `EXIT=2` 失败（`wf-logs/sea-build-verify-1787291298b.log`，此前遗漏未计入本节，本轮补记，见下方次数统计）；随后改用与首次等长（33 字符）的另一个 `--output` 文件名重跑成功（`wf-logs/sea-build-verify-samelen.log`）。但那一轮只留了 `EXIT=0` 的 stdout，没有把「命令 + `stat` + `cmp`」写进同一份日志，且用于对比的两个重建产物事后都已清理，因此「重建产物 176,279,520 B 与首次逐字节一致」「长名变 176,279,536 B」「cmp 仅差 codesign 字节」这三条此前只是没有留痕支撑的口头断言。
 
-本轮修复：首次构建的产物 `dsh-jsonrpc-agent-pkg-macos-arm64`（33 字符）仍原样留在临时目录（未被清理），本轮直接对其 `stat`；再用 §14.7 同一条命令、换一个与首次等长（33 字符）的全新 `--output` 名 `dsh-jsonrpc-agent-sizecheck-arm64` 重新构建一次，完整命令、`echo EXIT=$?`、两个产物各自的 `stat -f '%N %z'`、与 `cmp -l` 输出全部写入新建并保留的 `wf-logs/sea-size-proof.log`：`EXIT=0`；两文件均为 **176,279,520 B**，逐字节大小相同；`cmp -l` 报告两文件间有 **45 字节**不同，分布在两处偏移量簇（约第 92,274,763 B 起，与约第 176,116,083 B 起、邻近文件尾部）；后一簇位置与 `codesign -d -vvvv` 报告的 embedded `CodeDirectory`（两产物该行完全一致：`size=343875 flags=0x2(adhoc) hashes=10739+2`）所在区域相符，与「体积相同、codesign 相关字节存在差异」的说法一致；构建日志中没有出现 `nodejs.org` 下载行（`Extracting node binary from node-v24.19.0-darwin-arm64.tar.gz` 命中的是已缓存的 tar.gz），即本轮这次构建没有触发此前披露过的构建期联网例外。至于此前「换成更长文件名（52→51 字符）体积变为 176,279,536 B」这一具体数字——该次的重建产物已被清理，本轮未重新构建 51 字符长度的输出名，因此不再重复这个无留痕支撑的具体字节数；「体积会随 `--output` 路径字符串长度变化」这一定性结论本身不受影响（33 字符对照名与首次逐字节相同）。
+本轮修复：首次构建的产物 `dsh-jsonrpc-agent-pkg-macos-arm64`（33 字符）仍原样留在临时目录（未被清理），本轮直接对其 `stat`；再用 §14.7 同一条命令、换一个与首次等长（33 字符）的全新 `--output` 名 `dsh-jsonrpc-agent-sizecheck-arm64` 重新构建，完整命令、`echo EXIT=$?`、两个产物各自的 `stat -f '%N %z'`、与 `cmp -l` 输出全部写入新建并保留的 `wf-logs/sea-size-proof.log`。这次构建实际跑了两次 attempt（均计入下方次数统计）：attempt 1 以 `TypeError: fetch failed`、`EXIT=2` 失败；attempt 2 `EXIT=0` 成功。post-build 核验：两文件均为 **176,279,520 B**，逐字节大小相同；`cmp -l` 报告两文件间共 **45 字节**不同，但日志只截取了前 5 个差异 offset（92274763–92274768，全部落在同一段狭窄区间内），并未对全部 45 项逐条记录第二个簇或任何其他区域。**该日志中没有运行过 `codesign`**——此前版本称「后一簇位置与 `codesign -d -vvvv` 报告的 embedded `CodeDirectory`……所在区域相符」在 `wf-logs` 中查无对应输出，本轮已撤回这一条，改为如实记录：仅确认体积相同、45 字节级差异存在且已知的前 5 处差异集中在文件约 52% 偏移处附近，未验证具体成因（ad-hoc 签名重算是合理但本轮未核实的猜测，不作为断言）。构建日志的 attempt 2（成功的一次）没有出现 `nodejs.org` 下载行（命中已缓存 tar.gz），但同一日志的 attempt 1 恰以 `fetch failed` 失败，说明本轮构建确实发起过网络 I/O 且失败过一次——不能说「本轮构建没有触发联网例外」，只能说成功产出的那次没有走 `nodejs.org` 下载路径，构建期网络依赖本身仍然存在。至于此前「换成更长文件名（52→51 字符）体积变为 176,279,536 B」这一具体数字——该次的重建产物已被清理，本轮未重新构建 51 字符长度的输出名，因此不再重复这个无留痕支撑的具体字节数；「体积会随 `--output` 路径字符串长度变化」这一定性结论本身不受影响（33 字符对照名与首次逐字节相同）。
 
-本轮（含此前 f2c657a 修复轮的 3 次 verify 尝试与本轮新增的 1 次）共 **4 次构建尝试，其中 1 次因网络 `fetch failed` 失败**：`verify-1787291298` 成功、`verify-1787291298b` 因网络失败、`verify-samelen` 成功、本轮新增 `sea-size-proof` 成功。`cmp` 显示两次同长度构建在 codesign ad-hoc 签名相关字节处仍有差异（每次签名哈希不同属预期），体积本身完全一致：
+本 spike 全程留痕的 SEA 构建尝试，按 wf-logs 逐份如实合计为 **7 次，其中 2 次因网络 `TypeError: fetch failed` 失败**（此前「4 次构建尝试、1 次失败」的统计只截取了「f2c657a 修复轮 3 次 verify 尝试 + 本轮新增 1 次」这一个子集，且把本轮 `sea-size-proof.log` 内部的两次 attempt 误记成一次）：`sea-build-1787285103.log`（首次，成功，真实从 `nodejs.org` 下载 node 运行时）、`sea-build-fixup-1787287413.log`（f2c657a 修复轮，成功）、`sea-build-verify-1787291298.log`（成功）、`sea-build-verify-1787291298b.log`（因网络失败）、`sea-build-verify-samelen.log`（成功）、本轮 `sea-size-proof.log` 内的 attempt 1（因网络失败）与 attempt 2（成功）。体积本身在两次同长度对照构建（`sizecheck` vs 首次）间完全一致，仅签名相关字节存在差异（见上，未经 `codesign` 验证具体归因）：
 
 ```zsh
 node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin.js \
