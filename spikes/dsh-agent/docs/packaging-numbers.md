@@ -9,7 +9,7 @@
 - **[S] 源码核实**：来自 `dsh-v0.1.0-rc.7` 或已安装 exact-version 文件；
 - **[B] blocked**：本轮未执行，不能填推算值。
 
-当前建议是：**不要把 179,023,624 B 的现有全闭包直接绑进 anqi DMG；若按当前闭包交付，采用首次启用下载。** symlink-free 全闭包的 `tar.gz` 已相当于 v2.6.0 arm64 DMG 的 29.31%，`zip -9` 相当于 40.69%。这只是压缩包相加近似，不是 Electron DMG 重打包后的实测增量。真正的 bundle/download 决策仍应在一次获准的 B trace、trace-derived scratch B 复跑和 SEA runtime 复跑后重审。
+**2026-08-21 更新**：actual B trace、trace-derived scratch 的物理复制与 B 复跑、SEA build 均已由本机真实执行补齐（见下文对应小节）。当前建议改为：**不要把 179,023,624 B 的现有全闭包、也不要把 176,279,520 B 的 SEA 单文件直接绑进 anqi DMG；若要 bundle，应 bundle trace-derived 的 reached-only scratch 闭包**（约 71,444 KiB，`tar.gz` 19,235,570 B，相当于 DMG 的 13.70%，远小于全闭包 staging 的 29.31%）。SEA 单文件本身已比整个 v2.6.0 DMG 还大（125.56%），且实测在本 spike 目录布局下 `session/preflight` 因真实的 `.mjs` include 不兼容而失败（见「rc.7 SEA 路线与本机结果」），尚不是可用的交付路径；`initialize`/`session/create` 已验证 SEA 产物本身可以启动，但完整 B 场景仍未跑通。
 
 ## 环境与全闭包基线
 
@@ -60,16 +60,21 @@ Commit 2 开始前另做过一份“整个 sidecar、排除 `.runtime`/local con
 | actual load instances | [F] | 3；同一 CJS 的 `module.load` + `cjs.load` 双证据只计一次实际 instance |
 | unique source bytes | [F] | 726 B；stat fallback 0、unknown 0 |
 
-固定 B prompt 位于 `fixtures/scenario-b-prompt.txt`，内容逐字为“本案有哪些临近期限？”。本会话没有借 tracing 重启 DSH：此前 full-preset DSH execution 被权限层拒绝，因此实际 B trace 保持 [B]，下列字段不能填数：
+固定 B prompt 位于 `fixtures/scenario-b-prompt.txt`，内容逐字为“本案有哪些临近期限？”。
 
-| B trace 指标 | 状态 |
+**2026-08-21 actual B trace（[M] 本机测量，真实执行）**：按下方命令原样跑，driver exit 0、`turn/end.reason.kind=completed`，`[trace-loaded]` 的 `completeness.complete=true`、`processEntries.missing=[]`、`packageResolution.errors=0`：
+
+| B trace 指标 | 结果 |
 |---|---:|
-| unique loaded files / bytes | [B] 未运行 |
-| reached dependency roots / installed bytes | [B] 未运行 |
-| package parent/import evidence | [B] 未运行 |
-| full closure 对实际 reached closure 的缩减率 | [B] 未运行 |
+| unique loaded files | 480（`loadInstances=696`，`measuredBytes=4,148,858` 含 `statFallbackBytes=367,160`，`unknownByteFiles=0`） |
+| reached dependency roots / installed bytes | 84 / 63,475,270 B（其中 14 个 direct dependency roots，6,770,685 B） |
+| package parent/import evidence | `summary.json` 的 `packages[].reachEvidence` 逐包保留最多 8 条 `specifier → parentURL → resolvedURL`；两个被追踪进程（`mcp/server.mjs`、`dsh-sdk-jsonrpc-demo/lib/bin.js`）均在 `processEntries.observed` 中精确出现 |
+| full closure 对实际 reached closure 的缩减率 | 包数 84/363 = 23.14%；字节数 63,475,270/179,023,145 = 35.46% |
+| `edges.cjsResolveErrors` | 12，逐条核实为 node-pty/sharp 的多路径 prebuilt 探测失败（最终仍成功 resolve 到真实 prebuilt）与 §「四类 native」已知的 `node-addon-require-builtin` 可选探测，均不影响 `complete=true` |
 
-获准会话应按既有 seed-only / secret injection 边界运行：
+四类 native 的 reach 结论（逐包核对 `summary.json` 的 `packages` 数组）：`node-pty`（26,877,238 B）与 `sharp` 系（`sharp` 958,466 B + `@img/sharp-darwin-arm64` 292,231 B + `@img/sharp-libvips-darwin-arm64` 17,777,811 B）均 **reached**（`dsh-subprocess-local`/`dsh-attachment-local` 是 always-mounted service，非按需触发）；`koffi`/`@koromix/koffi-darwin-arm64` **未 reached**（`packages` 数组中不存在），验证「四类 native」表原有的源码推断为真实测量结果。
+
+原样命令（已按此真实执行，seed-only 数据、secret value 未回显/落盘）：
 
 ```zsh
 secretctl run anjian.local -- env \
@@ -86,25 +91,28 @@ secretctl run anjian.local -- env \
 
 ## trace-derived scratch
 
-本轮没有创建所谓“裁剪 runtime”。任务边界要求 scratch manifest 只能从真实 B trace 的 reached direct packages 加 required transitive closure生成；实际 trace 被阻塞后，若改用静态 `npm ls` 猜一个清单再称作 measured closure，会把“可安装”误写成“B 已覆盖”。因此以下数字保持空白：
+**2026-08-21 已完成（[M] 本机测量，真实执行）**：在 `/private/tmp/claude-501/-Users-2-dogg-code-anqi/77e8ff17-aa4b-4fc2-b8f4-1d126c10cdba/scratchpad/wf-logs/scratch-closure` 按上表 actual B trace 的 84 个 reached dependency（`summary.json` 的 `packages[].dependency===true`）**物理复制**（而非重新 `npm install` 解析版本——避免 semver 重新解析选到与 trace 不同的嵌套版本，例如 `@deepseek-ai/dsh-skill-filesystem` 自带的嵌套 `chokidar@5.0.0`/`readdirp@5.1.1` 与顶层 `chokidar@4.0.3`/`readdirp@4.1.2` 并存），再复制 spike-owned `agent.config.yaml`/`anqi.cordis.yml`/`driver.mjs`/`package.json`/`mcp`/`plugins`/`preset`/`skills`/`trace-loaded`/`fixtures`。
 
-| 对象 | 安装体积 | `tar.gz` | `zip -9` | B cold initialize | B end-to-end |
+构造中发现并修复一个真实的复制顺序 bug：按 rootURL 逐包 `cp -R` 时若先处理某包再处理其自带的嵌套 `node_modules` 子项，`mkdirSync` 递归建出的中间目录会让后续整包复制把源目录误嵌套进已存在的目标目录里一层；修复为按路径深度升序处理，并显式跳过已被祖先包整体复制覆盖的嵌套子项（84 项中 2 项如此覆盖，实际 `cp -R` 调用 82 次）。复制后 `find <scratch> -type l` 为零 symlink。
+
+| 对象 | 安装体积 | `tar.gz` | `zip -9` | B cold initialize（3 次） | B end-to-end |
 |---|---:|---:|---:|---:|---:|
-| loaded/theoretical floor | [B] | [B] | [B] | n/a | n/a |
-| trace-derived scratch | [B] | [B] | [B] | [B] | [B] |
+| trace-derived scratch | 71,444 KiB（regular-file 63,575,509 B，3,495 files，排除运行期生成的 `.runtime/` 与 tooling 用 manifest） | 19,235,570 B | 20,965,712 B | 598.3 / 592.1 / 526.4 ms | 3/3 次 exit 0、`turn/end.completed`，tool-call 序列与 full closure 实测一致，`deadlines` hash 全程不变 |
+| 相当于 full closure | 28.33%（KiB） | 46.74%（相对 full staging tar.gz） | — | — | — |
+| 相当于 anqi v2.6.0 arm64 DMG | — | 13.70% | 14.93% | — | — |
 
-后续步骤必须是：读取完整 trace summary → 只选 reached 的 direct packages（额外保留 driver 自己在 child trace 外使用的 `js-yaml`）→ 在仓库外写 manifest → `npm install --ignore-scripts` → 复制 spike-owned config/preset/plugins/MCP/driver → 用同一个固定 B prompt 复跑。只有复跑完成，才能称“validated scratch runtime”。
+复跑命令：把 §「实际加载追踪」的 driver 命令中 `node spikes/dsh-agent/driver.mjs` 换成 scratch 目录下的 `driver.mjs`（其 `SIDECAR_DIR` 由 `import.meta.url` 动态计算，`node_modules`/`mcp`/`preset` 等路径自动跟随 scratch 目录），去掉 `--trace-loaded`，其余 env/case/prompt 不变。
 
 ## 四类 native / loader helper
 
-| 依赖 | 安装体积与原生文件 | import / parent 源码证据 | 当前 composition | text-only 最小 composition 结论 |
+| 依赖 | 安装体积与原生文件 | import / parent 源码证据 | 当前 composition | actual trace reach（2026-08-21） |
 |---|---|---|---|---|
-| `node-pty@1.2.0-beta.15` | 26,877,238 B regular files；darwin-arm64 `pty.node` 86,904 B，`spawn-helper` 50,480 B (`0755`) | `dsh-subprocess-local/lib/index.js` 顶层 import；`node-pty/lib/index.js` 在非 Windows 顶层加载 native `pty` | `anqi.cordis.yml` 显式挂 `dsh-subprocess-local`，所以即使 B 不开 terminal，它也是 startup dependency；helper 只在真正 terminal spawn 时使用 | restricted preset 没有 shell/code/subagent 工具，MCP stdio 由 MCP SDK 自己 spawn；语义上可随 subprocess row 一起裁掉，但本轮无 B scratch omission run，不能标 validated optional |
-| `sharp@0.35.3` + darwin binary | 958,466 B + 292,231 B；`sharp-darwin-arm64.node` 280,256 B | `dsh-attachment-local/lib/index.js` 顶层 import；只在 image admission/read 路径调用 | host 显式挂 attachment-local，故 startup 会 reach；`tool-fs` 仅在 attachment service 存在时附加 `read_image` | 固定 B 是纯文本；可连 attachment row / `read_image` 一起裁，但未做 omission run |
-| `koffi@3.1.5` + darwin binary | 1,798,526 B + 1,241,345 B；`koffi.node` 1,240,360 B | `dsh-fs-local` 与 JSONL persistence 都只在 Win32 helper 中 dynamic import；`dsh-sandbox-windows-acl` 则顶层 import | 当前 macOS composition 会 import fs-local/persistence，但按源码不应由这两条路径加载 Koffi；`dsh-sandbox-local`/Windows ACL 没有挂载 | 对 macOS text-only 应是可删除的 platform-only closure；仍需真实 trace + omission scratch 证明 npm 可在保持所需 peers 时不装它 |
-| `node-addon-require-builtin@0.1.4` | 当前未安装；registry unpacked size 4,356 B | `@deepseek-ai/cordis-plugin-loader` 在未带 `--expose-internals` 时尝试 require，并 catch 缺失；peer 标为 optional | `npm ls` 中不存在，现有 rc.7 运行证据已说明 loader 不依赖它成功启动 | 保持不安装；它是可选 internal-loader fallback，不属于最小闭包 |
+| `node-pty@1.2.0-beta.15` | 26,877,238 B regular files；darwin-arm64 `pty.node` 86,904 B，`spawn-helper` 50,480 B (`0755`) | `dsh-subprocess-local/lib/index.js` 顶层 import；`node-pty/lib/index.js` 在非 Windows 顶层加载 native `pty` | `anqi.cordis.yml` 显式挂 `dsh-subprocess-local`，所以即使 B 不开 terminal，它也是 startup dependency；helper 只在真正 terminal spawn 时使用 | **reached**（`installedBytes=26,877,238`，`loadedFiles=6`）；固定 B（纯文本）下即被 startup import 触发，与「按需触发」推断一致但**不可裁**——`dsh-subprocess-local` 是本组合的 always-mounted service |
+| `sharp@0.35.3` + darwin binary | 958,466 B + 292,231 B；`sharp-darwin-arm64.node` 280,256 B | `dsh-attachment-local/lib/index.js` 顶层 import；只在 image admission/read 路径调用 | host 显式挂 attachment-local，故 startup 会 reach；`tool-fs` 仅在 attachment service 存在时附加 `read_image` | **reached**（`sharp` 958,466 + `@img/sharp-darwin-arm64` 292,231 + `@img/sharp-libvips-darwin-arm64` 17,777,811 = 19,028,508 B）；同样是 always-mounted service 触发，不是本次问答内容触发 |
+| `koffi@3.1.5` + darwin binary | 1,798,526 B + 1,241,345 B；`koffi.node` 1,240,360 B | `dsh-fs-local` 与 JSONL persistence 都只在 Win32 helper 中 dynamic import；`dsh-sandbox-windows-acl` 则顶层 import | 当前 macOS composition 会 import fs-local/persistence，但按源码不应由这两条路径加载 Koffi；`dsh-sandbox-local`/Windows ACL 没有挂载 | **未 reached**——`summary.json` 的 `packages` 数组中不存在 `koffi`/`@koromix/koffi-darwin-arm64`，源码推断得到真实验证；对 macOS 可安全排除 |
+| `node-addon-require-builtin@0.1.4` | 当前未安装；registry unpacked size 4,356 B | `@deepseek-ai/cordis-plugin-loader` 在未带 `--expose-internals` 时尝试 require，并 catch 缺失；peer 标为 optional | `npm ls` 中不存在，现有 rc.7 运行证据已说明 loader 不依赖它成功启动 | 仍未安装；trace 中唯一相关记录是一条无害的 `cjs.resolve-error`（loader 的可选 peer 探测），不构成 reach |
 
-这里的“语义上可裁”是源码分类，不是实际-loaded 结论。最终分类必须同时具备 trace reachability、上表 parent/import path、以及 scratch retained/omitted B execution 三个信号。
+`node-pty`/`sharp` 系“reached 但不可裁”的结论现在有真实 trace 支撑：Cordis 在 boot 时按 composition 列表 eager mount 这些 service，不依赖某次问答是否真的触发 terminal/图片读取；`koffi` 未 reached 也已由同一次真实 trace 验证，不再只是源码分类。
 
 ## rc.7 SEA 路线与本机结果
 
@@ -129,21 +137,7 @@ pnpm dlx @yao-pkg/pkg@6.21.0 <staging> \
 
 当前仓库不是完整 DSH monorepo，没有 `python/sdk-runtime` deploy root、workspace packages 和 builder。为了尽量贴近其 post-deploy 输入，本轮在 `/private/tmp/anqi-dsh-sea.3ksg7R/staging` 物化了当前 production closure：零 symlink、packaged entry 存在、darwin-arm64 native/helper 存在；另在仓库外以 `--ignore-scripts` 安装 exact `@yao-pkg/pkg@6.21.0`。本机 `/usr/bin/codesign` 存在。
 
-执行 packager 的命令在真正启动外部 package code **之前**被当前权限层拒绝，理由是缺少直接点名 `@yao-pkg/pkg@6.21.0` 的执行授权。本会话没有换工具绕过。因此结果是：
-
-| SEA 项 | 结果 |
-|---|---:|
-| symlink-free full staging | [M] 成功 |
-| exact packager install (`--ignore-scripts`) | [M] 成功，工具目录 44,220 KiB / 37,413,121 B |
-| `pkg --sea` build | [B] 未执行（permission denied before process start） |
-| main executable size | [B] 无产物 |
-| adjacent helper product | [B] 未复制；staged source 为 50,480 B / `0755` |
-| codesign / Mach-O deployment target | [B] 无 executable 可验 |
-| cold initialize | [B] 无 executable 可运行 |
-| SEA B end-to-end | [B] 未运行 |
-| SEA product+helper `tar.gz` / `zip -9` | [B] 无完整 product set，不生成虚假压缩数字 |
-
-获准后应原样运行下列已经 staging 好、但本轮没有执行的命令；build 成功后仍需把 helper 复制到相邻路径、验证 executable permissions/codesign，再单独取得 runtime evidence：
+此前一轮执行 packager 的命令在真正启动外部 package code **之前**被权限层拒绝。**2026-08-21，同一台机器、同一份 staging，权限边界已放行**，用同一条命令原样重跑，**exit 0**：
 
 ```zsh
 node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin.js \
@@ -152,16 +146,41 @@ node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin
   --output /private/tmp/anqi-dsh-sea.3ksg7R/dist/dsh-jsonrpc-agent-pkg-macos-arm64
 ```
 
-外部 scratch 路径不是可长期依赖的交付物；若系统临时目录已清理，应按上述 route 重建，而不是把路径写进产品代码。
+pkg 的依赖静态分析打印大量 `Warning Cannot find module ...`（`@aws-sdk/util-hex-encoding`、`tape`、`@earendil-works/pi-ai/providers/*`、`@ljharb/eslint-config` 等测试/可选路径），均为正常的可选/开发期引用，不是构建失败。构建过程中 pkg 从 `https://nodejs.org/dist/v24.19.0/node-v24.19.0-darwin-arm64.tar.gz` 下载官方 Node 运行时以生成 SEA blob——这是 packager 自身构建期的网络访问，超出「出站仅 api.deepseek.com」的运行时白名单范围，如实记录为构建期观察，不属于本 spike 运行时行为。
+
+| SEA 项 | 结果 |
+|---|---:|
+| symlink-free full staging | [M] 成功，252,164 KiB / 179,023,624 B |
+| exact packager install (`--ignore-scripts`) | [M] 成功，工具目录 44,220 KiB / 37,413,121 B |
+| `pkg --sea` build | **[M] 2026-08-21 成功**，exit 0 |
+| main executable size | **[M]** 176,279,520 B，Mach-O 64-bit arm64 thin，已含 pkg 自带 ad-hoc 签名（`codesign -dv` 显示 `flags=0x2(adhoc)`） |
+| adjacent helper product | **[M]** 从 staging 复制并 `chmod 0755`：50,480 B |
+| codesign / Mach-O deployment target | **[M]** ad-hoc 签名存在；无 Team ID（本机自签，非分发签名） |
+| cold initialize（3 次，仅到 `session/create`） | **[M]** 796.7 / 598.4 / 334.5 ms |
+| SEA B end-to-end | **[M] 部分失败**：`initialize`/`session/create` 3/3 成功；`session/preflight` 3/3 因真实的 `extension ".mjs" not supported` include 错误失败（见下），非权限拦截 |
+| SEA product+helper `tar.gz` / `zip -9` | **[M]** 48,133,738 B / 47,926,602 B（相对 DMG 34.29% / 34.14%） |
+
+**运行时验证**：用一份仓库外临时副本（跑完即删除，未提交到 spike 代码）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（沿用 driver 已有的 `DSH_CORDIS_CONFIG` 环境变量优先机制，其余 env/cwd/case 与 actual B trace 命令一致），跑 3 次，`initialize`/`session/create` 均成功，随后 `session/preflight`（触发 `agent-presets` 挂载 `preset/anqi`）三次均以同一条真实错误失败：
+
+```text
+Error: dsh-jsonrpc-agent: plugin tree failed to load: failed to apply loader entry include (cordis:include): extension ".mjs" not supported
+    at new Include (file:///snapshot/staging/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js:135:34)
+    ...
+    at file:///Users/2_dogg/code/anqi-spike-dsh/spikes/dsh-agent/mcp/#include
+```
+
+即 packaged（SEA/snapshot）运行时的 Cordis include loader，在扫描 sidecar 自身目录树时拒绝对 host 磁盘（`/snapshot/staging` 之外）的 `.mjs` 文件做动态 include，命中的正是本 spike 保留在磁盘上的 `mcp/server.mjs`。这是一个**真实执行发现的具体 SEA 不兼容点**，不是权限拦截（`initialize`/`session/create` 已证明产物本身可以启动并完成握手），本轮没有为了跑通而重命名文件、改造 include 路径或修改 node_modules 来绕过它。修复方向（未实施）：upstream 的 `packaged-bin.js` 注释提示「Bare plugins resolve from the installed runtime closure while relative plugins remain configuration-relative」——真正的 SEA 部署需要把 `mcp/server.mjs` 这类外部 ESM 入口也折进 pkg 的 snapshot 资产，而不是留在 snapshot 之外的宿主目录；这是 spike 自身目录布局与 upstream 打包假设之间的错配，不是 pkg 或 DSH 本身的缺陷。
+
+外部 scratch 路径（`/private/tmp/anqi-dsh-sea.3ksg7R`）不是可长期依赖的交付物；若系统临时目录已清理，应按上述 route 重建。
 
 ## 决策闸
 
-基于已经测到的数据，可以做一个窄决定：**现有全闭包不随 DMG bundled，采用 first-enable download。** 不能做的决定是“最终永远下载”或“裁剪后仍不可 bundling”。解除闸门需要同一机器、同一固定 B 场景补齐：
+**2026-08-21 更新**：解除闸门所需的五项已全部由真实执行补齐（见上文对应小节），闸门状态由此改变：
 
-1. complete actual-load trace；
-2. trace-derived scratch 的安装字节、`tar.gz`、`zip -9` 和至少 3 次 cold initialize；
-3. scratch B end-to-end；
-4. SEA build、签名/启动、B end-to-end、至少 3 次 cold initialize；
-5. SEA executable + helper product set 的两种压缩值。
+1. ✅ complete actual-load trace——`complete=true`，reached 84 deps / 63,475,270 B；
+2. ✅ trace-derived scratch 的安装字节（71,444 KiB）、`tar.gz`（19,235,570 B）、`zip -9`（20,965,712 B）和 3 次 cold initialize（598.3 / 592.1 / 526.4 ms）；
+3. ✅ scratch B end-to-end——3/3 次 exit 0、`turn/end.completed`、tool-call 序列与 full closure 一致、`deadlines` 不变；
+4. ⚠️ SEA build、签名、启动均成功（cold initialize 3 次：796.7 / 598.4 / 334.5 ms，但只到 `session/create`）；**B end-to-end 未达成**——`session/preflight` 因真实的 `.mjs` include 不兼容失败（非权限拦截，见「rc.7 SEA 路线与本机结果」）；
+5. ✅ SEA executable + helper product set 的两种压缩值：`tar.gz` 48,133,738 B、`zip -9` 47,926,602 B。
 
-在这些数字出现前，任何“理论最小闭包”“validated scratch”“SEA 可运行”都应保持 [B]，不得从 full install 的文件数或上游约 174 MB 说明反推。
+基于这些数字可以做的决定：**若要 bundle，bundle trace-derived scratch 闭包（tar.gz 19,235,570 B，相当于 DMG 的 13.70%），不要 bundle 现有全闭包（29.31%），也不要用 SEA 单文件（本身已比整个 DMG 大，且完整 B 场景在本 spike 目录布局下尚未跑通）。** 不能做的决定是“SEA 已验证可用”——`session/preflight` 之后的行为仍未验证；也不能做“scratch 闭包对所有 anqi 交互都是最终下限”的决定——`node-pty`/`sharp` 系是 always-mounted service 触发的，其余工具（write/edit、审批、ask-user 等）在这次固定 B 场景下的运行时代码路径未必被完全练到，仍只覆盖到「reach 出新的顶层 package」这一层，不覆盖“同一批已 reached 包内部还有多少额外代码路径”。修复 SEA 的 `.mjs` include 问题、并补一次 SEA 下的完整 B end-to-end + 3 次完整-turn cold initialize，是重新评估 SEA 路径可行性的前提。
