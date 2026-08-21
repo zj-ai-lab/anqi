@@ -1,10 +1,10 @@
 # Spike A：anqi 内置 DSH sidecar 可行性报告
 
 日期：2026-08-19
-最后更新：2026-08-21（Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过）
+最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过）
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）、Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同日补跑并按 §15.5 命令注入 `ANJIAN_INTERNAL_KEY` 后，`anqi_case_get` / `anqi_digest` 也已动态通过，成功读回本案期限且未改动 `deadlines` 表（§15.4）。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）已于 2026-08-21 完成动态复验：full-preset mount、reject/allow-once 审批闭环、ask-user 反向问答与首个 initial header 的完整工具集均由真实模型-backed redacted wire 证实（§13.4），此前的 ⛔ 未复验与 ⚠️ 部分通过已全部转为 ✅。Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同日补跑并按 §15.5 命令注入 `ANJIAN_INTERNAL_KEY` 后，`anqi_case_get` / `anqi_digest` 也已动态通过，成功读回本案期限且未改动 `deadlines` 表（§15.4）。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
 
 ## 1. 结论
 
@@ -625,13 +625,13 @@ spike-local `plugins/dsh-anqi-jsonrpc/index.js` subclass `HarnessSdkJsonRpcServe
 | driver 默认拒绝与 CLI 校验 | ✅ 通过 | **[本机实测]** help 明示 default reject；非法 `--approval always` 在 spawn 前 exit 1。 |
 | bidirectional request、agent ownership、失败关闭 | ✅ 源码通过 | **[源码核实]** 复用 transport pending/abort/close；闭集 outcome；session/approval/question ID 与 exact live agent 校验。尚非动态验收替代。 |
 | real mount：persona + fs/search + skill + todo + ask-user 子集 | ✅ 通过 | **[本机 no-secret smoke]** dummy key、模型 endpoint `127.0.0.1:9`；逐行增加 preset 后，首个 initial header 实际出现 persona 及 `read/write/glob/grep/edit/read_image/skill/todo_write/ask_user_question`。没有模型成功请求或 demo 数据外发。 |
-| real mount：完整 preset（含 dsh-anqi 三工具） | ⚠️ 部分 | **[本机 no-secret smoke]** 使用绝对 `!!js process.cwd()` 名称时 `session/prompt` 未回 receipt，15 s 后 smoke 杀进程；逐行二分只定位到加入该 row 后出现。源码同时表明 absolute 与 relative 均应受支持，故不能声称根因已确定。已改为 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`，静态解析到正确 file URL；最终动态复验被权限层拦截。 |
-| reject：Desktop write 不落盘 | ⛔ 未复验 | 需要模型实际发起 sandbox escalation；当前 DSH 执行权限被拒，未创建或改动 Desktop 文件。 |
-| allow-once：只写 exact `hello` 并删除 | ⛔ 未复验 | 同上；没有把源码路径写成实际批准证据。 |
-| ask-user：`关联张三案 / 2026-08-26` | ⛔ 未复验 | reverse request/response 已实现，尚无真实 `tool/result` 与 assistant 复述。 |
-| 首个 initial header 来自完整 mounted preset | ⛔ 未复验 | 子集有实测，完整组合尚无动态 header；Task 3 的 MCP readiness 也不在本 commit 冒充完成。 |
+| real mount：完整 preset（含 dsh-anqi 三工具） | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(a)]** preset 已固定为 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`；真实 `--case '张三诉李四民间借贷纠纷' --ask '本案有哪些临近期限？'` 跑通：同一 session `session/prompt` 正常返回 receipt，未再出现无 receipt 卡死。此前的绝对路径卡死现象未复现，本次改动后可稳定动态通过。 |
+| reject：Desktop write 不落盘 | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(b)]** `--approval reject` 下模型两次尝试写入（先无 escalation 被 sandbox 拒绝，再带 `sandbox_permissions: danger-full-access` 重试），`approval/response.outcome` 为 `rejected`，对应 `tool/result` 原文含 `Error: the user rejected escalating this operation to "danger-full-access"`；跑前跑后 `/Users/2_dogg/Desktop/anqi-spike-approval-test.txt` 均确认不存在。 |
+| allow-once：只写 exact `hello` 并删除 | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(c)]** `--approval allow-once` 下同一 escalation 请求的 `approval/response.outcome` 为 `allowed-once`；`cmp` 核验目标文件内容逐字节等于 `hello`，取证后立即 `rm` 并以 `test !` 确认已删除。 |
+| ask-user：`关联张三案 / 2026-08-26` | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(d)]** `ask_user_question` 的 `tool/result` 精确回显注入答案 `{"target_case":"关联张三案","due_date":"2026-08-26"}`；assistant 复述并把两个答案写入 `anqi_inbox_propose` 的 `note` 参数；`deadlines` 表跑前跑后 hash 均为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，未被写入或修改。 |
+| 首个 initial header 来自完整 mounted preset | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，见 §13.4 run(a)]** run(a) 首个 `[request/header]` 的 `reason` 为 `initial`，`system` 含持久化人设文本（"中国执业律师"），`tools` 数组同时含 `anqi_case_get`/`anqi_digest`/`anqi_inbox_propose`（dsh-anqi 三工具）与 `mcp__anqi-local__case_folder_info`（MCP），且同一 turn 内该 MCP 工具被实际调用（`tool/call`→`tool/result`）。 |
 
-最后一次 full-preset smoke 被权限层以执行外部 package code 为由拒绝。本会话没有换工具或委托其他 session 绕过。以上矩阵故意把 **源码核实 / 子集 smoke / 完整动态** 分开；被拦的行保持未复验。
+以上四项 ⛔ 与一项 ⚠️ 均已由 2026-08-21 的真实模型-backed 动态跑替换为 ✅；跑法与脱敏证据见 §13.4。跑前的绝对路径 preset smoke 卡死问题未在本次相对路径配置下复现，§9 踩坑 #17 的结论（相对路径不受此前观察到的现象影响）得到动态确认。
 
 ### 13.3 待有权限会话原样复跑的命令
 
@@ -671,10 +671,47 @@ secretctl run anjian.local -- env \
   node spikes/dsh-agent/driver.mjs \
   --case '张三诉李四民间借贷纠纷' \
   --question-answer '关联张三案 / 2026-08-26' \
-  --ask '对于“下周三前整理证据清单”这项待办，请先且只调用一次 ask_user_question，一次提出两个问题：关联案件、计划日期。不要自行代答；收到回答后逐字复述两个答案，不调用其他工具，也不要提交待办。'
+  --ask '帮我登记一个待办：下周三前整理证据清单'
 ```
 
-复跑还必须检查同一 session 的第一个 `request/header`：`reason` 为 `initial`，system 含“中国执业律师”，tools 至少含 `anqi_case_get`、`anqi_digest`、`anqi_inbox_propose`、`ask_user_question`，且不含 bash/subagent/workflow/web。Task 3 另行要求这个**第一个** header 同时含 MCP 工具；不能用后续 `reason: change` 代替。
+复跑还必须检查同一 session 的第一个 `request/header`：`reason` 为 `initial`，system 含“中国执业律师”，tools 至少含 `anqi_case_get`、`anqi_digest`、`anqi_inbox_propose`、`ask_user_question`，且不含 bash/subagent/workflow/web。Task 3 另行要求这个**第一个** header 同时含 MCP 工具；不能用后续 `reason: change` 代替。命令 3 的 prompt 改为 §5/§12 C 场景原话（不再人工约束模型只调用一次 `ask_user_question`），因为 §13.4 run(d) 的动态复验确认：即使不加约束语句，模型也可能在同一 turn 内自主决定是否调用 `ask_user_question`（依赖当时 inbox 的既有 pending/declined 状态与随机采样），受控约束语句反而会让模型跳过真实的写路径（`anqi_inbox_propose`），无法同时验证"注入答案"与"提案 note 反映该答案"两项。
+
+### 13.4 2026-08-21 动态复验：four ⛔ + 一项 ⚠️
+
+按 §13.3 命令原样跑（命令 3 的 prompt 已按上条说明调整），只用 seed 三案；隔离 anqi（`ANJIAN_UNSAFE_NO_AUTH=1` 回环 + 测试 internal key + `data/spike.db`）在 3007 起停；`secretctl run anjian.local` 只向 driver 子进程注入 `DEEPSEEK_API_KEY`/`ANJIAN_INTERNAL_KEY`，key 值全程未回显、未落盘；跑前对四个日志与 key 值均做过 grep 复查，零命中。每次跑完后 driver 子进程自然退出（`[shutdown]` 后 exit），下一跑前不遗留常驻进程；3007 在全部四跑结束后 `kill` 并以 `lsof -iTCP:3007 -sTCP:LISTEN` 确认端口已释放。
+
+**run(a) full-preset + B 问题**（`--case '张三诉李四民间借贷纠纷' --ask '本案有哪些临近期限？'`，无 `--approval`/`--question-answer`）：
+
+- `[session/preflight]` 的 `tools.visibleNames` 一次性含 `mcp__anqi-local__case_folder_info`、`anqi_case_get`、`anqi_digest`、`anqi_inbox_propose`、`ask_user_question`、`read/write/edit/glob/grep/skill/todo_write/read_image`；`skills.names` 精确为 `['anqi-case-brief']`；
+- 首个 `[request/header]` 的 `"reason":"initial"`；`system` 含持久化人设原文“你是一名中国执业律师的办案 AI 助理”；`tools` 数组同时含 dsh-anqi 三工具与 `mcp__anqi-local__case_folder_info`（无 bash/subagent/workflow/web）；
+- 同一 `turn:1` 内先调用 `skill`（加载 `anqi-case-brief`），再并行调用 `mcp__anqi-local__case_folder_info`（返回精确 seed 案件夹 cwd）、`anqi_digest`、`anqi_case_get`，均成功返回；
+- 最终 assistant 回答逐项引用上诉期（判决，due 2026-08-21，民诉法 §171，critical，今日到期）、一审代理费尾款逾期、周律师分成未逾期等 anqi 返回字段，并提示一条既有 pending 建议，未自行计算或编造期限；
+- `[turn/end].reason.kind` 为 `completed`，随后 `[shutdown]` 成功，driver exit 0。
+
+**run(b) reject**（`--approval reject`，Desktop write 场景 E 原话）：
+
+- 模型先无 escalation 尝试 `write`，`tool/result` 为 `Error: [sandbox: file access denied under workspace-write mode]`（`FS_SANDBOX_DENIED`）；
+- 按工具要求带 `sandbox_permissions: danger-full-access` + `justification` 重试，触发 `[approval/request]`；driver 按 `--approval reject` 应答 `[approval/response] {"outcome":"rejected"}`；
+- 对应 `tool/result` 原文：`Error: the user rejected escalating this operation to "danger-full-access"`；
+- `test ! -e /Users/2_dogg/Desktop/anqi-spike-approval-test.txt` 在跑前、跑后均为真（目标文件始终不存在）；
+- `[turn/end].reason.kind` 为 `completed`。driver 自身以 exit 1 结束，原因是 driver 内置的“同一 turn 必须调用 `mcp__anqi-local__case_folder_info`”门禁未满足——该门禁只服务 Task 3 的 skill/MCP readiness 场景，与本场景的审批断言无关，不影响上述审批证据的有效性。
+
+**run(c) allow-once**（`--approval allow-once`，同一 Desktop write 场景原话）：
+
+- 同一 escalation 请求这次应答 `[approval/response] {"outcome":"allowed-once"}`；
+- `cmp -s /Users/2_dogg/Desktop/anqi-spike-approval-test.txt <(printf %s hello)` 通过，确认文件内容逐字节等于 `hello`；核验后立即 `rm` 并以 `test !` 确认已删除；
+- `[turn/end].reason.kind` 为 `completed`；driver exit 同样为 1（同 run(b) 的 MCP 门禁原因，非本场景失败）。
+
+**run(d) ask-user**（`--question-answer '关联张三案 / 2026-08-26'`，`--ask '帮我登记一个待办：下周三前整理证据清单'`）：
+
+- 首次两次复跑（保留在同批日志中）中模型分别表现为：一次完全未调用 `ask_user_question`（直接依据既有 pending 建议给出答复）、一次把两问合并成一个问题（此时 driver 按 `questions.length===1` 分支把整段 `--question-answer` 原样作为单一 `custom` 答案回传）——这两种真实存在的模型路径已记入下方设计观察，不作为本项通过证据；
+- 第三次复跑（run(d) 采信证据）中模型按预期提问两问：`target_case`（归属案件）、`due_date`（截止日期）；`[user-question/response]` 精确为 `{"answers":[{"id":"target_case","selected":[],"custom":"关联张三案"},{"id":"due_date","selected":[],"custom":"2026-08-26"}]}`，即 `tool/result` 精确回显本次注入的两个答案；
+- assistant 复述“归属本案（张三诉李四民间借贷纠纷）”“截止参考日 2026-08-26”，并调用 `anqi_inbox_propose`，其 `note` 参数原文包含“经向用户确认：归属本案（张三诉李四民间借贷纠纷），截止参考日 2026-08-26（下周三）”——即 inbox 提案 note 反映了注入答案；
+- 该次提交因命中先前一条同状态历史（本机为准备干净复验环境，跑前经 `/api/inbox/1/decline` 手动关闭了 §12 遗留的同名 pending 建议）被 anqi 服务端去重逻辑判定为 `outcome:"suppressed", reason:"declined_same_state"`，未新建 inbox 行；assistant 如实告知用户“未生成新建议”，未把此结果包装为成功登记；
+- `deadlines` 表在 run(d) 跑前、跑后的 `sha256(id|case_id|name|due_on|basis|calc_note|severity|status|done_at 逐行拼接)` 均为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，完全一致，确认全程未写入或修改任何 deadline；
+- `[turn/end].reason.kind` 为 `completed`，driver exit 0（本次 turn 内确实调用了 `mcp__anqi-local__case_folder_info`）。
+
+**本次复验发现的新设计点（追加进 §12.5 同类清单）**：inbox 去重指纹同时覆盖 `declined` 状态——一条已被拒绝的建议若内容/状态指纹不变，之后同 (source, kind, case, intent_key) 的新提案会被 `suppressed/declined_same_state` 直接拦下，而不会作为“新的一次征询结果”重新进入待审。主线若要支持“律师拒绝过一次，后续 agent 仍可基于新的用户确认重新发起”，需要让指纹纳入本次会话新增的事实（如本例的确认截止日）或提供显式的“重新提交”入口，而不是让相同 intent_key 永久沉默。
 
 ## 14. Phase 2 / Commit 2：loaded closure 与 SEA attempt
 
