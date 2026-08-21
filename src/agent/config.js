@@ -3,8 +3,8 @@
 // 只认下面五个键（设计稿 §1 的白名单）：enabled / provider / baseURL / model /
 // apiKeyEnv。键值都存在既有的 settings key-value 表（迁移 014，见
 // src/routes/settings.js 的既有用法——那张表本身不做键名约束，白名单永远在
-// 应用层）；本文件是这五个 agent_* 键的唯一读路径，下一阶段的设置路由只需要
-// 调用这里的 loadAgentConfig() / AGENT_SETTINGS_KEYS，不用重新实现校验。
+// 应用层）；本文件是这五个 agent_* 键的唯一读路径，src/routes/settings.js 的
+// agent_* PUT 校验直接复用这里导出的规则，不重新实现一份。
 //
 // 硬规则（红线，见任务书）：
 //   - enabled=false 必须在触碰 credential/MCP/prewarm/spawn 之前短路返回。
@@ -131,8 +131,8 @@ export function validateBaseURL(baseURLRaw, provider) {
   return { ok: true, parsed, normalized: parsed.toString().replace(/\/$/, '') };
 }
 
-// settings 表里的键名。设置路由（下阶段）应该只 PUT/GET 这五个键，其余一律丢弃
-// ——与 src/routes/settings.js 现有的白名单模式保持一致。
+// settings 表里的键名。设置路由只 PUT/GET 这五个键，其余一律丢弃——与
+// src/routes/settings.js 既有的白名单模式保持一致。
 export const AGENT_SETTINGS_KEYS = Object.freeze({
   enabled: 'agent_enabled',
   provider: 'agent_provider',

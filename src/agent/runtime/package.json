@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "DSH sidecar 运行时依赖隔离目录：只服务 src/agent/supervisor.js 拉起的进程外 worker，不进根 package.json。「不参与 electron-builder 打包」现在是被强制的，不只是声明：根 package.json 的 build.files 显式排除了 '!src/agent/**'（覆盖本目录与 src/agent/assets/node_modules 那个指回本目录的相对符号链接），因为这一阶段 sidecar 还没有接进 server.js/routes（grep 不到任何引用），提前把这份依赖树和一个指向未打包目标的符号链接塞进 DMG 没有意义，还会让符号链接在打包版里变成悬空引用、静默失效。等后续阶段把 supervisor 接进 server.js 时，必须重新评估这条排除规则——到时候要么让这些依赖随包分发（体积与 asarUnpack 需要重新设计），要么换成运行时按需安装。",
+  "description": "DSH sidecar 运行时依赖隔离目录：只服务 src/agent/supervisor.js 拉起的进程外 worker，不进根 package.json。「不参与 electron-builder 打包」是被强制的，不只是声明：根 package.json 的 build.files 显式排除了 '!src/agent/runtime/**' 与 '!src/agent/assets/**'（后者覆盖 src/agent/assets/node_modules 那个指回本目录的相对符号链接），只排除体积大的依赖树与资产，保留 src/agent 下的纯 JS（config.js/session-registry.js/supervisor.js 已经被 server.js/routes 静态 import，整棵排除会让打包产物在 listen 之前 ERR_MODULE_NOT_FOUND）。代价是打包版里 supervisor.start() 必然停在 skills_root_invalid——桌面版 AI 助理暂不可用，这条必须在发版前重新决策：要么让这些依赖随包分发（体积与 asarUnpack 需要重新设计），要么换成运行时按需安装。",
   "engines": {
     "node": ">=22"
   },

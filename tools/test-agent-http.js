@@ -179,11 +179,22 @@ try {
     assert.equal(status, 502);
     assert.equal(data.code, 'agent_start_failed');
   }
-  supervisor.startResult = { status: 'ready', caseId, sessionId: 'anqi-sess-2' };
+  // 成功态也必须走 publicStatus() 投影：supervisor.start() 的 resolve 值是完整
+  // status()（含 sessionId/cwd/pid），原样 res.json 会把 GET /agent/status 与
+  // SSE 首帧刚脱敏掉的三个字段从启动响应这条路补回去。
+  supervisor.startResult = { status: 'ready', caseId, sessionId: 'anqi-sess-2-should-not-leak' };
+  supervisor.statusResult = {
+    status: 'ready', caseId, caseName: '张三诉李四合同纠纷（agent http 测试）',
+    sessionId: 'anqi-sess-2-should-not-leak', pid: 4243, cwd: '/secret/host/path/案件夹/张三诉李四',
+  };
   {
     const { status, data } = await call('POST', `/api/cases/${caseId}/agent/start`);
     assert.equal(status, 200);
     assert.equal(data.status, 'ready');
+    assert.equal(data.sessionId, undefined, '启动响应不应包含内部 sessionId');
+    assert.equal(data.pid, undefined, '启动响应不应包含宿主 pid');
+    assert.equal(data.cwd, undefined, '启动响应不应包含案件夹绝对路径');
+    assert.ok(!JSON.stringify(data).includes('should-not-leak'), '启动响应整体不应出现内部 session 标识');
   }
   supervisor.startThrows = new Error('unexpected boom with a stack trace nobody should see');
   {
@@ -324,9 +335,16 @@ try {
     assert.ok(!buffer.includes('anqi-sess-should-not-leak'), 'SSE 首帧不应该泄漏内部 sessionId');
 
     assert.equal(supervisor.listeners.get(caseId)?.size, 1, '连接建立后应该恰好挂一个监听器');
-    supervisor.emit(caseId, { type: 'turn/start', caseId, data: { turnId: 7 } });
+    // 真实 Worker.emit() 组装的事件形状是 { type, caseId, sessionId, at, data }
+    // ——这里照抄同一形状（含 sessionId），验证路由层转发时也做了投影，而不是
+    // 只有首帧状态快照脱敏、后续每一帧都把内部 session 标识原样广播出去。
+    supervisor.emit(caseId, {
+      type: 'turn/start', caseId, sessionId: 'anqi-sess-event-should-not-leak',
+      at: new Date().toISOString(), data: { turnId: 7 },
+    });
     await readUntil('event: turn/start');
     assert.ok(buffer.includes('"turnId":7'));
+    assert.ok(!buffer.includes('anqi-sess-event-should-not-leak'), 'SSE 转发帧不应该泄漏内部 sessionId');
 
     controller.abort();
     // req.close 的反订阅是异步收尾，轮询等一下再断言，避免测试本身产生竞态。

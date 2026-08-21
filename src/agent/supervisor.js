@@ -7,11 +7,11 @@
 //     per-case 单 worker 注册表，turn 可以来一串、可以取消、worker 可以重启。
 //   - driver.mjs 的 approval/user-question 用 CLI 参数配的静态策略（固定 reject
 //     或固定答案）；这里没有 UI 层可以问人，所以把这两类反向 RPC 变成
-//     one-shot pending 表——外部（下阶段的 HTTP 层）用 resolveApproval() /
+//     one-shot pending 表——外部（src/routes/agent.js 的 HTTP 层）用 resolveApproval() /
 //     resolveQuestion() 来喂答案，超时或未消费一律 fail-closed 到
 //     rejected/unavailable，不因为没人应答就放行。
 //   - 增加结构化事件管道：所有 wire 事件转发前做字段截断 + secret redaction，
-//     再按 case 广播给订阅者（下阶段 SSE 层的数据源）。
+//     再按 case 广播给订阅者（src/routes/agent.js 的 SSE 层的数据源）。
 //
 // 红线（任务书 + 设计稿 §1/§3/§4，本文件必须满足）：
 //   - enabled=false 必须在读 credential、初始化 MCP、spawn 子进程之前短路——
@@ -270,7 +270,7 @@ function redactor(secretValues) {
   return fn;
 }
 
-// 对外事件的 `type` 字段最终会成为下阶段 SSE 层的 `event:` 字段名（见文件头
+// 对外事件的 `type` 字段最终会成为 SSE 层（src/routes/agent.js）的 `event:` 字段名（见文件头
 // 注释）；它完全由子进程的 wire 消息控制。之前只对它做过 secret redact，没有
 // 清洗控制字符——子进程塞一个含 \n 的 type，理论上可以在 SSE 帧里注入伪造的
 // 额外字段/事件。这里剥掉 C0 控制字符与 DEL，并把长度钉在一个事件类型名合理
@@ -1006,7 +1006,7 @@ export class AgentSupervisor {
     const interactionId = randomUUID();
     const expiresAt = Date.now() + this.interactionTtlMs;
     // toolName 存进 map 前就 redact：listPendingInteractions() 直接把这张表
-    // 的字段吐给下阶段的 HTTP/UI 层，之前只在 emit('interaction/pending', ...)
+    // 的字段吐给 HTTP/UI 层，之前只在 emit('interaction/pending', ...)
     // 这一条路径上 redact，map 里存的仍是原值——子进程把 key 值塞进 toolName
     // 就能靠这条查询接口把它读出来，绕开 SSE 那条已经过滤的路径。
     const toolName = worker.redact(String(params.toolName || ''));

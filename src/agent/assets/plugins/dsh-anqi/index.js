@@ -22,7 +22,9 @@
 //   - source_ref 只携带可审计的 session/call 关联 id，不携带完整案卷正文或
 //     任何密钥。
 //
-// /internal/agent-proposals 本身在下一阶段实现；这里先把请求形状钉好。
+// /internal/agent-proposals 已在 src/routes/internal.js 落地，请求形状（session_id
+// /proposal_id/source_ref/payload 四个字段名）必须与那里的白名单逐字一致——两边
+// 一旦漂移，模型每次调 anqi_inbox_propose 都会拿到 400。
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { defineTool } from '@deepseek-ai/dsh-tools';

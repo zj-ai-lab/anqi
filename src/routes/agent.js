@@ -130,7 +130,12 @@ export function createAgentRouter(supervisor) {
     if (result.status === 'error') {
       return res.status(502).json({ error: result.error || 'AI 助理启动失败', code: 'agent_start_failed', status: result.status });
     }
-    res.json(result);
+    // 成功态同样只下发安全投影：supervisor.start() 的 resolve 值是完整的
+    // status()（含内部 sessionId、宿主机绝对 cwd、子进程 pid），原样 res.json
+    // 出去就等于把 GET /agent/status 与 SSE 首帧刚脱敏掉的三个字段从启动响应
+    // 这条路补回去。权威投影只有 supervisor.publicStatus() 一份，这里不另抄
+    // 字段列表。
+    res.json(supervisor.publicStatus(caseId));
   });
 
   r.post('/cases/:id/agent/prompt', (req, res) => {
@@ -192,7 +197,18 @@ export function createAgentRouter(supervisor) {
     // 的事件才恢复准确状态。下发安全投影,不带 sessionId/cwd/pid。
     send('status', supervisor.publicStatus(caseId));
 
-    const unsubscribe = supervisor.onEvent(caseId, (event) => send(event.type, event));
+    // 转发的每一帧也要走同一条脱敏尺度:Worker.emit() 组装的内部事件形状是
+    // { type, caseId, sessionId, at, data }——sessionId 是 supervisor 侧
+    // session→case 登记表的键(见 src/agent/session-registry.js),属于上面
+    // publicStatus() 刻意不下发的那一类内部标识,不能因为它换了一条通路
+    // (事件而不是状态快照)就原样广播出去。data 已经在 supervisor 侧逐叶子
+    // 做过 secret redaction + 长度截断,这里只做字段投影,不重复过滤。
+    const unsubscribe = supervisor.onEvent(caseId, (event) => send(event.type, {
+      type: event.type,
+      caseId: event.caseId,
+      at: event.at,
+      data: event.data,
+    }));
 
     const hb = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
 
