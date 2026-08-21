@@ -132,7 +132,7 @@ function renderJson(_args, value) {
   return [{ type: 'text', text: JSON.stringify(value, null, 2) }];
 }
 
-// supervisor 在 spawn 时按 worker 固定注入（见 supervisor.js buildSanitizedEnv）；
+// supervisor 在 spawn 时按 worker 固定注入（见 supervisor.js buildSpawnEnv）；
 // 不是模型可控的输入。缺失时说明不是由本仓库 supervisor 拉起，直接拒绝启动。
 function requiredEnv(name) {
   const value = String(process.env[name] || '').trim();

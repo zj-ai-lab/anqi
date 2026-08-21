@@ -37,8 +37,10 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   realpathSync,
   rmSync,
+  symlinkSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -59,6 +61,57 @@ const DSH_BIN = path.join(
 const TRUSTED_SKILLS_ROOT = path.join(ASSETS_DIR, 'skills');
 const REQUIRED_SKILL_NAME = 'anqi-case-brief';
 const REQUIRED_SKILL_FILE = path.join(TRUSTED_SKILLS_ROOT, REQUIRED_SKILL_NAME, 'SKILL.md');
+
+// ---- assets/node_modules：运行时确保，不再依赖提交进 git 的符号链接 ----
+// cordis 加载的插件（plugins/dsh-anqi、plugins/dsh-anqi-jsonrpc）与
+// mcp/server.mjs 都用 `import '@deepseek-ai/...'` 这类 ESM 说明符；子进程
+// spawn 时 cwd 钉死为 ASSETS_DIR（见 start() 里的 spawnFn 调用），Node 的模块
+// 解析会从这个 cwd 开始逐级向上找 node_modules——依赖实际装在
+// src/agent/runtime/node_modules（该目录本身从不进仓库：根 .gitignore 的
+// `node_modules/` 规则本来就会忽略它，是 src/agent/runtime/package.json 自己
+// 的一次 npm install 产出），所以 assets 目录下必须有一条指向它的
+// node_modules 链接，ESM 解析才找得到这些依赖（NODE_PATH 环境变量只影响
+// CommonJS require() 的搜索路径，对 ESM import 说明符解析完全不生效，不能
+// 用它替代这条链接）。
+//
+// 这条链接之前是直接提交进仓库的符号链接对象（git 记录一个 120000 类型的
+// blob，内容是相对路径 "../runtime/node_modules"）——问题是它指向的目标从不
+// 进仓库，任何全新 clone 在跑 runtime 自己那次 npm install 之前，这条提交
+// 进仓库的链接天然是悬空的；打包/归档流程（electron-builder、tar 等）对
+// "仓库里的一条符号链接"处理方式也不总是可靠。现在改成 supervisor 在每次
+// start() 真正 spawn 子进程之前运行时确保：链接不存在就创建，存在但指向不
+// 对就重建，指向已经正确就什么都不做——不再依赖 git 树里那个提交的对象。
+const ASSETS_NODE_MODULES_LINK = path.join(ASSETS_DIR, 'node_modules');
+const RUNTIME_NODE_MODULES_DIR = path.join(RUNTIME_DIR, 'node_modules');
+
+function ensureAssetsNodeModulesLink() {
+  let currentStat;
+  try {
+    currentStat = lstatSync(ASSETS_NODE_MODULES_LINK);
+  } catch {
+    currentStat = null;
+  }
+  if (currentStat) {
+    if (!currentStat.isSymbolicLink()) {
+      // 不是符号链接的意外条目（例如有人手误在这里放了一个真实目录/文件）
+      // ——不静默覆盖调用方可能有意放置的东西，原地报错交给 start() 的
+      // catch 分支转成 error 状态。
+      throw new Error(`unexpected non-symlink entry at ${ASSETS_NODE_MODULES_LINK}`);
+    }
+    let currentTarget;
+    try {
+      currentTarget = readlinkSync(ASSETS_NODE_MODULES_LINK);
+    } catch {
+      currentTarget = null;
+    }
+    const resolvedCurrent = currentTarget
+      ? path.resolve(path.dirname(ASSETS_NODE_MODULES_LINK), currentTarget)
+      : null;
+    if (resolvedCurrent === RUNTIME_NODE_MODULES_DIR) return; // 已经指对了
+    rmSync(ASSETS_NODE_MODULES_LINK, { force: true });
+  }
+  symlinkSync(RUNTIME_NODE_MODULES_DIR, ASSETS_NODE_MODULES_LINK, 'dir');
+}
 
 // 设计稿 §3.1 要求固定记录的字段之一：DSH 版本。initialize 的 wire 协议不
 // 回传版本号，rc.7 也没有单独的 version RPC，所以在模块加载时读一次自己钉死
@@ -112,6 +165,15 @@ const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 90_000;
 const DEFAULT_INTERACTION_TTL_MS = 2 * 60 * 1000;
 const MAX_EVENT_FIELD_CHARS = 4000;
+// redactDeep 的总量兜底：逐叶子限长只保证单个字符串字段不超过
+// MAX_EVENT_FIELD_CHARS，但一个事件可以有成千上万个叶子（例如工具结果里一
+// 个超长数组，每个元素都是几百字符的短字符串）——探针曾用这种形状产出过一
+// 条 1.56MB 的单事件，逐叶子限长对此完全没有约束力。这里加两道总量闸门：
+// 一是整个事件序列化后的累计字节预算，二是单个数组允许保留的元素个数上限；
+// 任何一道触顶，超出部分直接折叠成一条 "[truncated N items]" 标记，不再逐
+// 项处理（也不再消耗预算）。
+const MAX_EVENT_TOTAL_BYTES = 256 * 1024;
+const MAX_EVENT_ARRAY_ITEMS = 200;
 const REDACTED = '[REDACTED]';
 
 function timeoutPromise(ms, message) {
@@ -242,6 +304,10 @@ function redactString(input, secretValues) {
   return text;
 }
 
+function byteLength(str) {
+  return Buffer.byteLength(str, 'utf8');
+}
+
 // 逐叶子字段做 secret redaction + 长度截断，而不是对 JSON.stringify(整包) 之后
 // 的完整字符串做长度截断——旧实现把 MAX_EVENT_FIELD_CHARS 施加在整条序列化
 // JSON 上，截断点大概率落在字符串中间，产生的不是合法 JSON；_redactEventData
@@ -251,13 +317,40 @@ function redactString(input, secretValues) {
 // assistant 文本、工具调用摘要」在事件管道里恒为空。现在只对每个 string 叶子
 // 单独限长，容器结构（对象/数组）完整保留，只有真正过长的单个字符串字段会被
 // 截断。
-function redactDeep(value, secretValues, depth = 0) {
+//
+// 但逐叶子限长只约束"单个字符串"，约束不了"叶子数量"——一个几千元素的数
+// 组，每个元素都是几百字符的短字符串，逐叶子检查全部合规，序列化后的整个
+// 事件依然可以轻松几百 KB 到几 MB（探针曾复现过 1.56MB 的单事件）。这里加
+// 两道总量闸门，跨递归调用共享同一份可变预算 `budget`（同一次 .deep() 调用
+// 的所有叶子共用，不是每个叶子各自开一份）：
+//   - budget.remaining：整个结构累计消耗的字节数，触顶后后续叶子一律折叠
+//     成占位符，不再继续递归展开；
+//   - MAX_EVENT_ARRAY_ITEMS：单个数组保留的元素个数上限，超出的元素不逐个
+//     处理（不消耗预算），整体折叠成一条 `[truncated N items]` 标记。
+function redactDeep(value, secretValues, budget, depth = 0) {
   if (depth > 8) return '[REDACTED:max-depth]';
-  if (typeof value === 'string') return redactString(value, secretValues);
-  if (Array.isArray(value)) return value.map((item) => redactDeep(item, secretValues, depth + 1));
+  if (budget.remaining <= 0) return '[REDACTED:budget-exceeded]';
+  if (typeof value === 'string') {
+    const redacted = redactString(value, secretValues);
+    budget.remaining -= byteLength(redacted);
+    return redacted;
+  }
+  if (Array.isArray(value)) {
+    const keep = Math.min(value.length, MAX_EVENT_ARRAY_ITEMS);
+    const out = [];
+    let kept = 0;
+    for (; kept < keep; kept++) {
+      if (budget.remaining <= 0) break;
+      out.push(redactDeep(value[kept], secretValues, budget, depth + 1));
+    }
+    if (kept < value.length) out.push(`[truncated ${value.length - kept} items]`);
+    return out;
+  }
   if (value && typeof value === 'object') {
     const out = {};
-    for (const [key, item] of Object.entries(value)) out[key] = redactDeep(item, secretValues, depth + 1);
+    for (const [key, item] of Object.entries(value)) {
+      out[key] = budget.remaining > 0 ? redactDeep(item, secretValues, budget, depth + 1) : '[REDACTED:budget-exceeded]';
+    }
     return out;
   }
   return value;
@@ -266,7 +359,7 @@ function redactDeep(value, secretValues, depth = 0) {
 function redactor(secretValues) {
   const values = secretValues.filter(Boolean);
   const fn = (input) => redactString(input, values);
-  fn.deep = (data) => redactDeep(data, values);
+  fn.deep = (data) => redactDeep(data, values, { remaining: MAX_EVENT_TOTAL_BYTES });
   return fn;
 }
 
@@ -356,6 +449,7 @@ export class AgentSupervisor {
     this.actor = actor;
     this.workers = new Map(); // caseId -> Worker
     this.listeners = new Map(); // caseId -> Set<listener>，与 worker 生命周期解耦（见 Worker 类注释）
+    this.stopPromises = new Map(); // caseId -> 在飞的 stop() Promise，见 start()/stop() 的互斥说明
   }
 
   // ---- 对外只读状态 ----
@@ -452,8 +546,31 @@ export class AgentSupervisor {
     const existing = this.workers.get(caseId);
     if (existing && LIVE_STATUSES.has(existing.status)) {
       // 重复打开 drawer：复用同一个 worker，不重复 spawn。
-      return existing.readyPromise ?? this.status(caseId);
+      //
+      // existing.readyPromise 是 _runStartupSequence 那次调用产生的、早就已
+      // 经 settle 过的 Promise——它 resolve 的值是"启动刚成功那一刻"拍下的
+      // status() 快照（那时 worker.status 恰好是 'ready'）。之前这里直接把
+      // 这个旧 Promise 原样返回：调用方等到的永远是那张冻结快照，哪怕此刻
+      // worker 早已经进入 'running'（正在跑 turn）甚至已经变化多次，drawer
+      // 重新打开时看到的 status 也会一直是当初刚 ready 那一秒的旧值。现在改
+      // 成在这个（早已 settle 的）Promise 后面再接一次 `.then(() =>
+      // this.status(caseId))`——resolve 几乎立即发生，但重新调用 status()
+      // 取的是"这次调用当下"的真实快照，不是历史缓存值。worker 仍在
+      // 启动中（readyPromise 还没 settle）时，这一样正确：等它 settle 后再
+      // 取一次当下状态，而不是直接假设"settle 之后就是 ready"。
+      return existing.readyPromise
+        ? existing.readyPromise.then(() => this.status(caseId))
+        : this.status(caseId);
     }
+
+    // 同一案件的上一个 worker 可能正在 stop()（异步、最多 30s shutdown 往返
+    // + 10s 强杀等待）——'stopping' 不在 LIVE_STATUSES 里，上面那个判断会直
+    // 接放过，走到下面重新 spawn 一个全新 worker，而旧 worker 的子进程可能
+    // 还没真正退出：两个活子进程同时挂在同一个 caseId 名下，违反"每案最多
+    // 一个 active worker"。这里先等在飞的 stop() 完成——它落定之后旧 worker
+    // 必然已经终态化（_finalizeWorker 已跑过），再往下走的 spawn 是安全的。
+    const inFlightStop = this.stopPromises.get(caseId);
+    if (inFlightStop) await inFlightStop;
 
     // 1) enabled/credential gate。enabled!==true 时，下面任何一行都不会跑：
     //    不读 apiKeyEnv 指向的环境变量、不查案件、不动文件系统、不 spawn。
@@ -501,6 +618,18 @@ export class AgentSupervisor {
     } catch (error) {
       audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `skills_root_invalid:${error.message}`.slice(0, 200));
       return { status: 'error', caseId, error: 'skills_root_invalid' };
+    }
+
+    // 3.5) assets/node_modules 运行时确保（见 ensureAssetsNodeModulesLink()
+    //      顶部注释）——必须在 spawn 之前做，否则子进程起来也会立刻因为
+    //      ESM 说明符解析失败而崩，且这一步失败不该留下一份刚拷好、之后
+    //      永远不会被清理的临时 skill 目录，所以失败分支要先清掉它。
+    try {
+      ensureAssetsNodeModulesLink();
+    } catch (error) {
+      rmSync(materializedSkillsRoot, { recursive: true, force: true });
+      audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `runtime_link_invalid:${error.message}`.slice(0, 200));
+      return { status: 'error', caseId, error: 'runtime_link_invalid' };
     }
 
     const sessionId = `anqi-${randomUUID()}`;
@@ -660,8 +789,12 @@ export class AgentSupervisor {
       // 协议，唯一手段是终止整个 worker 进程，防止一个已经判定失败的 turn
       // 之后还悄悄跑到 anqi_inbox_propose。之前这里只把 status 改回 ready、
       // 从不 abort/kill，导致超时后子进程继续跑，迟到的 running/idle/turn-end
-      // 会被下一个 turn 的 resolver 误当成自己的完成事件（wire 事件不带 turn
-      // id）。现在任何 turn 失败都统一走：本地 abort（立即生效）+ 终止整个
+      // 会被下一个 turn 的 resolver 误当成自己的完成事件——wire 事件其实带
+      // turn id（session.event 的 event.data.turn），只有 session.status 通知
+      // （running/idle 就来自这里）不带；但宿主侧目前就是靠 worker._turnResolvers
+      // 这一个单槽位状态机匹配 running/idle/turn-end，不按 turn id 区分，所以
+      // 同一个槽位依旧会把迟到事件误记成"当前"turn 的。现在任何 turn 失败都
+      // 统一走：本地 abort（立即生效）+ 终止整个
       // worker（异步收尾）。下一次 start() 必然是全新 session。
       if (!controller.signal.aborted) controller.abort(error);
       // 之前这里把 status 改回 'ready'（一个 LIVE 状态）之后才异步调用
@@ -670,7 +803,8 @@ export class AgentSupervisor {
       //   (a) 已经排队、等在 worker.turnLock 后面的下一个 turn 会在这个窗口
       //       里被 prompt()/_runTurn 顶部的 LIVE 守卫放行，抢在 worker 真正
       //       终止前跑起来，继承上一个已判定失败的 turn 迟到的
-      //       running/idle/turn-end（wire 事件不带 turn id，见上面注释）；
+      //       running/idle/turn-end（同上：宿主侧按单槽位而非 turn id 匹配，
+      //       见上面注释）；
       //   (b) resolveApproval/resolveQuestion 的 LIVE_STATUSES 存活校验同样
       //       形同虚设，一条本该 fail-closed 的审批可以在这段窗口里被放行
       //       并真的写进已经判定失败的子进程 stdin。
@@ -761,9 +895,31 @@ export class AgentSupervisor {
   }
 
   // ---- 关闭 ----
+  // 同一个 caseId 的 stop() 全程只跑一份在飞 Promise——供 start() 在 spawn
+  // 新 worker 之前先等它落定（见 start() 里对 stopPromises 的检查），避免
+  // "上一个 worker 还没真正终止、下一个 worker 已经 spawn 出来"这条"每案
+  // 最多一个 active worker"红线的破口；也让并发调用 stop() 本身天然去重
+  // （第二个调用者拿到同一个 Promise，不会对同一个 worker 重复跑一遍
+  // shutdown 往返/强杀等待）。
   async stop(caseId, reason = 'requested') {
+    const existingStop = this.stopPromises.get(caseId);
+    if (existingStop) {
+      await existingStop;
+      return this.status(caseId);
+    }
     const worker = this.workers.get(caseId);
     if (!worker) return { status: 'stopped', caseId };
+    const stopPromise = this._stopWorker(worker, reason);
+    this.stopPromises.set(caseId, stopPromise);
+    try {
+      await stopPromise;
+    } finally {
+      this.stopPromises.delete(caseId);
+    }
+    return this.status(caseId);
+  }
+
+  async _stopWorker(worker, reason) {
     if (worker.currentAbort) worker.currentAbort.abort(new Error('worker stopping'));
     if (worker.child && worker.child.exitCode === null) {
       try {
@@ -787,7 +943,6 @@ export class AgentSupervisor {
       if (worker.child.exitCode === null) worker.child.kill('SIGTERM');
     }
     this._finalizeWorker(worker, worker.status === 'crashed' ? 'crashed' : 'stopped', reason);
-    return this.status(caseId);
   }
 
   async stopAll(reason = 'server shutdown') {
@@ -850,8 +1005,24 @@ export class AgentSupervisor {
     stdout.on('line', (line) => this._handleLine(worker, line));
     stdout.on('error', () => this._handleFatal(worker, new Error('stdout error')));
 
+    // readline 的 Interface 会把它 input 流（这里是 child.stderr）上的 'error'
+    // 原样 re-emit 到自己身上；之前只挂了 'line'，没有任何监听器接住这个
+    // re-emit 的 'error'——Node 的 EventEmitter 对没有监听器的 'error' 事件会
+    // 直接 throw，等价于把子进程 stdio 管道的一次读取故障（EPIPE/ECONNRESET
+    // 之类）升级成宿主进程自己的 uncaughtException，把整个 anqi 服务器一起
+    // 崩掉。这里接住它并统一走 _handleFatal 收尾（kill 存活子进程 + 落
+    // 'crashed' 终态），不让一个 worker 的管道故障波及宿主。
     const stderr = createInterface({ input: child.stderr, crlfDelay: Infinity });
     stderr.on('line', (line) => worker.emit('stderr', { line: worker.redact(line) }));
+    stderr.on('error', () => this._handleFatal(worker, new Error('stderr error')));
+
+    // child.stdin 全程只在 _request()/_writeChildResponse() 里裸 write，从未
+    // 挂过 'error' 监听——同样的道理，stdin 一旦因为子进程已经退出/管道破裂而
+    // 写入失败，会在 stdin 这个 Writable 上 emit 'error'；没有监听器时 Node
+    // 直接 throw，同样会崩掉宿主进程。这里接住并吞掉（不重新抛出），只落
+    // worker 终态——挂起的 RPC/turn 由 _handleFatal 统一 reject，调用方看到的
+    // 是"worker 已终止"而不是进程崩溃。
+    child.stdin.on('error', () => this._handleFatal(worker, new Error('stdin error')));
 
     child.once('error', (error) => this._handleFatal(worker, error));
     child.once('exit', (code, signal) => this._handleExit(worker, code, signal));
@@ -914,7 +1085,18 @@ export class AgentSupervisor {
     worker.emit(sanitizeEventType(worker.redact(String(event.type || 'session.event'))), this._redactEventData(worker, event.data));
 
     if (event.type === 'request/header') {
-      if (!worker.firstTurnChecked) {
+      // 只在这个 worker 生命周期里第一次看到 request/header 时才记录——rc.7
+      // 同一个首个 turn 内，工具/技能集合发生变化（例如懒加载技能命中）会
+      // 追加一条 reason:'change' 的后续 request/header（agent-loop/lib/
+      // index.js:715），事件字段结构与 reason:'initial' 完全相同。之前这里
+      // 只判断 firstTurnChecked（首 turn 门禁是否已经跑完），同一个首 turn
+      // 内的第二条 header 依然会命中并覆盖第一条——门禁 4 在 _maybeResolveTurn
+      // 里读到的就是"变化后"的快照而不是首个真正的 initial 快照，一个本该
+      // 通过（reason:'initial' 且已含所需 MCP 工具）的合规 turn 可能被后到的
+      // change header 覆盖判失败，进而误杀整个 worker。现在只在
+      // _firstRequestHeader 尚未被设置过时才赋值一次，后续同一 turn 内的任何
+      // request/header 都不再覆盖它。
+      if (!worker.firstTurnChecked && worker._firstRequestHeader === undefined) {
         worker._firstRequestHeader = event.data;
       }
     } else if (event.type === 'tool/call') {
@@ -1010,13 +1192,21 @@ export class AgentSupervisor {
     // 这一条路径上 redact，map 里存的仍是原值——子进程把 key 值塞进 toolName
     // 就能靠这条查询接口把它读出来，绕开 SSE 那条已经过滤的路径。
     const toolName = worker.redact(String(params.toolName || ''));
-    const timer = setTimeout(() => {
-      if (!worker.pendingInteractions.has(interactionId)) return;
-      worker.pendingInteractions.delete(interactionId);
+    // expire()：不管是 TTL 计时器触发，还是 worker 提前终态化（turn 失败/
+    // 宿主发现子进程 stdio 故障/子进程退出）触发，都用同一份"回子进程一个
+    // unavailable"的应答逻辑——见 _expirePendingInteractions 顶部注释：之前
+    // 后一类路径只清表、不应答，子进程可能因此一直卡在等审批上，把 stop()
+    // 的两段超时（30s + 10s）白白吃满。
+    const expire = () => {
       this._writeChildResponse(worker, {
         jsonrpc: '2.0', id: message.id,
         result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'unavailable' },
       });
+    };
+    const timer = setTimeout(() => {
+      if (!worker.pendingInteractions.has(interactionId)) return;
+      worker.pendingInteractions.delete(interactionId);
+      expire();
       worker.emit('interaction/expired', { interactionId, type: 'approval' });
     }, this.interactionTtlMs);
     timer.unref?.();
@@ -1027,6 +1217,7 @@ export class AgentSupervisor {
       createdAt: nowIso(),
       expiresAt: new Date(expiresAt).toISOString(),
       timer,
+      expire,
       respond: ({ outcome }) => {
         this._writeChildResponse(worker, {
           jsonrpc: '2.0', id: message.id,
@@ -1057,13 +1248,18 @@ export class AgentSupervisor {
       id: worker.redact(String(q?.id ?? '')),
       question: worker.redact(String(q?.question || '')),
     }));
-    const timer = setTimeout(() => {
-      if (!worker.pendingInteractions.has(interactionId)) return;
-      worker.pendingInteractions.delete(interactionId);
+    // expire()：同 approval 侧——TTL 超时与 worker 提前终态化都要真正应答子
+    // 进程那一头还挂着的 user-question/request，不能只清表不回。
+    const expire = () => {
       this._writeChildResponse(worker, {
         jsonrpc: '2.0', id: message.id,
         error: { code: -32004, message: 'ask_user_question timed out waiting for an answer' },
       });
+    };
+    const timer = setTimeout(() => {
+      if (!worker.pendingInteractions.has(interactionId)) return;
+      worker.pendingInteractions.delete(interactionId);
+      expire();
       worker.emit('interaction/expired', { interactionId, type: 'question' });
     }, this.interactionTtlMs);
     timer.unref?.();
@@ -1074,6 +1270,7 @@ export class AgentSupervisor {
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + this.interactionTtlMs).toISOString(),
       timer,
+      expire,
       respond: (answer) => {
         this._writeChildResponse(worker, {
           jsonrpc: '2.0', id: message.id,
@@ -1087,35 +1284,68 @@ export class AgentSupervisor {
   // 未消费的反向请求一律 fail-closed、one-shot 清表，不留悬空 Promise——
   // _runTurn 判定 turn 失败、_handleFatal、_handleExit 三处共用同一份实现，
   // 避免各自维护一份"clearTimeout + emit + delete"逻辑而遗漏其中一处。
+  //
+  // 之前这里只清表、只广播 interaction/expired，从未真正应答子进程那一头还
+  // 挂着的 JSON-RPC 请求——approval/request、user-question/request 都是子
+  // 进程发出的、等着宿主写回 result/error 的反向 RPC，宿主这边把
+  // pendingInteractions 记录删掉并不会让子进程侧的等待自动结束。子进程可能
+  // 因此一直阻塞在等待审批/回答上，而 stop() 里在这之后还要发一次 shutdown
+  // RPC（最多等 30s）+ 一次强杀等待（最多 10s）——一个卡在等审批的子进程,
+  // shutdown 请求本身也可能因为对方忙于等待而迟迟不处理，等于让 stop() 白白
+  // 吃满这两段超时。现在清表之前，先按类型给子进程回一个明确的终态应答：
+  // approval 回 outcome:'unavailable'（与 TTL 超时兜底的应答语义一致），
+  // question 回 JSON-RPC error（同 TTL 超时兜底），子进程能立即从等待中解
+  // 脱，不必等到自己的 TTL 计时器或者宿主强杀。
   _expirePendingInteractions(worker, reason) {
     for (const [interactionId, record] of worker.pendingInteractions) {
       clearTimeout(record.timer);
+      record.expire();
       worker.emit('interaction/expired', { interactionId, type: record.type, reason });
     }
     worker.pendingInteractions.clear();
   }
 
-  _handleFatal(worker, error) {
+  // 子进程 'error'/stdio 故障共用的即时收尾：拒绝所有在飞的 RPC/turn、让
+  // worker 立刻离开 LIVE_STATUSES、清空并真正应答未消费的反向请求（见
+  // _expirePendingInteractions）——resolveApproval/resolveQuestion 不能在
+  // worker 已经出故障但尚未真正终态化的窗口里把一条本该 fail-closed 的审批
+  // 放行给一个已经死掉的 worker。_handleFatal 与 _handleExit 都需要这一段，
+  // 但各自之后的终态判定不同（见各自方法的注释），抽出来避免不小心让两条
+  // 路径的终态互相抢跑。
+  _rejectInFlight(worker, error, reason) {
     for (const entry of worker.pendingRpc.values()) entry.reject(error);
     worker.pendingRpc.clear();
     worker._turnResolvers?.rejectTurn(error);
-    // 子进程 'error' 事件（或 stdout/stderr 读取失败）不保证紧跟着来一个
-    // 'exit' 事件——中间可能有一段窗口子进程还没真正退出。不能指望只靠
-    // _handleExit 来落终态/清 pendingInteractions：resolveApproval/
-    // resolveQuestion 会在这段窗口里把一条本该 fail-closed 的审批放行给一个
-    // 已经出故障的 worker。这里立刻让 worker 离开 LIVE_STATUSES 并清空未消费
-    // 的反向请求；真正的 exit 事件到达后 _finalizeWorker 仍会按 code/signal
-    // 落一次准确的最终状态（stopped/crashed），不冲突。
     if (LIVE_STATUSES.has(worker.status)) worker.status = 'error';
-    this._expirePendingInteractions(worker, 'worker_fatal');
+    this._expirePendingInteractions(worker, reason);
+  }
+
+  _handleFatal(worker, error) {
+    this._rejectInFlight(worker, error, 'worker_fatal');
+    // 子进程 'error' 事件（或 stdout/stderr/stdin 读写故障）不保证紧跟着来
+    // 一个 'exit' 事件——stdio 管道坏掉不代表子进程本身已经退出，它可能只是
+    // 卡住、不再响应但也不退出。之前这里只把 status 标成 'error'（一个非
+    // LIVE 但也非终态的中间态）、从不 kill 子进程也不落 _finalizeWorker——
+    // 如果 'exit' 事件永远不来，worker 就永久卡在这个中间态：0700 临时
+    // skill 目录永远不会被删除（泄漏），也没有一条可审计的最终状态记录。
+    // 现在主动收尾：子进程仍存活就先 SIGTERM，再落 _finalizeWorker('crashed')
+    // ——_finalizeWorker 本身幂等（_finalized 守卫）；如果真正的 'exit' 事件
+    // 随后还是到达，走的是 _handleExit 自己独立的终态判定路径（见下），不
+    // 会跟这里已经落定的终态冲突，只是个 no-op。
+    if (worker.child && worker.child.exitCode === null) {
+      try { worker.child.kill('SIGTERM'); } catch { /* 已退出或不可 kill，忽略 */ }
+    }
+    this._finalizeWorker(worker, 'crashed', `fatal:${error.message}`.slice(0, 200));
   }
 
   _handleExit(worker, code, signal) {
-    this._handleFatal(worker, new Error(`worker exited (code=${code}, signal=${signal || 'none'})`));
-    // _handleFatal 已经清过一次表；这里的 pendingInteractions 此时必然为空
-    // （同一个事件循环 tick 内同步执行，没有新请求能在两次调用之间插入），
-    // 调用只是为了在退出路径上留一个语义明确的收尾点，不会重复 emit。
-    this._expirePendingInteractions(worker, 'worker_exit');
+    // 不经过 _handleFatal：'exit' 事件本身就意味着子进程已经确实退出，终态
+    // 必须由这里根据 code/signal 精确判定 stopped/crashed；_handleFatal 收尾
+    // 时会把终态硬编码成 'crashed'，如果这里再调用它，一次干净的 graceful
+    // 退出（code 0）也会被那次抢先的 'crashed' 落定（_finalizeWorker 只落一
+    // 次账，第二次判定只是 no-op）。这里只复用"拒绝在飞 RPC/turn + 清空并
+    // 应答未消费反向请求"这一段两条路径共用的逻辑。
+    this._rejectInFlight(worker, new Error(`worker exited (code=${code}, signal=${signal || 'none'})`), 'worker_exit');
     const wasClean = code === 0;
     this._finalizeWorker(worker, wasClean ? 'stopped' : 'crashed', `exit code=${code} signal=${signal || 'none'}`, { code, signal });
   }
@@ -1126,7 +1356,15 @@ export class AgentSupervisor {
     if (worker._finalized) return;
     worker._finalized = true;
     worker.status = status;
-    worker.error = TERMINAL_STATUSES.has(status) && status !== 'stopped' ? detail : worker.error;
+    // worker.error 会经 status()/publicStatus() 原样下发给 HTTP/SSE 层——是
+    // 目前唯一一处绕过 redact() 就能到达外部的自由文本字段。detail 的来源五
+    // 花八门（error.message、JSON-RPC 错误串……），完全可能包含子进程侧带出
+    // 的 key 值（例如 startup_failed:${error.message} 里的 error 本身就可能
+    // 是子进程/上游 provider 回传的错误串）。之前这里原样存 detail，探针已
+    // 经证实能让 key 明文出现在 status().error 里。这里落地前统一过一遍
+    // worker.redact()，与 audit()/emit('worker/exit', ...) 两行一直在用的同
+    // 一份脱敏保持一致。
+    worker.error = TERMINAL_STATUSES.has(status) && status !== 'stopped' ? worker.redact(String(detail ?? '')) : worker.error;
     worker.exitInfo = exitInfo;
     // worker 一旦进入终态（graceful stop 或崩溃），它的 session_id 就不再是
     // 一个活的绑定——不注销的话，一个已经退出的 worker 的 session_id 仍能

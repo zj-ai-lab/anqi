@@ -81,6 +81,11 @@ function isPrivateOrLoopbackHost(hostname) {
   }
   if (lower === 'localhost' || lower === '0.0.0.0' || lower === '::1' || lower === '::') return true;
   if (lower.endsWith('.local')) return true;
+  // RFC 6761 保留的 .localhost 顶级域：任何符合 *.localhost 的 hostname 都
+  // 应当解析到回环地址（探针曾用 http://api.localhost/v1 实测被这里
+  // ALLOW——之前只挡了裸 'localhost' 和 *.local，没覆盖这个同样常见、同样
+  // 指回本机的后缀）。
+  if (lower.endsWith('.localhost')) return true;
   if (/^127\./.test(lower)) return true;
   if (/^10\./.test(lower)) return true;
   if (/^192\.168\./.test(lower)) return true;
@@ -99,6 +104,11 @@ function isPrivateOrLoopbackHost(hostname) {
   }
   // IPv6 ULA fc00::/7（fc00:: 到 fdff:ffff:...），等价于 IPv4 的私网地址段。
   if (/^f[cd][0-9a-f]{0,2}:/.test(lower)) return true;
+  // IPv6 链路本地 fe80::/10（fe80:: 到 febf:ffff:...），等价于 IPv4 的
+  // 169.254.0.0/16——之前只挡了 ULA fc00::/7，没挡这一段，探针曾实测放行。
+  // 第二个十六进制组的取值范围是 0x80-0xbf（次高两位固定为 '10'），也就是
+  // 十六进制第二位落在 8/9/a/b 这四个字符里。
+  if (/^fe[89ab][0-9a-f]{0,2}:/.test(lower)) return true;
   return false;
 }
 

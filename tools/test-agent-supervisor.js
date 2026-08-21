@@ -10,6 +10,14 @@
 // 查询必须脱敏、session/preflight 的宿主侧逐字段核验、turn 失败瞬间必须立即
 // 离开 LIVE 状态（不给已排队的下一个 turn 留抢跑窗口）、pendingInteractions
 // 必须在同一瞬间清空（不给 resolveApproval 留 fail-open 窗口）。
+// 场景 14-22 是本轮加固对应的回归：首 turn 中途出现 reason:'change' 的
+// request/header 不能覆盖 initial 快照、子进程 stdio 管道故障不能崩宿主、
+// redactDeep 的总量兜底（累计字节预算 + 数组元素上限）、'stopping' 态必须
+// 阻止同案重复 spawn、_handleFatal 必须真正 kill+落终态（即使子进程卡死不
+// 退出）、worker.error 必须兜底 redact、重复 start() 必须返回实时快照而不是
+// 冻结的旧值、_expirePendingInteractions 必须真正应答子进程而不是只清表、
+// assets/node_modules 必须由 supervisor 运行时确保（缺失自动补、意外目录拒绝
+// 覆盖）。
 //
 // DB_PATH 隔离到临时文件：这个脚本会插入案件行、写 agent_* 设置，绝不能碰
 // 仓库真实的 data/anjian.db——否则跑一次自检就会在真实设置表里把
@@ -199,7 +207,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'disabled', 'enabled 非 true 时必须返回 disabled');
   assert.equal(supervisor.workers.has(caseId), false, 'disabled 短路不应该创建 worker 记录');
-  console.log('  [1/13] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
+  console.log('  [1/22] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
 }
 
 // ---- 场景 2：enabled=true 但案件夹越出 ANJIAN_FILES_ROOT（不存在/未对应）----
@@ -223,7 +231,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'case_folder_missing');
   assert.equal(supervisor.workers.has(caseId) === false || supervisor.workers.get(caseId)?.status === 'error', true);
-  console.log('  [2/13] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [2/22] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // ---- 场景 3：案件夹是 symlink（越权手法之一）----
@@ -247,7 +255,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'cwd_invalid');
-  console.log('  [3/13] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [3/22] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // 场景 4-11 共用：起一个用 FakeChild 顶替真实 DSH 子进程的 worker。
@@ -318,7 +326,7 @@ async function startFakeWorker(opts) {
   assert.equal(becameNotLive, true, '超时后 worker 必须离开 ready/running（被终止）');
   const wasKilledOrShutdown = await waitUntil(() => child.killed || child.exitCode !== null);
   assert.equal(wasKilledOrShutdown, true, '超时后必须真正终止子进程（kill 或 shutdown→exit），不能只是 status 回 ready');
-  console.log('  [4/13] turn 超时：ok（真正终止了 worker，不是只改 status）');
+  console.log('  [4/22] turn 超时：ok（真正终止了 worker，不是只改 status）');
 }
 
 // ---- 场景 5：首个 turn 的 MCP 门禁失败不能被同一 worker 的下一个 turn 绕过 ----
@@ -342,7 +350,7 @@ async function startFakeWorker(opts) {
   // firstTurnChecked=true"的免检资格——再 prompt 只会因为 worker 不在跑而被拒。
   assert.equal(worker.firstTurnChecked, false, 'firstTurnChecked 不应该在失败时被置 true');
   await assert.rejects(supervisor.prompt(caseId, '第二个 turn 想蹭免检'), /worker is not running/);
-  console.log('  [5/13] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
+  console.log('  [5/22] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
 }
 
 // ---- 场景 6：跨 session 的反向请求必须原地拒绝，不进 pendingInteractions ----
@@ -376,7 +384,7 @@ async function startFakeWorker(opts) {
   const reply = framesFromSupervisor.find((f) => f.id === 9001);
   assert.ok(reply, '必须已经原地回了这条跨 session 请求的响应');
   assert.equal(reply.result?.outcome, 'unavailable', '跨 session 的 approval 必须回 unavailable，而不是悬在待办表里');
-  console.log('  [6/13] 跨 session 反向请求：ok（原地拒绝，未入表）');
+  console.log('  [6/22] 跨 session 反向请求：ok（原地拒绝，未入表）');
 }
 
 // ---- 场景 7：listPendingInteractions() 必须脱敏，不能原样吐出 toolName ----
@@ -407,7 +415,7 @@ async function startFakeWorker(opts) {
   assert.equal(pending[0].toolName.includes(FAKE_KEY), false, 'listPendingInteractions 不能原样吐出 key 值');
   assert.equal(pending[0].toolName.includes('[REDACTED]'), true, 'toolName 必须被 redact 过');
   await supervisor.stop(caseId, 'test cleanup');
-  console.log('  [7/13] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
+  console.log('  [7/22] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
 }
 
 // ---- 场景 8：session/preflight 的返回值必须被宿主逐字段核验 ----
@@ -432,7 +440,7 @@ async function startFakeWorker(opts) {
   assert.match(status.error || '', /startup_failed/, 'error 字段必须体现是启动序列失败');
   const childKilled = await waitUntil(() => worker.child.killed || worker.child.exitCode !== null);
   assert.equal(childKilled, true, 'preflight 门禁失败后必须终止子进程，不能泄漏');
-  console.log('  [8/13] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
+  console.log('  [8/22] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
 }
 
 // ---- 场景 9：turn 失败必须立即离开 LIVE 状态，不给已排队的下一个 turn 留 ----
@@ -489,7 +497,7 @@ async function startFakeWorker(opts) {
   const outcome3 = await turn3Settled;
   assert.equal(outcome3.ok, false, 'turn3 不能被静默 resolve——worker 必须已经离开 LIVE 状态');
   assert.equal(promptCount, 2, 'turn3 不应该真的发出 session/prompt（worker 应在排队时已判定不再存活）');
-  console.log('  [9/13] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
+  console.log('  [9/22] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
 }
 
 // ---- 场景 10：turn 失败瞬间必须清空 pendingInteractions，approval 不能在 ----
@@ -537,7 +545,7 @@ async function startFakeWorker(opts) {
   const result = supervisor.resolveApproval(caseId, interactionId, 'allowed-once');
   assert.equal(result.ok, false, 'turn 判失败后必须立即 fail-closed，approval 不能再被放行');
   assert.deepEqual(supervisor.listPendingInteractions(caseId), [], 'pendingInteractions 必须已经清空');
-  console.log('  [10/13] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
+  console.log('  [10/22] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
 }
 
 // ---- 场景 11：supervisor 必须真的接线 session-registry 的 bind/unbind ----
@@ -554,7 +562,7 @@ async function startFakeWorker(opts) {
   assert.equal(caseIdForSession(worker.sessionId), caseId, 'start() 之后必须能通过 session-registry 反查到绑定的 caseId');
   await supervisor.stop(caseId, 'test cleanup: 场景 11 收尾');
   assert.equal(caseIdForSession(worker.sessionId), null, 'worker 终态收尾之后 session-registry 里的绑定必须被注销');
-  console.log('  [11/13] supervisor 接线 session-registry：ok（start 绑定、终态收尾注销）');
+  console.log('  [11/22] supervisor 接线 session-registry：ok（start 绑定、终态收尾注销）');
 }
 
 // ---- 场景 12：onEvent() 与 worker 生命周期解耦（登记在 supervisor 层，不
@@ -616,7 +624,7 @@ async function startFakeWorker(opts) {
 
   unsubscribe();
   await supervisor.stop(caseId, 'test cleanup: 场景 12 收尾');
-  console.log('  [12/13] onEvent() 与 worker 生命周期解耦：ok（提前订阅 + 跨重启订阅均生效）');
+  console.log('  [12/22] onEvent() 与 worker 生命周期解耦：ok（提前订阅 + 跨重启订阅均生效）');
 }
 
 // ---- 场景 13：setInternalBaseURL() 生效于新 spawn；forceKillAll() 兜底强杀 ----
@@ -670,7 +678,358 @@ async function startFakeWorker(opts) {
   const killed = await waitUntil(() => child.exitCode !== null);
   assert.equal(killed, true, 'forceKillAll() 之后子进程必须真的退出');
   assert.equal(child.lastKillSignal, 'SIGKILL', 'forceKillAll() 必须发送 SIGKILL，不是走 graceful shutdown 往返');
-  console.log('  [13/13] setInternalBaseURL()/forceKillAll()：ok（新 spawn 用纠正后的 base URL；兜底强杀真的杀）');
+  console.log('  [13/22] setInternalBaseURL()/forceKillAll()：ok（新 spawn 用纠正后的 base URL；兜底强杀真的杀）');
+}
+
+// ---- 场景 14：首 turn 中途出现 reason:'change' 的 request/header 不能覆盖 ----
+// ---- initial 快照 ----
+// 修复前：_firstRequestHeader 只要 firstTurnChecked 还是 false 就会被无条件
+// 覆盖——rc.7 同一个首个 turn 内，工具/技能集合发生变化时会追加一条
+// reason:'change' 的后续 request/header（agent-loop/lib/index.js:715），字段
+// 形状与 reason:'initial' 完全相同。这里让 initial header 带着所需 MCP 工具，
+// 之后追加一条不带任何工具的 change header，断言门禁 4 仍然按 initial 那份
+// 快照判断（turn 正常完成），不会被后到的 change header 误判失败。
+{
+  const { supervisor, caseId } = await startFakeWorker({
+    handlers: {
+      'session/prompt': (frame, c) => {
+        const sessionId = frame.params.sessionId;
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+        c.sendLine({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'running' } });
+        c.sendLine({
+          jsonrpc: '2.0', method: 'session.event',
+          params: { sessionId, event: { type: 'request/header', data: { reason: 'initial', header: { tools: [{ name: REQUIRED_MCP_TOOL }] } } } },
+        });
+        c.sendLine({
+          jsonrpc: '2.0', method: 'session.event',
+          params: { sessionId, event: { type: 'tool/call', data: { name: REQUIRED_MCP_TOOL } } },
+        });
+        // 同一首 turn 内追加的 change header——不带所需 MCP 工具。修复前这里
+        // 会覆盖 _firstRequestHeader，让门禁 4 在 turn 结尾读到这份"变化后"
+        // 的快照，误判一个本该通过的合规 turn 失败。
+        c.sendLine({
+          jsonrpc: '2.0', method: 'session.event',
+          params: { sessionId, event: { type: 'request/header', data: { reason: 'change', header: { tools: [] } } } },
+        });
+        c.sendLine({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'idle' } });
+        c.sendLine({
+          jsonrpc: '2.0', method: 'session.event',
+          params: { sessionId, event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } },
+        });
+      },
+    },
+  });
+  const outcome = await settle(supervisor.prompt(caseId, '首 turn 中途出现 change header'));
+  assert.equal(outcome.ok, true, '首 turn 中途追加的 change header 不应该覆盖 initial 快照、误判门禁 4 失败');
+  await supervisor.stop(caseId, 'test cleanup: 场景 14 收尾');
+  console.log('  [14/22] request/header change 不覆盖 initial 快照：ok（门禁 4 仍按 initial 判定）');
+}
+
+// ---- 场景 15：子进程 stdio 管道故障不能崩宿主 ----
+// 修复前：stderr 的 readline 只挂 'line'，没挂 'error'——readline 会把 input
+// 流（child.stderr）的 'error' 原样 re-emit 到自己身上，没有监听器时 Node
+// 直接 throw；child.stdin 全程裸 write，从未挂过 'error'，写入失败同样会
+// throw。这两处任何一个真的抛出，都会把宿主进程一起崩掉（Node 对没有监听器
+// 的 EventEmitter 'error' 事件是同步 throw，不是 reject 一个 promise）。这里
+// 分别对两个新 worker 的 stderr/stdin 直接 emit 'error'，用
+// assert.doesNotThrow 证明宿主不会崩，并确认 worker 最终被真正收尾（不是卡
+// 在一个既非 LIVE 也非终态的中间态）。
+{
+  const { supervisor: supervisorStderr, caseId: caseIdStderr, worker: workerStderr } = await startFakeWorker({});
+  assert.doesNotThrow(
+    () => workerStderr.child.stderr.emit('error', new Error('模拟 stderr 管道故障')),
+    'stderr 的 error 事件不应该让宿主进程崩溃'
+  );
+  const stderrTerminal = await waitUntil(() => supervisorStderr.status(caseIdStderr).status === 'crashed');
+  assert.equal(stderrTerminal, true, 'stderr 故障之后 worker 必须被真正收尾成 crashed');
+
+  const { supervisor: supervisorStdin, caseId: caseIdStdin, worker: workerStdin } = await startFakeWorker({});
+  assert.doesNotThrow(
+    () => workerStdin.child.stdin.emit('error', new Error('模拟 stdin 写入故障')),
+    'stdin 的 error 事件不应该让宿主进程崩溃'
+  );
+  const stdinTerminal = await waitUntil(() => supervisorStdin.status(caseIdStdin).status === 'crashed');
+  assert.equal(stdinTerminal, true, 'stdin 故障之后 worker 必须被真正收尾成 crashed');
+  console.log('  [15/22] stdio 管道故障不崩宿主：ok（stderr/stdin 的 error 事件均被接住并落终态）');
+}
+
+// ---- 场景 16：redactDeep 的总量兜底（累计字节预算 + 数组元素数上限）----
+// 修复前：redactDeep 只对每个 string 叶子单独限长，容器结构（数组/对象）本身
+// 没有总量约束——一个几千元素的数组，每个元素都是几百字符的短字符串，逐叶子
+// 检查全部合规，序列化后的整个事件依然可以轻松几百 KB 到几 MB（探针曾复现过
+// 1.56MB 的单事件）。这里直接调用 worker.redact.deep()（供 _redactEventData
+// 内部使用的同一个函数），喂一个 5000 元素的大数组，断言：a) 数组被截到不超过
+// 元素数上限，多出的部分折叠成一条 "[truncated N items]" 标记；b) 折叠后的
+// 结构整体序列化后的字节数远小于原始输入。
+{
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  const originalItemCount = 5000;
+  const hugeArray = Array.from({ length: originalItemCount }, (_, i) => `item-${i}-${'x'.repeat(200)}`);
+  const originalBytes = Buffer.byteLength(JSON.stringify(hugeArray), 'utf8');
+  const redacted = worker.redact.deep({ items: hugeArray });
+  assert.ok(Array.isArray(redacted.items), 'items 仍应该是数组，不是被整体丢弃成占位符');
+  const lastItem = redacted.items[redacted.items.length - 1];
+  assert.equal(typeof lastItem, 'string', '超出上限的部分应该折叠成一条字符串标记');
+  assert.match(lastItem, /^\[truncated \d+ items\]$/, '折叠标记必须是 "[truncated N items]" 这个形状');
+  const redactedBytes = Buffer.byteLength(JSON.stringify(redacted), 'utf8');
+  assert.ok(redactedBytes < originalBytes / 10, `折叠后的字节数（${redactedBytes}）应该远小于原始输入（${originalBytes}），不能只做了逐叶子限长`);
+  assert.ok(redacted.items.length < originalItemCount, '保留的元素个数必须明显少于原始数组长度');
+  console.log('  [16/22] redactDeep 总量兜底：ok（数组元素数上限 + 累计字节预算均生效）');
+  await supervisor.stop(caseId, 'test cleanup: 场景 16 收尾');
+}
+
+// ---- 场景 17：'stopping' 态必须阻止同一案件重复 spawn ----
+// 修复前：LIVE_STATUSES 不含 'stopping'，turn 失败后 worker 进入 'stopping'
+// 到真正终态化之间有一段窗口（最坏 30s shutdown 往返 + 10s 强杀等待）；这段
+// 窗口里再调用 start()，旧的 LIVE 判断直接放过，会重新 spawn 一个全新 worker
+// ——两个活子进程同时挂在同一个 caseId 名下，违反"每案最多一个 active
+// worker"。这里手工制造同样的时序：turn 因超时触发内部 stop()，在它真正落定
+// 之前（worker.status 恰好是 'stopping'）直接调用 start()，断言：a) 只重新
+// spawn 了一次；b) 新 spawn 发生时旧的子进程必须已经真正退出（start() 确实
+// 先 await 了在飞的 stop()，不是抢跑）。
+{
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+
+  const caseName = `自检案-防重复spawn-${Math.random().toString(36).slice(2)}`;
+  const caseId = insertCase(caseName);
+  fs.mkdirSync(path.join(filesRoot, caseName));
+
+  const children = [];
+  const supervisor = new AgentSupervisor({
+    filesRoot,
+    turnTimeoutMs: 80,
+    spawnFn: () => {
+      const child = makeFakeChild(undefined, {
+        'session/create': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: frame.params.sessionId } });
+        },
+        'session/prompt': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          // 故意不回 running/idle/turn-end——逼超时，触发内部 stop()。
+        },
+        shutdown: (frame, c) => {
+          // 拖延应答：制造"判失败"与"真正终止"之间足够宽的时间差窗口。
+          const timer = setTimeout(() => {
+            c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+            c.emitExit(0, null);
+          }, 300);
+          timer.unref?.();
+        },
+      });
+      children.push(child);
+      return child;
+    },
+  });
+
+  const status1 = await supervisor.start(caseId);
+  assert.equal(status1.status, 'ready');
+  const firstChild = children[0];
+
+  const turnOutcome = settle(supervisor.prompt(caseId, '会超时失败，触发内部 stop()'));
+  const enteredStopping = await waitUntil(() => supervisor.workers.get(caseId).status === 'stopping');
+  assert.equal(enteredStopping, true, 'turn 超时后 worker 应该先进入 stopping');
+
+  // 在这个窗口内直接调用 start()，模拟"用户立刻重开 drawer"。这个 start()
+  // 内部要 await 在飞的 stop()，而 stop() 落定依赖 FakeChild 那个故意 unref
+  // 的 300ms shutdown 计时器——必须用 settle()（ref 式轮询）包一层，否则前面
+  // 两个 waitUntil/settle 的保活轮询都已经结束，事件循环会判定"无事可做"，
+  // 这个 await 会真的永远挂起（同本文件顶部关于 unref 计时器的注释）。
+  const status2Settled = await settle(supervisor.start(caseId));
+  assert.equal(status2Settled.ok, true, '重新 start() 不应该 reject');
+  const status2 = status2Settled.value;
+  await turnOutcome;
+
+  assert.equal(children.length, 2, '应该恰好重新 spawn 了一次（不多不少）');
+  assert.equal(firstChild.exitCode, 0, '旧 worker 的子进程必须已经真正退出，才轮到新 worker spawn（start() 必须先 await 在飞的 stop()）');
+  assert.equal(status2.status, 'ready', '等旧 worker 收尾完之后，新 worker 应该正常进入 ready');
+  // 收尾用的 stop() 同样要走 settle()：新 worker 的 FakeChild 复用了同一份
+  // handlers（shutdown 依然是那个故意 unref 的 300ms 延迟应答），没有保活
+  // 轮询的话这次 await 也会真的永远挂起。
+  await settle(supervisor.stop(caseId, 'test cleanup: 场景 17 收尾'));
+  console.log('  [17/22] "stopping" 态阻止重复 spawn：ok（start() 等在飞 stop() 落定才重新 spawn）');
+}
+
+// ---- 场景 18：_handleFatal 必须真正 kill + 落终态，即使子进程卡死不退出 ----
+// 修复前：_handleFatal 只把 status 标成 'error'（一个非 LIVE 但也非终态的
+// 中间态），从不 kill 子进程也不调用 _finalizeWorker——如果 'exit' 事件永远
+// 不来（子进程卡死、不响应 SIGTERM），worker 会永久卡在这个中间态：0700
+// 临时 skill 目录永远不会被清理，也没有一条可审计的最终状态记录。这里覆写
+// child.kill() 让它"收到信号也不真的退出"，模拟卡死场景，断言 _handleFatal
+// 仍然必须：a) 尝试 kill；b) 把 worker 落到 'crashed' 终态；c) 清理临时
+// skill 目录，而不是永远等一个不会来的 'exit'。
+{
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  const child = worker.child;
+  child.kill = (signal) => { child.killed = true; child.lastKillSignal = signal; }; // 不再自动 emitExit
+  child.stdout.emit('error', new Error('模拟 stdout 管道故障，子进程本身卡死不退出'));
+  const becameCrashed = await waitUntil(() => supervisor.status(caseId).status === 'crashed');
+  assert.equal(becameCrashed, true, '即使子进程卡死不退出，_handleFatal 也必须真正落 crashed 终态');
+  assert.equal(child.killed, true, '仍存活的子进程必须先被尝试 SIGTERM');
+  assert.equal(worker.skillsRootTmp, null, '终态落定后必须已经清理 0700 临时 skill 目录');
+  console.log('  [18/22] _handleFatal 收尾兜底：ok（卡死不退出的子进程也会被落 crashed 且清理临时目录）');
+}
+
+// ---- 场景 19：worker.error 必须兜底 redact，不能有任何路径绕过 ----
+// 修复前：_finalizeWorker 把 detail 原样存进 worker.error，status()/
+// publicStatus() 会把它原样下发给 HTTP/SSE 层——探针已经证实某些调用点传入
+// 未经 redact 的 detail 时，key 值会明文出现在 status().error 里。这里直接
+// 喂一段含 key 值的 detail 给 _finalizeWorker（模拟"某个调用点忘记先 redact"
+// 的情况），断言 status().error 里不含明文 key、且体现出已经被 redact。
+{
+  const FAKE_KEY = 'not-a-real-key'; // 与 startFakeWorker 里设的 apiKeyEnv 值一致
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  supervisor._finalizeWorker(worker, 'error', `boom: leaked ${FAKE_KEY} here`);
+  const status = supervisor.status(caseId);
+  assert.equal(status.error.includes(FAKE_KEY), false, 'status().error 不能包含 key 明文');
+  assert.equal(status.error.includes('[REDACTED]'), true, 'status().error 必须体现已经被 redact 过');
+  console.log('  [19/22] worker.error 兜底 redact：ok（未泄漏 key 值）');
+}
+
+// ---- 场景 20：重复 start() 必须返回实时快照，不是冻结的旧 ready 快照 ----
+// 修复前：worker 仍 LIVE 时重复 start() 直接返回 existing.readyPromise——那
+// 是启动刚成功那一刻（worker.status 恰好是 'ready'）resolve 掉的旧 Promise，
+// 之后 worker 进入 'running' 甚至变化多次，调用方拿到的永远是那张冻结快照。
+// 这里让 worker 停在 'running'（故意不回 running/idle/turn-end），断言重复
+// start() 返回的 status 是 'running' 而不是历史缓存的 'ready'。
+{
+  const { supervisor, caseId } = await startFakeWorker({
+    extra: { turnTimeoutMs: 5000 },
+    handlers: {
+      'session/prompt': (frame, c) => {
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+        // 故意不回 running/idle/turn-end——让 worker 长期停在 'running'。
+      },
+    },
+  });
+  supervisor.prompt(caseId, '让 worker 停在 running').catch(() => {});
+  const becameRunning = await waitUntil(() => supervisor.workers.get(caseId).status === 'running');
+  assert.equal(becameRunning, true, 'worker 应该先进入 running');
+  const reopened = await supervisor.start(caseId);
+  assert.equal(reopened.status, 'running', '重复 start() 必须反映当下真实状态，不能返回启动刚成功那一刻冻结的 ready 快照');
+  await supervisor.stop(caseId, 'test cleanup: 场景 20 收尾');
+  console.log('  [20/22] start() 重复调用返回实时快照：ok（不是冻结的旧 ready 快照）');
+}
+
+// ---- 场景 21：_expirePendingInteractions 必须真正应答子进程，不能只清表 ----
+// 修复前：这里只清表、只广播 interaction/expired，从未真正应答子进程那一头
+// 还挂着的 approval/request、user-question/request——子进程可能因此一直阻塞
+// 在等待审批/回答上。这里让子进程发出一条 approval 和一条 question，之后 turn
+// 因超时失败触发清表，断言 supervisor 确实往 child.stdin 写回了对应 id 的
+// 应答帧（approval → outcome:'unavailable'；question → JSON-RPC error），
+// 而不是子进程那头永远等不到回复。
+{
+  const framesFromSupervisor = [];
+  const { supervisor, caseId, worker } = await startFakeWorker({
+    extra: { turnTimeoutMs: 80, interactionTtlMs: 5000 },
+    handlers: {
+      'session/prompt': (frame, c) => {
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+        c.sendLine({
+          jsonrpc: '2.0', id: 9010, method: 'approval/request',
+          params: { sessionId: frame.params.sessionId, approvalId: 'a10', toolName: 'write' },
+        });
+        c.sendLine({
+          jsonrpc: '2.0', id: 9011, method: 'user-question/request',
+          params: { sessionId: frame.params.sessionId, questions: [{ id: 'q1', question: '要不要继续？' }] },
+        });
+        // 故意不回 running/idle/turn-end——逼 turn 走超时分支，连带触发
+        // pendingInteractions 的清表。
+      },
+      shutdown: (frame, c) => {
+        const timer = setTimeout(() => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          c.emitExit(0, null);
+        }, 300);
+        timer.unref?.();
+      },
+    },
+  });
+  worker.child.stdin.on('data', (chunk) => {
+    for (const line of chunk.toString('utf8').split('\n')) {
+      if (!line.trim()) continue;
+      framesFromSupervisor.push(JSON.parse(line));
+    }
+  });
+  const outcome = await settle(supervisor.prompt(caseId, '触发两个待处理反向请求，之后 turn 超时'));
+  assert.equal(outcome.ok, false, 'turn 应该因为超时而失败');
+  const approvalReply = framesFromSupervisor.find((f) => f.id === 9010);
+  const questionReply = framesFromSupervisor.find((f) => f.id === 9011);
+  assert.ok(approvalReply, 'turn 失败清表时必须真正应答子进程那条 approval/request，不能只清表不回');
+  assert.equal(approvalReply.result?.outcome, 'unavailable', '过期 approval 必须回 outcome:unavailable');
+  assert.ok(questionReply, 'turn 失败清表时必须真正应答子进程那条 user-question/request');
+  assert.ok(questionReply.error, '过期 question 必须回 JSON-RPC error，而不是悬空不回');
+  console.log('  [21/22] _expirePendingInteractions 真正应答子进程：ok（approval unavailable / question error）');
+}
+
+// ---- 场景 22：assets/node_modules 由 supervisor 运行时确保 ----
+// 修复前：src/agent/assets/node_modules 是提交进仓库的一条符号链接，指向
+// src/agent/runtime/node_modules（该目录本身从不进仓库）——全新 clone 在跑
+// runtime 自己那次 npm install 之前，这条链接天然悬空。现在改成
+// ensureAssetsNodeModulesLink() 在每次 start() 真正 spawn 之前运行时确保：
+// 链接缺失就补回来；那个位置被换成一个意外的非符号链接条目（例如误放的真实
+// 目录）时必须拒绝，不能静默覆盖调用方可能有意放置的东西。这里直接操作仓库
+// 真实的 assets/node_modules（单例路径，不是测试隔离出来的临时目录），用
+// try/finally 保证测试结束后一定恢复成正确状态。
+{
+  const assetsLinkPath = path.join(AGENT_RUNTIME_PATHS.assetsDir, 'node_modules');
+  const runtimeNodeModulesPath = path.join(AGENT_RUNTIME_PATHS.runtimeDir, 'node_modules');
+  const originalStat = fs.lstatSync(assetsLinkPath);
+  assert.equal(originalStat.isSymbolicLink(), true, '测试前置条件：assets/node_modules 应该已经是一条符号链接');
+
+  fs.rmSync(assetsLinkPath, { force: true });
+  try {
+    clearAgentSettings();
+    setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+    setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+    setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+    setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+    process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+    process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+
+    // 场景 A：链接缺失时，start() 必须在 spawn 之前自己补回来。
+    const caseNameA = `自检案-node_modules链接缺失-${Math.random().toString(36).slice(2)}`;
+    const caseIdA = insertCase(caseNameA);
+    fs.mkdirSync(path.join(filesRoot, caseNameA));
+    const supervisorA = new AgentSupervisor({
+      filesRoot,
+      spawnFn: () => makeFakeChild(undefined, {
+        'session/create': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: frame.params.sessionId } });
+        },
+      }),
+    });
+    const statusA = await supervisorA.start(caseIdA);
+    assert.equal(statusA.status, 'ready', '缺失链接不应该阻止启动——supervisor 应该自己先补回来');
+    const relinked = fs.lstatSync(assetsLinkPath);
+    assert.equal(relinked.isSymbolicLink(), true, 'start() 之后 assets/node_modules 必须重新是一条符号链接');
+    assert.equal(
+      fs.realpathSync(assetsLinkPath), fs.realpathSync(runtimeNodeModulesPath),
+      '重建的链接必须指向 runtime/node_modules'
+    );
+    await supervisorA.stop(caseIdA, 'test cleanup: 场景 22A 收尾');
+
+    // 场景 B：那个位置被换成一个意外的真实目录时，start() 必须拒绝。
+    fs.rmSync(assetsLinkPath, { recursive: true, force: true });
+    fs.mkdirSync(assetsLinkPath);
+    const caseNameB = `自检案-node_modules意外目录-${Math.random().toString(36).slice(2)}`;
+    const caseIdB = insertCase(caseNameB);
+    fs.mkdirSync(path.join(filesRoot, caseNameB));
+    const supervisorB = new AgentSupervisor({ filesRoot, spawnFn: neverSpawn() });
+    const statusB = await supervisorB.start(caseIdB);
+    assert.equal(statusB.status, 'error');
+    assert.equal(statusB.error, 'runtime_link_invalid', '意外的非符号链接条目必须让 start() 拒绝，不能静默覆盖');
+    assert.equal(supervisorB.workers.has(caseIdB), false, '拒绝时不应该留下一个已注册的 worker');
+  } finally {
+    fs.rmSync(assetsLinkPath, { recursive: true, force: true });
+    fs.symlinkSync(runtimeNodeModulesPath, assetsLinkPath, 'dir');
+  }
+  console.log('  [22/22] assets/node_modules 运行时确保：ok（缺失自动补链接；意外目录拒绝覆盖）');
 }
 
 clearAgentSettings();

@@ -100,6 +100,25 @@ for (const host of ['http://127.0.0.1:3007', 'http://localhost:9999', 'http://10
   assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝`);
 }
 
+// 11.5) *.localhost 后缀（RFC 6761 保留、天然解析回回环地址）与 IPv6 链路本地
+//       fe80::/10——探针曾用 http://api.localhost/v1 实测被 ALLOW（之前只挡了
+//       裸 'localhost' 和 *.local，没覆盖这个同样常见的后缀）；fe80::/10 之前
+//       只挡了 ULA fc00::/7，同样漏了。
+for (const host of [
+  'http://api.localhost/v1',
+  'http://foo.bar.localhost:8080/',
+  'http://[fe80::1]/',
+  'http://[fe80::abcd:1234]/',
+  'http://[febf:ffff::1]/', // fe80::/10 段末尾
+]) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（.localhost 后缀 / fe80::/10 链路本地）`);
+}
+// 边界之外的地址必须仍然放行，确认没有误伤——fec0:: 已经在 fe80::/10 之外。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://[fec0::1]/');
+assert.equal(loadAgentConfig().enabled, true, 'fe80::/10 段之外的 fec0:: 不应该被误伤');
+
 // 12) deepseek-official 的 baseURL 只允许官方域名，不能被覆盖成任意第三方
 //     host（否则等于把 deepseek 的 key 发给攻击者服务器）。
 setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
