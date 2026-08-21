@@ -423,6 +423,63 @@ async function startFakeWorker(opts) {
   console.log('  [7/23] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
 }
 
+// ---- 场景 7b：publicStatus() 必须一并投影 pendingInteractions（含题面文字），
+// interaction/pending 的 question 广播也必须带上题面 ----
+// 修复前：publicStatus()（案件 assistant drawer 的唯一状态快照来源，SSE 首帧
+// 与 GET /api/agent/status 共用同一份投影）不含 pendingInteractions 字段——
+// 抽屉在「打开抽屉/刷新页面」这一刻如果恰好有一条已经在等待人工应答的
+// question，除了 interaction/pending 事件本身（且该事件此前只广播
+// {interactionId,type}，连题面文字都没有）以外，完全没有别的办法知道题面写
+// 的是什么，题面文字实际上只存在于宿主进程内存的 pendingInteractions 表里、
+// 从未离开过 supervisor。这里断言两处都已经补上：a) publicStatus() 的
+// pendingInteractions 数组能读到脱敏后的题面文字；b) 实时广播的
+// interaction/pending 事件本身也带 questions 字段，不需要额外一次往返查询。
+{
+  const FAKE_KEY = 'not-a-real-key';
+  const events = [];
+  const { supervisor, caseId } = await startFakeWorker({
+    extra: { turnTimeoutMs: 5000 },
+    handlers: {
+      'session/prompt': (frame, c) => {
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+        c.sendLine({
+          jsonrpc: '2.0', id: 9010, method: 'user-question/request',
+          params: {
+            sessionId: frame.params.sessionId,
+            questions: [{ id: 'q1', question: `确认操作吗？关联 key=${FAKE_KEY}` }],
+          },
+        });
+      },
+    },
+  });
+  supervisor.onEvent(caseId, (event) => events.push(event));
+  supervisor.prompt(caseId, '触发一条 user-question').catch(() => {});
+  const found = await waitUntil(() => supervisor.listPendingInteractions(caseId).length > 0);
+  assert.equal(found, true, '应该已经产生一条待处理的 question');
+
+  const snapshot = supervisor.publicStatus(caseId);
+  assert.equal(Array.isArray(snapshot.pendingInteractions), true, 'publicStatus() 必须携带 pendingInteractions 数组');
+  assert.equal(snapshot.pendingInteractions.length, 1, 'publicStatus() 的 pendingInteractions 应该反映这一条 question');
+  const snapQuestion = snapshot.pendingInteractions[0];
+  assert.equal(snapQuestion.type, 'question');
+  assert.equal(Array.isArray(snapQuestion.questions), true, 'publicStatus() 的 question 记录必须带 questions（题面文字），抽屉才能渲染表单');
+  assert.match(snapQuestion.questions[0].question, /确认操作吗/, '题面文字必须能读到（脱敏不等于整句清空）');
+  assert.equal(snapQuestion.questions[0].question.includes(FAKE_KEY), false, '题面文字里夹带的 key 值必须被脱敏');
+  assert.equal(snapQuestion.questions[0].question.includes('[REDACTED]'), true, '题面文字必须经过 redact()');
+  // publicStatus() 不能顺带把 sessionId/cwd/pid 这类内部标识从这个新字段的
+  // 缝隙里带出去——防止"新增字段成为脱敏旁路"这类回归。
+  assert.equal(JSON.stringify(snapshot).includes(supervisor.status(caseId).sessionId), false, 'pendingInteractions 新字段不能泄漏内部 sessionId');
+
+  const liveEvent = events.find((e) => e.type === 'interaction/pending' && e.data?.type === 'question');
+  assert.ok(liveEvent, '必须能在实时广播里找到这条 interaction/pending 事件');
+  assert.equal(Array.isArray(liveEvent.data.questions), true, '实时广播的 interaction/pending 事件本身也必须带 questions，不能只有 interactionId/type');
+  assert.match(liveEvent.data.questions[0].question, /确认操作吗/);
+  assert.equal(liveEvent.data.questions[0].question.includes(FAKE_KEY), false, '实时广播里的题面文字同样必须脱敏');
+
+  await supervisor.stop(caseId, 'test cleanup: 场景 7b 收尾');
+  console.log('  [7b/23] publicStatus() 投影 pendingInteractions + interaction/pending 携带题面：ok（抽屉可以只靠 SSE 渲染问题表单）');
+}
+
 // ---- 场景 8：session/preflight 的返回值必须被宿主逐字段核验 ----
 // 修复前：supervisor 只 await session/preflight，从不检查它的返回值——子
 // 进程返回一个 tools/skills 都不满足门禁的结果，宿主照样把 worker 判成

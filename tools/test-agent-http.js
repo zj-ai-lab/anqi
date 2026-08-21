@@ -47,14 +47,17 @@ class FakeSupervisor {
   status() { return this.statusResult; }
   // 真实 supervisor 的安全投影(见 src/agent/supervisor.js publicStatus())：
   // 只吐 status/caseId/caseName/dshVersion/startedAt/provider/model/error/
-  // exitInfo，不带 sessionId/cwd/pid——这里照抄同一份字段列表，好让测试断言
-  // 真的能验证路由层用的是投影后的方法而不是原始 status()。
+  // exitInfo/pendingInteractions，不带 sessionId/cwd/pid——这里照抄同一份字段
+  // 列表，好让测试断言真的能验证路由层用的是投影后的方法而不是原始 status()。
+  // pendingInteractions 默认给空数组（本文件只测路由层转发/校验，不重现
+  // supervisor 内部的 approval/question 状态机，那部分覆盖在
+  // tools/test-agent-supervisor.js 场景 7b）。
   publicStatus() {
     this.publicStatusCalls += 1;
     const full = this.statusResult;
     if (!full) return null;
-    const { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo } = full;
-    return { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo };
+    const { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo, pendingInteractions } = full;
+    return { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo, pendingInteractions: pendingInteractions || [] };
   }
   isLive() {
     return ['starting', 'ready', 'running'].includes((this.statusResult || {}).status);

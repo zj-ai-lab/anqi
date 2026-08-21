@@ -85,6 +85,45 @@
       </div>
     </div>
 
+    <!-- ═════ AI 助理（DSH sidecar：案件页对话式助理，默认关闭） ═════ -->
+    <div class="panel" aria-label="AI 助理">
+      <div class="p-head">
+        <h2 class="p-title">AI 助理</h2>
+        <span class="p-meta">案件页对话式 sidecar<span>·</span>默认关闭</span>
+      </div>
+      <div class="panel-body">
+        <label class="settings-row" id="agent-enabled-row" style="cursor:pointer">
+          <div>
+            <div class="label">启用 AI 助理</div>
+            <div class="desc">开启后案件页会出现助理入口；模型只读本案数据、不能直写正式表，不算期限</div>
+          </div>
+          <input type="checkbox" id="agent-enabled" aria-label="启用 AI 助理">
+        </label>
+        <div id="agent-fields" hidden>
+          <div class="formgrid">
+            <label class="f">Provider<select id="agent-provider">
+              <option value="deepseek-official">deepseek-official</option>
+              <option value="openai-completions">openai-completions</option>
+            </select></label>
+            <label class="f">Model<input id="agent-model" placeholder="deepseek-chat"></label>
+          </div>
+          <div class="formrow">
+            <label class="f grow">Base URL<input id="agent-base-url" placeholder="https://api.deepseek.com"></label>
+          </div>
+          <div class="formrow">
+            <label class="f grow">API Key 环境变量名<input id="agent-api-key-env" placeholder="DEEPSEEK_API_KEY" autocomplete="off" spellcheck="false"></label>
+          </div>
+          <p class="page-sub" id="agent-key-note">这里填的只是<b>变量名</b>，不是 key 本身——key 值请通过启动环境提供（systemd/launchd 环境变量、.env 之类），绝不保存在案齐里、不进数据库、不进日志。</p>
+        </div>
+        <div class="formrow">
+          <button class="btn primary" type="button" id="agent-save">保存 AI 助理设置</button>
+        </div>
+      </div>
+      <div class="p-foot">
+        <span class="fk">关闭时不读取任何 key 值、不连接、不启动子进程；案件页助理入口同步隐藏</span>
+      </div>
+    </div>
+
     <!-- ═════ 账户与安全（事实条：一行摘要 + 展开看完整设置） ═════ -->
     <div class="panel" aria-label="账户与安全">
       <div class="factstrip" id="profile-security-strip">

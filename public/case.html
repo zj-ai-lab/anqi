@@ -26,6 +26,9 @@
   <div class="case-context-tools">
     <div class="case-head-deadline" id="case-head-deadline" aria-live="polite"></div>
     <span id="legalrag-slot"></span>
+    <!-- AI 助理入口：js/agent-drawer.js 运行时按 /api/counts.agent 特性探测决定
+         是否渲染，未启用/未配置时这里始终留空（沿用 nav.js 对 c.llm 的既有模式）。 -->
+    <span id="agent-entry-slot"></span>
     <label class="context-status">状态
       <select id="c-status" aria-label="案件状态">
         <option value="active">在办</option>

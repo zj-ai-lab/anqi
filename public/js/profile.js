@@ -104,6 +104,60 @@ if (saveBtn) {
   });
 }
 
+/* ── AI 助理（DSH sidecar）：enabled 开关 + provider/baseURL/model/apiKeyEnv 五键 ──
+   白名单/格式/协议/保留名校验的权威在 src/agent/config.js + src/routes/settings.js
+   的 agent_* PUT 分支；本文件只做「读回填 → 折叠 → 保存」，不在前端重复一遍校验
+   规则——校验不过就让 api() 的失败 toast 把服务端 error 显示出来，与全站其它
+   表单一致。*/
+const agentEnabled = $('agent-enabled');
+const agentFields = $('agent-fields');
+const agentSave = $('agent-save');
+
+if (agentEnabled && agentFields && agentSave) {
+  const agentProvider = $('agent-provider');
+  const agentModel = $('agent-model');
+  const agentBaseUrl = $('agent-base-url');
+  const agentApiKeyEnv = $('agent-api-key-env');
+
+  const syncAgentCollapse = () => { agentFields.hidden = !agentEnabled.checked; };
+  agentEnabled.addEventListener('change', syncAgentCollapse);
+
+  api('/settings').then((s) => {
+    agentEnabled.checked = s.agent_enabled === 'true';
+    if (s.agent_provider) agentProvider.value = s.agent_provider;
+    if (s.agent_model != null) agentModel.value = s.agent_model;
+    if (s.agent_base_url != null) agentBaseUrl.value = s.agent_base_url;
+    if (s.agent_api_key_env != null) agentApiKeyEnv.value = s.agent_api_key_env;
+    syncAgentCollapse();
+  }).catch(() => { syncAgentCollapse(); /* 读不到就按关闭态展示，不拦着用户填 */ });
+
+  agentSave.addEventListener('click', async () => {
+    agentSave.disabled = true;
+    try {
+      // 关闭时只提交 agent_enabled 一个键——其余四个字段这时已经折叠，大概率
+      // 还是空值；服务端对「body 里没出现这个键」完全放行（未涉及的键不校验、
+      // 不改写），但对「出现了却是空字符串」会 400（如 agent_model 不能为
+      // 空）。不分支的话，「勾选又立刻取消、从没填过字段就点保存」这类最简单
+      // 的关闭操作会被一条跟「关闭」本身无关的校验错误拦住。
+      const body = agentEnabled.checked
+        ? {
+            agent_enabled: true,
+            agent_provider: agentProvider.value,
+            agent_model: agentModel.value.trim(),
+            agent_base_url: agentBaseUrl.value.trim(),
+            agent_api_key_env: agentApiKeyEnv.value.trim(),
+          }
+        : { agent_enabled: false };
+      await api('/settings', { method: 'PUT', body });
+      toast('AI 助理设置已保存');
+    } catch (e) {
+      toast('保存失败：' + (e.message || e));
+    } finally {
+      agentSave.disabled = false;
+    }
+  });
+}
+
 /* ── 退出会话（顶栏那枚图标按钮的显式副本；用裸 fetch，api() 会在 401 上抢先跳转） ── */
 const logoutBtn = $('logout-btn');
 if (logoutBtn) {

@@ -603,6 +603,14 @@ export class AgentSupervisor {
       model: full.model,
       error: full.error,
       exitInfo: full.exitInfo,
+      // 案件 assistant drawer 需要在「打开抽屉/刷新页面」这一刻就看到已经在
+      // 等待人工应答的 approval/question——不这样做的话，抽屉只能靠后续
+      // 恰好广播的 interaction/pending 事件才知道有交互待办，一个在 SSE
+      // 订阅建立之前就已经挂起的交互会被永久错过（与上面 dshVersion 等字段
+      // 同理：SSE 首帧补的正是这份 publicStatus() 快照）。listPendingInteractions()
+      // 已经是脱敏过的对外投影（见该方法与场景 7 的测试），这里直接复用，不
+      // 重新实现一份过滤逻辑。
+      pendingInteractions: this.listPendingInteractions(caseId),
     };
   }
 
@@ -1435,7 +1443,12 @@ export class AgentSupervisor {
         });
       },
     });
-    worker.emit('interaction/pending', { interactionId, type: 'question' });
+    // questions 一并广播（已经是脱敏后的 redactedQuestions，见上方入表前的
+    // redact）——不这样做的话，已经订阅上 SSE 的抽屉在收到这条事件时除了
+    // interactionId/type 一无所知，问不出题面文字，"受限答案表单"无从渲染；
+    // 之前只广播 {interactionId,type}，题面文字唯一存在的地方是宿主内存里的
+    // pendingInteractions 表，从未离开过 supervisor 进程。
+    worker.emit('interaction/pending', { interactionId, type: 'question', questions: redactedQuestions });
   }
 
   // 未消费的反向请求一律 fail-closed、one-shot 清表，不留悬空 Promise——

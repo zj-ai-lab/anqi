@@ -11,6 +11,7 @@ import { fileIconEl } from './icons.js';
 import { feeSettlementActions, openFormulaEditor, renderAgreementManager } from './fee-settlement.js';
 import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
+import { mountAgentDrawer } from './agent-drawer.js';
 
 await mountNav();
 
@@ -1719,3 +1720,7 @@ async function load() {
 document.addEventListener('anjian:changed', load);
 await load();
 watchFolder();
+
+// AI 助理抽屉：counts.agent=false（未启用/未配置）时 mountAgentDrawer() 自己
+// 整块不渲染（特性探测模式同 nav.js 对 c.llm 的既有用法），本文件不重复判断。
+mountAgentDrawer(Number(id));
