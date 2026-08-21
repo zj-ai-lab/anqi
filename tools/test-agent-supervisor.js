@@ -384,6 +384,11 @@ async function startFakeWorker(opts) {
   const reply = framesFromSupervisor.find((f) => f.id === 9001);
   assert.ok(reply, '必须已经原地回了这条跨 session 请求的响应');
   assert.equal(reply.result?.outcome, 'unavailable', '跨 session 的 approval 必须回 unavailable，而不是悬在待办表里');
+  // 这个场景的 turn 是正常完成的（worker 全程停在 'ready'），不像大多数场景
+  // 那样会自然终止 worker——如果这里不显式 stop()，worker 会一直活到整个
+  // 自检脚本进程退出，它 start() 时拷出的那份 0700 临时 skill 目录也就永远
+  // 不会被 _finalizeWorker 清理，每跑一次自检就永久残留一个。
+  await supervisor.stop(caseId, 'test cleanup: 场景 6 收尾');
   console.log('  [6/22] 跨 session 反向请求：ok（原地拒绝，未入表）');
 }
 
@@ -1134,6 +1139,14 @@ async function startFakeWorker(opts) {
   assert.equal(approvalReply.result?.outcome, 'unavailable', '过期 approval 必须回 outcome:unavailable');
   assert.ok(questionReply, 'turn 失败清表时必须真正应答子进程那条 user-question/request');
   assert.ok(questionReply.error, '过期 question 必须回 JSON-RPC error，而不是悬空不回');
+  // turn 超时触发的内部 stop() 是 fire-and-forget 的，这里的 shutdown 又故意
+  // 拖延了 300ms（且是 unref 计时器）——如果不在这里显式等它落定，一旦后面
+  // 没有别的场景恰好留出足够真实时间，脚本自身就会先跑完退出，那个 300ms
+  // 定时器根本没机会触发，_finalizeWorker 也就永远不会跑，0700 临时 skill
+  // 目录会永久残留（这条不是靠"忘记调 stop()"泄漏，是"内部 stop() 还没落
+  // 定，脚本进程先退出了"这个时序竞态）。join 同一个在飞 stop()、真正等它
+  // 落定，一次性堵死这条竞态。
+  await settle(supervisor.stop(caseId, 'test cleanup: 场景 21 收尾'));
   console.log('  [21/22] _expirePendingInteractions 真正应答子进程：ok（approval unavailable / question error）');
 }
 
@@ -1153,6 +1166,24 @@ async function startFakeWorker(opts) {
   assert.equal(originalStat.isSymbolicLink(), true, '测试前置条件：assets/node_modules 应该已经是一条符号链接');
 
   fs.rmSync(assetsLinkPath, { force: true });
+  // 兜底：下面的 try/finally 假设"finally 总有机会跑"——但如果作用域内的
+  // 代码把整个进程带崩（断言失败之外的硬崩溃/未捕获异常），finally 可能根
+  // 本没机会执行，仓库真实的 assets/node_modules 就会永久缺失这条链接。这
+  // 条链接现在已经被 .gitignore 忽略，`git status` 对此毫无提示，排查成本
+  // 很高。这里额外挂一个 process.on('exit')（只能跑同步代码，rmSync/
+  // symlinkSync 都是同步的，满足条件）作为最后一道防线：即使 finally 本身
+  // 没跑完，进程退出前也会尝试把链接钉回去；两边共用同一个 restored 标记，
+  // 正常路径下 finally 先跑完就不会重复执行。
+  let restored = false;
+  const restoreAssetsLink = () => {
+    if (restored) return;
+    restored = true;
+    try {
+      fs.rmSync(assetsLinkPath, { recursive: true, force: true });
+      fs.symlinkSync(runtimeNodeModulesPath, assetsLinkPath, 'dir');
+    } catch { /* 兜底本身失败也没有更好的处理方式，不应该让它掩盖原始错误 */ }
+  };
+  process.on('exit', restoreAssetsLink);
   try {
     clearAgentSettings();
     setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
@@ -1196,8 +1227,7 @@ async function startFakeWorker(opts) {
     assert.equal(statusB.error, 'runtime_link_invalid', '意外的非符号链接条目必须让 start() 拒绝，不能静默覆盖');
     assert.equal(supervisorB.workers.has(caseIdB), false, '拒绝时不应该留下一个已注册的 worker');
   } finally {
-    fs.rmSync(assetsLinkPath, { recursive: true, force: true });
-    fs.symlinkSync(runtimeNodeModulesPath, assetsLinkPath, 'dir');
+    restoreAssetsLink();
   }
   console.log('  [22/22] assets/node_modules 运行时确保：ok（缺失自动补链接；意外目录拒绝覆盖）');
 }
