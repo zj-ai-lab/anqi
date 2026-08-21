@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.7.0-beta.1** | 2026-08-22 | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |
 | **2.4.0** | 2026-08-11 | 费用页案卡堆、状态色带与粘性抬头收缩；自托管 Noto Sans/Serif SC 可变字体 |
@@ -69,6 +70,15 @@
 - `AgentSupervisor`（`src/agent/supervisor.js`）已接入 `server.js`：新增 `src/routes/agent.js`（工厂函数 `createAgentRouter(supervisor)`）挂 `GET /api/agent/status`、`POST /api/cases/:id/agent/{start,prompt,cancel}`、`GET /api/cases/:id/agent/events`（authenticated SSE，服务端按 case 过滤，不接受任何客户端提交的 session id 做过滤依据）、`POST /api/agent/interactions/:id/answer`（one-shot；interactionId 是唯一入参，case/worker 完全由服务端反查 `findInteractionOwner()`，approval 的受限 outcome / question 的严格逐题答案校验，未知/过期/跨 session/worker 已退一律拒绝并审计，不落敏感值）。`prompt` 路由不等待整轮完成（一次 turn 可能耗时到 `turnTimeoutMs`），只做同步门禁校验后 202 立即返回，真实进度/结果走 SSE。proposal accept/decline 未新增任何模型可达入口，继续复用既有 `/api/inbox/:id/accept|decline`。`server.js` 新增 SIGTERM/SIGINT 优雅退出钩子：调用 `supervisor.stopAll()` 取消所有 turn、终止所有 worker 后再退出，覆盖裸进程终止与 Electron `before-quit` 两条路径。`/api/counts` 新增 `agent` 字段（与 `llm` 字段同一种特性探测模式：`enabled` 且 `apiKeyEnv` 指向的环境变量确有值才为 `true`）。动态门禁验收（真实 DSH 子进程、真实模型 key）留给后续 workflow。
 - 修复轮五：SSE 事件订阅（`onEvent()`）此前挂在 Worker 实例上——worker 尚未创建时静默注册空订阅、worker 重建（崩溃/被 stop 后重新 start）后旧订阅被孤儿化，整条 §4 下行通路实际不通；现改为登记在 supervisor 层（`caseId → Set<listener>`），`Worker.emit()` 经 `supervisor._dispatch()` 扇出，与 worker 实例生命周期解耦。`AgentSupervisor` 新增 `setInternalBaseURL()`：`server.js` 在 `httpServer.listen()` 回调里用 `httpServer.address().port` 拿到真实端口去纠正 `internalBaseURL`（此前默认值硬编码 3007，与实际监听端口不符，DSH 子进程回调 anqi MCP 工具全部 ECONNREFUSED）；`electron/main.js` 为每次启动随机生成一份 `ANJIAN_INTERNAL_KEY` 注入后端子进程 env（不持久化），修复桌面版此前必然 `internal_key_missing` 而无法启动 AI 助理的问题。新增 `AgentSupervisor.isLive()`/`publicStatus()`：路由层不再复刻内部 `LIVE_STATUSES` 字面量集合，HTTP/SSE 下行也不再携带内部 `sessionId`/`cwd`/`pid`。`gracefulShutdown()` 给 `stopAll()` 套一个 8s 总时限的 `Promise.race`，跑满即调用新增的 `forceKillAll()` 兜底强杀，避免优雅关闭的 5s 兜底在 stopAll 落定之后才起算、实际不设上限。
 - 修复轮六至九（读面越权、桌面版 key 攻击面、事件伪造、打包守卫）：**读面补上与写面同一条信任规则**——新增 `GET /internal/agent-case-view` 与 `GET /internal/agent-digest`，两者都按 `session-registry.js` 的 session→case 绑定反查案件，请求方无法用任何参数选择读哪个案件；DSH 插件的 `anqi_case_get` 去掉模型可控的 `name` 参数、`anqi_digest` 不再打全所口径的 `/internal/digest`，单案 worker 因此在机械层面读不到绑定案之外的任何案件（此前只有 persona 提示词约束，不是约束）。面向外部自动化的 `/internal/cases/byname/:name` 与 `/internal/digest` 语义不变。**桌面版自动生成的 internal key 收窄作用域**：`electron/main.js` 注入随机 key 时同时设 `ANJIAN_INTERNAL_KEY_SOURCE=electron-auto`，`internalAuth()` 见到该标记时只放行三个 agent 端点、其余 `/internal/*` 一律 403——桌面版每次启动不再顺带打开整套可枚举/读出任意案件的外部自动化读面；用户自己显式配置的 `ANJIAN_INTERNAL_KEY`（无该标记）行为完全不变。**子进程事件不能冒充宿主事件**：wire 侧 `session.event` 的 `type` 撞上 supervisor 保留名（`interaction/pending` 等）时强制重写成 `wire/<type>`，每条事件新增 `origin`（`supervisor`/`wire`）标记并经 SSE 透传，子进程无法靠撞名伪造一张审批待办卡片。`GET /api/cases/:id/agent/events` 在 `agent_enabled` 非 `true` 时与 REST `/api/agent/status` 同一判定短路，首帧直接下发 `disabled` 且不触碰 worker 状态。DSH 子进程回连地址不再硬编码 `127.0.0.1`：监听通配地址时回落回环，监听具体地址时按实际绑定地址回连（IPv6 字面量加方括号）。`tools/check.sh` 增至 37 步，新增 session 绑定只读面路由回归与打包清单守卫（从 `server.js` 遍历相对路径静态 import 图 + minimatch 重放 `build.files`，机械保证 `build.files` 不会再把 `server.js` 真正 import 的 `src/**` 文件排除出打包产物）。
+
+## 未发布 → 2.7.0-beta.1 — AI 助理 sidecar 打包 beta
+
+**状态：`feat/agent-sidecar` 分支上的打包验证阶段，尚未合并 `main`、尚未发行任何 Release/DMG 下载链接。**
+
+- AI 助理是**可选**能力，安装/升级到本 beta **不改变任何现有行为**：`agent_enabled` 系统设置键默认缺省（等价 `false`），未显式开启前不读 credential、不解析 `apiKeyEnv`、不 spawn 子进程、不发出任何模型请求，整块 UI（案件页助理抽屉、设置页 AI 助理分区）按既有红线不渲染。
+- 打包方式：DSH sidecar 的运行时依赖（`src/agent/runtime/node_modules`，含 node-pty/koffi/sharp 等原生模块的多平台 prebuild）与只读资产（`src/agent/assets`：cordis 配置 + 受信任 skills）改由 `electron-builder` 的 `build.extraResources` 整棵复制进 `Contents/Resources/agent-runtime/{runtime,assets}/`，不进 `asar`、不做依赖裁剪（裁剪出最小闭包留给 GA）。`src/agent/supervisor.js` 新增打包模式路径解析：优先探测 `process.resourcesPath` 下这份拷贝，探测不到（dev 模式、或未打包的纯 `node server.js`）则回退仓库路径，两种模式代码路径完全一致。`tools/test-pack-manifest.js` 同步新增机械核验：`build.extraResources` 的 `from`/`to` 必须与 supervisor.js 约定的 `agent-runtime/<name>` 相对路径精确一致，防止两侧配置各自漂移。
+- **数据结构无迁移**：本 beta 不新增/不修改任何 migration，`anjian.db` 的 schema 与 2.6.0 完全一致——beta 与 2.6.0 之间可以直接互换回退（降级安装 2.6.0 DMG、或反过来升级到本 beta），都不需要任何数据搬迁或转换步骤；唯一的新状态是 `settings` 表里可能多出的 `agent_*` 五个键（默认关闭状态下这些键即便不存在也不影响任何既有功能）。
+- 版本号 `2.7.0-beta.1`：预发行序列，语义化版本先行位（beta.N）供内部迭代标记，不代表已通过完整 GA 验收；产物文件名与体积记录见打包证据文档（scratchpad 工作日志，正式发行前会归档进 `RELEASING.md` 流程）。
 
 ## 未发布 — 依赖升级
 

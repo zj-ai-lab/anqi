@@ -1,6 +1,6 @@
 {
   "name": "anjian",
-  "version": "2.6.0",
+  "version": "2.7.0-beta.1",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -46,6 +46,24 @@
     "asar": false,
     "asarUnpack": [
       "**/*.node"
+    ],
+    "extraResources": [
+      {
+        "from": "src/agent/runtime",
+        "to": "agent-runtime/runtime",
+        "filter": [
+          "**/*"
+        ]
+      },
+      {
+        "from": "src/agent/assets",
+        "to": "agent-runtime/assets",
+        "filter": [
+          "**/*",
+          "!node_modules",
+          "!node_modules/**"
+        ]
+      }
     ],
     "afterSign": "build/adhoc-sign.cjs",
     "copyright": "Copyright © 2026 方律",

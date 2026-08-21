@@ -1,11 +1,11 @@
-// 打包清单守卫（P3）：electron-builder 的 build.files 是一份手写的 include/
-// exclude glob 列表——上一轮改造刚把它从"整棵 src/agent/** 排除"收窄成"只排
-// runtime/assets 两棵子树"（见 src/agent/runtime/package.json 的 description），
-// 但这份收窄本身完全靠人工保证：往后任何一次给 build.files 加一条更宽的
-// exclude glob（哪怕本意只是想多排掉 assets 下的某个子目录），都可能不小心把
-// server.js 真正 `import` 需要的某个 src/** 文件也一起排除掉——那种 bug 只有
-// 在打包产物里跑 `node server.js` 时才会以 ERR_MODULE_NOT_FOUND 现身，日常
-// `npm run check` 的其余步骤全部跑在源码树上，完全测不到。
+// 打包清单守卫（P3→R2）：electron-builder 的 build.files 是一份手写的 include/
+// exclude glob 列表——早先改造把它从"整棵 src/agent/** 排除"收窄成"只排
+// runtime/assets 两棵子树"，这份收窄本身完全靠人工保证：往后任何一次给
+// build.files 加一条更宽的 exclude glob（哪怕本意只是想多排掉 assets 下的某个
+// 子目录），都可能不小心把 server.js 真正 `import` 需要的某个 src/** 文件也一起
+// 排除掉——那种 bug 只有在打包产物里跑 `node server.js` 时才会以
+// ERR_MODULE_NOT_FOUND 现身，日常 `npm run check` 的其余步骤全部跑在源码树上，
+// 完全测不到。
 //
 // 这里用静态导入图 + minimatch 做一次几秒钟的机械核验，不真正打包：从
 // server.js 出发，只走相对路径的 ESM 静态 import/export-from/动态 import()
@@ -13,6 +13,20 @@
 // src/** 下、真正会被 require 到的文件；再用与 electron-builder 相同的
 // "按顺序逐条 pattern 累积 include/exclude"语义重放 package.json 的
 // build.files，断言这些文件全部仍在打包范围内。
+//
+// R2（AI 助理 beta）追加一条独立核验：runtime/assets 这两棵子树虽然被
+// build.files 排除出 app 本体（不进 asar/不进 Contents/Resources/app），但
+// 并非"不参与打包"——build.extraResources 把它们整棵复制到
+// Contents/Resources/agent-runtime/{runtime,assets}/，src/agent/supervisor.js
+// 的 resolveAgentSubdir() 打包模式下正是按这个固定的 "agent-runtime/<name>"
+// 相对路径去 process.resourcesPath 下找。这两处（electron-builder 配置 与
+// supervisor.js 的路径解析）各自独立手写，一旦有人改了任意一侧的目录名/层级
+// 而没同步改另一侧，打包版会静默回退到"打包目录不存在→当成 dev 环境→用
+// __dirname 相对路径"分支——不存在文件也不报错，只是 AI 助理在打包版里永远
+// 走不到 spawn（cordis 配置/技能目录缺失），且没有任何一步会失败到能在
+// `npm run check` 里现身。下面这段就是把 extraResources 的 from/to 与
+// supervisor.js 约定的 "agent-runtime/runtime"、"agent-runtime/assets" 做一次
+// 机械比对，防止两侧悄悄跑偏。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -25,6 +39,20 @@ const REPO_ROOT = path.resolve(__dirname, '..');
 const pkg = JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8'));
 const buildFiles = pkg.build?.files;
 assert.ok(Array.isArray(buildFiles) && buildFiles.length > 0, 'package.json 的 build.files 必须是非空数组');
+
+// extraResources 与 supervisor.js 的 resolveAgentSubdir() 之间的机械核验（见上方
+// R2 注释）：runtime、assets 各自必须存在一条 from/to 精确匹配的条目，"to" 必须
+// 落在 supervisor.js 约定的 "agent-runtime/<name>" 相对路径下——这是唯一一处
+// 两边共享的约定，任何一侧改名都会在这里现形，而不是留到打包产物里静默失效。
+const extraResources = pkg.build?.extraResources;
+assert.ok(Array.isArray(extraResources) && extraResources.length > 0, 'package.json 的 build.extraResources 必须是非空数组（runtime/assets 随包分发）');
+for (const name of ['runtime', 'assets']) {
+  const expectedFrom = `src/agent/${name}`;
+  const expectedTo = `agent-runtime/${name}`;
+  const entry = extraResources.find((e) => e && e.from === expectedFrom);
+  assert.ok(entry, `build.extraResources 缺少 from:"${expectedFrom}" 条目——src/agent/supervisor.js 的 resolveAgentSubdir('${name}') 打包模式下会找不到对应文件`);
+  assert.equal(entry.to, expectedTo, `build.extraResources 里 from:"${expectedFrom}" 的 to 必须是 "${expectedTo}"（与 supervisor.js 的 process.resourcesPath 拼接约定一致），实际是 "${entry.to}"`);
+}
 
 // 只认这几种可静态识别、不跨越表达式的 import 写法——这份代码库统一走这几种
 // 风格（见既有 src/**/*.js 的既有写法），不追求覆盖任意合法 JS 语法，只求对

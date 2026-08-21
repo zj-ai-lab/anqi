@@ -52,8 +52,32 @@ import { loadAgentConfig } from './config.js';
 import { bindSession, unbindSession } from './session-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const ASSETS_DIR = path.join(__dirname, 'assets');
-const RUNTIME_DIR = path.join(__dirname, 'runtime');
+
+// ---- 打包模式路径解析（R2：runtime/assets 随包分发）----
+// package.json 的 build.extraResources 把 src/agent/runtime 与 src/agent/assets
+// 整棵复制到 Contents/Resources/agent-runtime/{runtime,assets}/（build.files 仍然
+// 排除这两棵子树进 app 本体，两边不重复）。process.resourcesPath 在任何 Electron
+// 进程（含主进程 fork() 出来、带 ELECTRON_RUN_AS_NODE=1 的 server.js 子进程）里
+// 都存在，但 dev 模式（`electron .` 未打包，或压根没有 Electron 的纯
+// `node server.js`）下这个目录并不存在——不能只判断 process.resourcesPath 是否
+// 定义（dev 模式下 Electron 进程也总有一个指向 Electron.app 自带 Resources 的
+// resourcesPath，只是没有我们这棵子树），必须实测目录是否真的在那——存在就是
+// 打包模式，优先用它；不存在（含目录判断本身抛错）一律回退仓库路径
+// __dirname/{runtime,assets}，与之前的 dev 行为完全一致。
+function resolveAgentSubdir(name) {
+  const packagedDir = process.resourcesPath
+    ? path.join(process.resourcesPath, 'agent-runtime', name)
+    : null;
+  try {
+    if (packagedDir && existsSync(packagedDir)) return packagedDir;
+  } catch {
+    // existsSync 理论上不抛，防御性兜底：任何异常都视为"打包目录不可用"，回退仓库路径。
+  }
+  return path.join(__dirname, name);
+}
+
+const ASSETS_DIR = resolveAgentSubdir('assets');
+const RUNTIME_DIR = resolveAgentSubdir('runtime');
 const CORDIS_CONFIG = path.join(ASSETS_DIR, 'anqi.cordis.yml');
 const DSH_BIN = path.join(
   RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-sdk-jsonrpc-demo', 'lib', 'bin.js'
