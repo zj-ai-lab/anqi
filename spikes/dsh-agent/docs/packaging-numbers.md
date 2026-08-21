@@ -31,7 +31,7 @@ Commit 2 开始前另做过一份“整个 sidecar、排除 `.runtime`/local con
 
 ## 实际加载追踪
 
-`driver.mjs --trace-loaded` 在 spawn 前创建 mode `0700` 的系统临时目录，并要求 inherited `NODE_OPTIONS` 为空；非空即在读取 case/config 与 spawn 前 fail closed。随后它只向子环境写入一个 URL 编码的 `--import=<preload URL>`，每个 `(pid, worker threadId)` 写独立 mode `0600` JSONL。不能保留用户 `--require` / `--loader`：这些模块可先于 tracer 执行，让漏载的 summary 仍显示 complete。rc.7 源码还证明 `dsh-mcp-client` 的 `buildChildEnv()` 会合并 `scrubbedParentEnv()`，再把显式 env 交给 MCP SDK `StdioClientTransport`：credential-shaped 与 `DSH_*` 名称（包括模型 key）被剔除，受控 tracer-only `NODE_OPTIONS` 和 `ANQI_DSH_LOAD_TRACE_DIR` 保留。因此 MCP Node child 应在 boot 前装同一 tracer；这是 **[S] source evidence**，actual MCP child trace 仍是下表的 **[B]**，不能拿自有 subprocess fixture 代替。
+`driver.mjs --trace-loaded` 在 spawn 前创建 mode `0700` 的系统临时目录，并要求 inherited `NODE_OPTIONS` 为空；非空即在读取 case/config 与 spawn 前 fail closed。随后它只向子环境写入一个 URL 编码的 `--import=<preload URL>`，每个 `(pid, worker threadId)` 写独立 mode `0600` JSONL。不能保留用户 `--require` / `--loader`：这些模块可先于 tracer 执行，让漏载的 summary 仍显示 complete。rc.7 源码还证明 `dsh-mcp-client` 的 `buildChildEnv()` 会合并 `scrubbedParentEnv()`，再把显式 env 交给 MCP SDK `StdioClientTransport`：credential-shaped 与 `DSH_*` 名称（包括模型 key）被剔除，受控 tracer-only `NODE_OPTIONS` 和 `ANQI_DSH_LOAD_TRACE_DIR` 保留。因此 MCP Node child 应在 boot 前装同一 tracer；这段推导本身是 **[S] source evidence**。下文「2026-08-21 actual B trace」已实跑核实：`processEntries.observed` 精确含被追踪的 MCP child（`mcp/server.mjs`），把这条 source-evidence 推导确认为 **[M] 本机测量**，不再需要拿自有 subprocess fixture 代替。
 
 追踪与 fail-closed 汇总面如下：
 
@@ -154,8 +154,8 @@ pkg 的依赖静态分析打印大量 `Warning Cannot find module ...`（`@aws-s
 | SEA 项 | 结果 |
 |---|---:|
 | symlink-free full staging | [M] 成功，252,164 KiB / 179,023,624 B |
-| exact packager install (`--ignore-scripts`) | [M] 成功，工具目录 44,220 KiB / 37,413,121 B |
-| `pkg --sea` build | **[M] 2026-08-21 成功**，exit 0（首次跑日志无显式 `EXIT` 标记，本轮修复复核用相同命令换 `--output` 名重跑并显式 `echo EXIT=$?` 捕获为 0，产物体积与首次一致） |
+| exact packager install (`--ignore-scripts`) | [M] 成功，工具目录首次测得 44,220 KiB / 37,413,121 B；2026-08-21 修复轮复核重测为 43,248 KiB——工具目录是仓库外 ephemeral scratch（`--no-save --package-lock=false`），两次测量间隔跨天，数值漂移符合预期，不代表可复现的固定安装体积 |
+| `pkg --sea` build | **[M] 2026-08-21 成功**，exit 0（首次跑日志无显式 `EXIT` 标记，同日修复复核用相同命令换 `--output` 名重跑并显式 `echo EXIT=$?` 捕获为 0）；本轮进一步验证「产物体积与首次一致」：`--output` 用与首次等长（33 字符）的另一个文件名重跑一次，得到字节数与首次逐字节相同的 176,279,520 B（`cmp` 显示内容在 codesign ad-hoc 签名处有差异，属预期——每次构建的签名哈希不同——但体积完全一致）；换成更长文件名（52 字符）单独验证时体积变为 176,279,536 B，证明「体积」会随 `--output` 路径字符串长度小幅变化，因此「与首次一致」这一结论现改为「相同长度输出文件名下体积逐字节可复现」，而不是任意 `--output` 名下都恒定 |
 | main executable size | **[M]** 176,279,520 B，Mach-O 64-bit arm64 thin，已含 pkg 自带 ad-hoc 签名（`codesign -dv` 显示 `flags=0x2(adhoc)`） |
 | adjacent helper product | **[M]** 从 staging 复制并 `chmod 0755`：50,480 B |
 | codesign / Mach-O deployment target | **[M]** ad-hoc 签名存在；无 Team ID（本机自签，非分发签名） |
@@ -163,7 +163,7 @@ pkg 的依赖静态分析打印大量 `Warning Cannot find module ...`（`@aws-s
 | SEA B end-to-end | **[M] 部分失败**：`initialize`/`session/create` 3/3 成功；`session/preflight` 3/3 因真实的 `extension ".mjs" not supported` include 错误失败（见下），非权限拦截 |
 | SEA product+helper `tar.gz` / `zip -9` | **[M]** 48,133,738 B / 47,926,602 B（相对 DMG 34.29% / 34.14%） |
 
-**运行时验证**：用一份仓库外临时副本（保留在 `wf-logs/sea-driver.mjs`，未提交到 spike 代码；与已提交 `driver.mjs` 的 diff 仅 8 行——新增 `SEA_TEST_EXECUTABLE` 校验、`childArguments` 置空、spawn 目标改指向该 executable，无其他改动）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（沿用 driver 已有的 `DSH_CORDIS_CONFIG` 环境变量优先机制，其余 env/cwd/case 与 actual B trace 命令一致），跑 3 次，`initialize`/`session/create` 均成功，随后 `session/preflight`（触发 `agent-presets` 挂载 `preset/anqi`）三次均以同一条真实错误失败：
+**运行时验证**：用一份仓库外临时副本（保留在 `wf-logs/sea-driver.mjs`，未提交到 spike 代码；与已提交 `driver.mjs` 的 `diff` 为 3 处改动、共 11 行变化——8 行新增／3 行删除，即新增 `SEA_TEST_EXECUTABLE` 校验、`childArguments` 置空、spawn 目标改指向该 executable 外加说明注释，无其他改动）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（沿用 driver 已有的 `DSH_CORDIS_CONFIG` 环境变量优先机制，其余 env/cwd/case 与 actual B trace 命令一致），跑 3 次，`initialize`/`session/create` 均成功，随后 `session/preflight`（触发 `agent-presets` 挂载 `preset/anqi`）三次均以同一条真实错误失败：
 
 ```text
 Error: dsh-jsonrpc-agent: plugin tree failed to load: failed to apply loader entry include (cordis:include): extension ".mjs" not supported

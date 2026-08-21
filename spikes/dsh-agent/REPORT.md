@@ -1,7 +1,7 @@
 # Spike A：anqi 内置 DSH sidecar 可行性报告
 
 日期：2026-08-19
-最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过；同日晚些修复轮：§14.4/14.5 与 `docs/packaging-numbers.md` 的 5 处审查发现——cold_ms 数字张冠李戴、tool-call「逐项一致」措辞、§14.7 命令缺失注入变量、临时 SEA driver 副本描述有误、驱动/打包 exit code 与 hash 前后快照证据补强——已逐条核实修正，见对应小节；同日收尾轮：头部结论状态、§1 四点与 §3/§15.3 尾句原先仍写 actual B trace/trace-derived scratch/SEA build「被阻塞」，与 §14.4–14.6 已记录的真实动态结果不一致，本轮据 §14/§15 现状重写，唯一保留的残留缺口是 SEA `session/preflight` 的真实 `.mjs` include 不兼容与本会话 `secretctl` 超时导致未能补拍的 scratch 单跑前后快照）
+最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过；同日晚些修复轮：§14.4/14.5 与 `docs/packaging-numbers.md` 的 5 处审查发现——cold_ms 数字张冠李戴、tool-call「逐项一致」措辞、§14.7 命令缺失注入变量、临时 SEA driver 副本描述有误、驱动/打包 exit code 与 hash 前后快照证据补强——已逐条核实修正，见对应小节；同日收尾轮：头部结论状态、§1 四点与 §3/§15.3 尾句原先仍写 actual B trace/trace-derived scratch/SEA build「被阻塞」，与 §14.4–14.6 已记录的真实动态结果不一致，本轮据 §14/§15 现状重写；同日第二次修复轮（审查发现 8 处）：packaging-numbers.md 与 §14.1/§14.3 里已被 §14.4 动态核实的 actual MCP child trace / 四类 native reach 结论仍误写成 `[B]`/「未运行」/「没有 actual B trace」，已改为 `[M]`；§8.1/§8.6 的 2026-08-19 pre-run 快照句补充「见 §12」指针；SEA driver 副本 diff 行数（实为 3 处改动共 11 行，非「仅 8 行」）与 fixup 重跑「产物体积与首次一致」均已用新的同长度 `--output` 名重跑核实（体积随文件名字符串长度变化，仅在等长时逐字节复现）；SEA 打包工具目录体积换日复测确认漂移（44,220→43,248 KiB）；§15.3/§15.4bis 的 deadlines 跑前/跑后 hash 与 §14.4 的证据等级已对齐，本轮独立重算跑前基线并留痕，跑后基线复现同一 `secretctl authorization timeout` blocker，未能补拍模型-backed 跑后快照）
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
 结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）已于 2026-08-21 完成动态复验：full-preset mount、reject/allow-once 审批闭环、ask-user 反向问答与首个 initial header 的完整工具集均由真实模型-backed redacted wire 证实（§13.4）。Commit 2 的 actual B loaded trace、trace-derived reached-only scratch 闭包及其 B 复跑、SEA build 均已由 2026-08-21 的本机真实执行动态通过（§14.4–§14.6）：固定 B 场景 reached 84/363 dependency roots（23.14% 包数／35.46% 字节数），scratch 闭包（71,444 KiB，`tar.gz` 19,235,570 B，相当于 v2.6.0 arm64 DMG 的 13.70%）连续 3 次成功复跑，SEA packager exit 0 产出已签名 executable + helper；唯一仍未达成的是 **SEA runtime 完整 B end-to-end**——`initialize`/`session/create` 3/3 成功，但 `session/preflight` 因真实的 `extension ".mjs" not supported` include 不兼容三次全部失败（非权限拦截），仍为 ⚠️ 部分通过。Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已由真实模型-backed redacted wire 动态通过，含此前受 `ANJIAN_INTERNAL_KEY` 缺失阻塞、现已补跑通过的 anqi domain tools 期限读取（§15.4bis）。仍不建议合入生产：产品方向与交互闭环已验证，但 SEA 打包路线需先修复 `.mjs` include 不兼容并补一次完整 B end-to-end，且 `docs/mainline-plan.md` §6 的十项交付门禁（supervisor 生命周期、proposal 去重、HTTP/SSE 鉴权等）尚待落地为代码。**
@@ -332,7 +332,7 @@ DeepSeek key gate（真实执行，不读取或输出值）：
 node -e 'process.exit(process.env.DEEPSEEK_API_KEY ? 0 : 2)'
 ```
 
-结果为退出码 2、stdout/stderr 均为空，表示当前进程未继承该变量。driver、DSH runtime 与模型请求因此均未启动。
+结果为退出码 2、stdout/stderr 均为空，表示当前进程未继承该变量。driver、DSH runtime 与模型请求因此均未启动。这是 2026-08-19 当时的快照；拿到 key 后同日已实跑 B/C/E/F 并给出 cold_ms/first-token 数值，见 §12。
 
 ### 8.2 闭包（真实测量）
 
@@ -465,7 +465,7 @@ driver 已在真实返回时打印：
 [metric] first_assistant_chunk_ms=<prompt send to first assistant/chunk>
 ```
 
-但本次没有执行 DSH runtime，因此没有 cold initialize 或首 token 数值。两个字段必须在有 key、且明确允许只向选定 provider 发送 seed demo 数据后补测；不能以源码推算。
+但本次没有执行 DSH runtime，因此没有 cold initialize 或首 token 数值。两个字段必须在有 key、且明确允许只向选定 provider 发送 seed demo 数据后补测；不能以源码推算。这是 2026-08-19 当时的快照；两个字段已于同日补测并记入 §12（`cold_ms=567.1`、`first_assistant_chunk_ms=1796.0`，另见 §3 acceptance 表 F 行）。
 
 ## 9. 关键踩坑
 
@@ -719,7 +719,7 @@ secretctl run anjian.local -- env \
 
 ### 14.1 `--trace-loaded` 实现
 
-`driver.mjs --trace-loaded` 在 DSH spawn 前创建 mode `0700` 的系统临时目录，并要求 inherited `NODE_OPTIONS` 为空；非空即在读取 case/config 与 spawn 之前 fail closed。随后它只向 DSH 环境写入一个 percent-encoded `--import=<trace preload URL>`，并通过 `ANQI_DSH_LOAD_TRACE_DIR` 传入目录；每个 `(pid, threadId)` 写独立 mode `0600` JSONL。这里不能保留用户的 `--require` / `--loader` 等选项：它们可能先于 tracer 执行，使漏载仍被误报为 complete。使用受控 `NODE_OPTIONS` 而不是只给 DSH CLI 加 `--import`，目标是覆盖 Node MCP stdio child。rc.7 `dsh-mcp-client` 的 `buildChildEnv()` / `scrubbedParentEnv()` 与 MCP SDK spawn 路径经源码核实会保留这个 tracer-only `NODE_OPTIONS` 和 `ANQI_DSH_LOAD_TRACE_DIR`，同时剔除 credential-shaped / `DSH_*` env（包括 key）；这是 source evidence，actual MCP instrumentation 仍未运行。
+`driver.mjs --trace-loaded` 在 DSH spawn 前创建 mode `0700` 的系统临时目录，并要求 inherited `NODE_OPTIONS` 为空；非空即在读取 case/config 与 spawn 之前 fail closed。随后它只向 DSH 环境写入一个 percent-encoded `--import=<trace preload URL>`，并通过 `ANQI_DSH_LOAD_TRACE_DIR` 传入目录；每个 `(pid, threadId)` 写独立 mode `0600` JSONL。这里不能保留用户的 `--require` / `--loader` 等选项：它们可能先于 tracer 执行，使漏载仍被误报为 complete。使用受控 `NODE_OPTIONS` 而不是只给 DSH CLI 加 `--import`，目标是覆盖 Node MCP stdio child。rc.7 `dsh-mcp-client` 的 `buildChildEnv()` / `scrubbedParentEnv()` 与 MCP SDK spawn 路径经源码核实会保留这个 tracer-only `NODE_OPTIONS` 和 `ANQI_DSH_LOAD_TRACE_DIR`，同时剔除 credential-shaped / `DSH_*` env（包括 key）；这段推导本身是 source evidence，§14.4 的 actual B trace 已把它核实为真实测量——`processEntries.observed` 精确含被追踪的 MCP child（`mcp/server.mjs`），actual MCP instrumentation 已经跑通，不再是未运行状态。
 
 `trace-loaded/preload.mjs` 同时覆盖：
 
@@ -798,7 +798,7 @@ fixture 同时做 ESM entry、`createRequire()` CJS load 和一个继承 tracer-
 - `koffi` + `@koromix/koffi-darwin-arm64`：1,798,526 + 1,241,345 B；本 composition 的 fs-local / JSONL persistence 只在 Win32 helper 中 dynamic import；eager Windows ACL path 所属 sandbox-local 没挂载。macOS 理论可裁，但仍需 actual trace + scratch proof。
 - `node-addon-require-builtin@0.1.4`：当前未安装；Cordis loader 的 optional peer attempt 被 catch。它不是已证明需要的 runtime dependency。
 
-这些结论只有 **[源码核实 + installed-file measurement]**，没有 actual B trace 与 controlled retained/omitted execution，因此不把“理论可裁”写成“validated optional”。
+以上四条在写下时只有 **[源码核实 + installed-file measurement]**。§14.4 的 actual B trace（2026-08-21）已把其中三条的 reach 状态核实为真实测量：`node-pty`、`sharp` 系确认 **reached**（always-mounted service 触发，不可裁），`koffi` 确认 **not reached**（macOS 下可安全排除）；`node-addon-require-builtin` 仍未安装、trace 中也无 reach 证据。但 actual trace 只证明了「这次固定 B 场景下谁被 reach」，没有做 controlled retained/omitted execution（即没有真的移除 `node-pty`/`sharp` 依赖后重跑闭包对比），因此仍不把“reached 但按场景不需要”写成“validated optional for removal”——reach 状态已由源码推断升级为实测，可裁性判断本身仍待 omission run。
 
 ### 14.4 actual B trace 与 trace-derived scratch（2026-08-21，真实执行）
 
@@ -863,7 +863,7 @@ exact upstream tag `dsh-v0.1.0-rc.7`（commit `99f6f02fecdb7dff40c3fbc9470f5907c
 本 spike 不是 DSH monorepo，没有 upstream Python deploy root、workspace source 与 closure verifier。本轮在仓库外做的是 **adapted post-deploy equivalent**：
 
 - `/private/tmp/anqi-dsh-sea.3ksg7R/staging`：252,164 KiB / 179,023,624 B，零 symlink；packaged entry、`pty.node`、executable `spawn-helper` 均存在；
-- exact `@yao-pkg/pkg@6.21.0` 只以 `--ignore-scripts --no-save --package-lock=false` 安装到仓库外 tool dir：44,220 KiB / 37,413,121 B；
+- exact `@yao-pkg/pkg@6.21.0` 只以 `--ignore-scripts --no-save --package-lock=false` 安装到仓库外 tool dir：首次测得 44,220 KiB / 37,413,121 B，2026-08-21 修复轮跨天复测为 43,248 KiB——该目录是 ephemeral scratch，数值漂移符合预期，不代表固定可复现体积；
 - `/usr/bin/codesign` 存在，但没有 executable 可签名或检查。
 
 full staging 的 canonical 压缩值为：
@@ -878,7 +878,7 @@ full staging 的 canonical 压缩值为：
 
 这不是 regenerated DMG measurement。
 
-**2026-08-21 真实执行结果**：当前会话的权限边界已放行执行 `@yao-pkg/pkg@6.21.0`。用 §14.7 已 staging 好的原样命令跑 packager，**exit 0**（此前的 "process start 之前 permission denied" 状态已不复现；这是这一次会话真实测到的结果，不是声称权限规则已变）。首次执行的 `sea-build-1787285103.log` 末行停在 `Injecting the blob into ...`，没有显式 `EXIT` 标记；本轮修复复核用同一命令换 `--output` 文件名重跑一次并显式 `echo EXIT=$?`，捕获 `EXIT=0`，产物体积（176,279,520 B）与首次一致，确认非偶然：
+**2026-08-21 真实执行结果**：当前会话的权限边界已放行执行 `@yao-pkg/pkg@6.21.0`。用 §14.7 已 staging 好的原样命令跑 packager，**exit 0**（此前的 "process start 之前 permission denied" 状态已不复现；这是这一次会话真实测到的结果，不是声称权限规则已变）。首次执行的 `sea-build-1787285103.log` 末行停在 `Injecting the blob into ...`，没有显式 `EXIT` 标记；本轮修复复核用同一命令换 `--output` 文件名重跑一次并显式 `echo EXIT=$?`，捕获 `EXIT=0`。该次复核用的 `-fixup` 输出文件事后已从临时目录清理，无法逐字节复核其体积；本次审查修复轮改用与首次等长（33 字符）的另一个 `--output` 文件名单独重新验证，得到与首次逐字节相同的 176,279,520 B（保留在 `wf-logs/sea-build-verify-samelen.log`），换成更长文件名（52 字符）时体积变为 176,279,536 B——证明「产物体积一致」只在 `--output` 路径字符串长度不变时成立，而不是任意输出名下都恒定；`cmp` 显示两次同长度构建在 codesign ad-hoc 签名字节处仍有差异（每次签名哈希不同属预期），体积本身完全一致：
 
 ```zsh
 node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin.js \
@@ -899,7 +899,7 @@ pkg 的依赖静态分析打印大量 `Warning Cannot find module ...` —— �
 | executable + helper `zip -9` | 47,926,602 B（相对 DMG 34.14%） |
 | executable 单独相对 DMG | 125.56%（SEA 单文件已比整个 v2.6.0 DMG 大） |
 
-**运行时验证（[M] 本机实测，部分成功）**：为了不改动 spike 已提交的 `driver.mjs`，用一份仓库外临时副本（保留在 `wf-logs/sea-driver.mjs`，未提交到 spike 代码；与已提交 `driver.mjs` 的 diff 仅 8 行——新增 `SEA_TEST_EXECUTABLE` 校验、`childArguments` 置空、spawn 目标改指向该 executable，无其他改动，未伪造任何输出）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（`DSH_CORDIS_CONFIG` 环境变量优先级已覆盖 argv，沿用 driver 原有机制），其余 env/cwd/case 目录与 §14.7 命令完全一致，跑 3 次：
+**运行时验证（[M] 本机实测，部分成功）**：为了不改动 spike 已提交的 `driver.mjs`，用一份仓库外临时副本（保留在 `wf-logs/sea-driver.mjs`，未提交到 spike 代码；与已提交 `driver.mjs` 的 `diff` 为 3 处改动、共 11 行变化——8 行新增／3 行删除，即新增 `SEA_TEST_EXECUTABLE` 校验、`childArguments` 置空、spawn 目标改指向该 executable 外加说明注释，无其他改动，未伪造任何输出）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（`DSH_CORDIS_CONFIG` 环境变量优先级已覆盖 argv，沿用 driver 原有机制），其余 env/cwd/case 目录与 §14.7 命令完全一致，跑 3 次：
 
 | # | initialize | session/create | cold_ms |
 |---|---|---|---:|
@@ -1055,6 +1055,8 @@ redacted wire 结果：
 - 结束后 `kill` 3007 监听进程，`lsof -iTCP:3007 -sTCP:LISTEN` 确认端口已释放。
 
 因此 §15.3「anqi domain tools read deadlines」项由 ⛔ blocked 转为 ✅ 通过（模型-backed redacted wire）。
+
+**证据等级说明（本轮修复补记）**：上面「跑前记录基线」「跑后复查」两行是叙述性描述，wf-logs 中没有单独留存一份把这两次 hash 计算结果并列写入同一个 artifact 的日志（只有 `domain-tools-readiness-rerun.log` 这份 driver stdout），这一点与 §14.4 把 scratch B 复跑的「跑前/跑后」列降级为 **[B] blocked** 是同一种缺口，理应同等对待。本轮修复尝试对该场景重新补一组独立留痕的前/后快照：直接对 `data/spike.db` 跑 `sqlite3 -separator '|' ... | shasum -a 256` 得到跑前基线 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`（3 行，已存入 `wf-logs/deadlines-hash-verify-1787291298.log`），随后启动隔离 3007 实例、用 §15.5 命令加 `ANJIAN_INTERNAL_KEY` 原样复跑 driver 场景以取得跑后基线时，`secretctl run anjian.local`（含最小复现 `env echo hello`）再次给出 `[ERROR] error initializing client: authorization timeout`，与 §14.4/§14.6 记录的同一 blocker 一致，本会话未能补拍模型-backed 场景下的独立跑后快照。因此本行的确切证据等级应更正为：**跑前基线本轮已用直接 DB 查询独立验证并留痕**；跑后基线沿用与「结果未变」结论相同的方法——将当前 DB 状态与已知 seed 基线哈希比对（而非该次驱动运行内独立记录的两点快照）——与 §14.4 的处理口径保持一致，不再声称比 scratch 复跑更严格。
 
 ### 15.5 待 anqi 内部 key 注入后原样复跑（历史记录，已于 15.4bis 完成复跑）
 
