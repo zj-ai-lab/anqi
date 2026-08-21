@@ -54,19 +54,46 @@ function isReservedEnvName(name) {
 // 不引入网络 I/O，也防止 DNS rebinding 绕过一次性解析检查）。
 const DEEPSEEK_OFFICIAL_HOST = 'api.deepseek.com';
 
+// IPv4-mapped IPv6 的十六进制形式（Node 的 URL 解析器会把 ::ffff:127.0.0.1
+// 归一化成 ::ffff:7f00:1 这种"两个十六进制组"写法而不是保留点分十进制）；
+// 展开成点分十进制字符串，方便复用下面同一套 IPv4 私网正则。
+function ipv4FromMappedHex(rest) {
+  const groups = rest.split(':');
+  if (groups.length !== 2) return null;
+  const nums = groups.map((g) => parseInt(g, 16));
+  if (nums.some((n) => Number.isNaN(n) || n < 0 || n > 0xffff)) return null;
+  return [nums[0] >> 8, nums[0] & 0xff, nums[1] >> 8, nums[1] & 0xff].join('.');
+}
+
 function isPrivateOrLoopbackHost(hostname) {
-  const lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  let lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // ::ffff:a.b.c.d（或其规范化后的十六进制形式 ::ffff:7f00:1）是 IPv4-mapped
+  // IPv6：不展开的话，套一层这个壳就能让 127.0.0.1/10.0.0.0/8 等纯 IPv4 正则
+  // 检查全部落空，但地址本身依然可达对应的 IPv4 回环/内网目标。
+  if (lower.startsWith('::ffff:')) {
+    const rest = lower.slice('::ffff:'.length);
+    lower = rest.includes('.') ? rest : ipv4FromMappedHex(rest) || lower;
+  }
   if (lower === 'localhost' || lower === '0.0.0.0' || lower === '::1' || lower === '::') return true;
   if (lower.endsWith('.local')) return true;
   if (/^127\./.test(lower)) return true;
   if (/^10\./.test(lower)) return true;
   if (/^192\.168\./.test(lower)) return true;
   if (/^169\.254\./.test(lower)) return true;
+  // CGNAT 100.64.0.0/10（100.64.0.0 - 100.127.255.255）——常见于云厂商/隧道
+  // 内网出口，不拦会让 baseURL 指到同一 CGNAT 网段内的其它内部服务。
+  const cgnatMatch = /^100\.(\d{1,3})\./.exec(lower);
+  if (cgnatMatch) {
+    const second = Number(cgnatMatch[1]);
+    if (second >= 64 && second <= 127) return true;
+  }
   const linkLocalMatch = /^172\.(\d{1,3})\./.exec(lower);
   if (linkLocalMatch) {
     const secondOctet = Number(linkLocalMatch[1]);
     if (secondOctet >= 16 && secondOctet <= 31) return true;
   }
+  // IPv6 ULA fc00::/7（fc00:: 到 fdff:ffff:...），等价于 IPv4 的私网地址段。
+  if (/^f[cd][0-9a-f]{0,2}:/.test(lower)) return true;
   return false;
 }
 

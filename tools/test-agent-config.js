@@ -110,5 +110,28 @@ assert.equal(loadAgentConfig().enabled, false, 'deepseek-official 不得覆盖�
 setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://api.deepseek.com');
 assert.equal(loadAgentConfig().enabled, true, 'deepseek-official 官方域名必须放行');
 
+// 13) 内网/回环判定的三类套壳绕过写法必须被拦——openai-completions 走
+//     SSRF 风格拦截，provider 切回它才能触发这条分支（deepseek-official 靠
+//     域名白名单本来就已经把这些堵死，这里专门测 isPrivateOrLoopbackHost）。
+setSetting(AGENT_SETTINGS_KEYS.provider, 'openai-completions');
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'MY_OPENAI_KEY');
+for (const host of [
+  'http://[::ffff:127.0.0.1]/', // IPv4-mapped IPv6，点分十进制形式
+  'http://[::ffff:7f00:1]/', // 同上，Node 归一化后的十六进制形式
+  'http://[fd00::1]/', // IPv6 ULA fc00::/7
+  'http://[fc12::1]/',
+  'http://100.64.0.1/', // CGNAT 100.64.0.0/10 起始
+  'http://100.100.100.100/',
+  'http://100.127.255.255/', // CGNAT 段末尾
+]) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（内网/回环套壳绕过）`);
+}
+// 边界之外的地址必须仍然放行，确认没有误伤——100.128.0.1 已经在 CGNAT 段
+// 之外，是合法公网地址。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://100.128.0.1/');
+assert.equal(loadAgentConfig().enabled, true, 'CGNAT 段之外的 100.128.0.1 不应该被误伤');
+
 clearAgentSettings();
 console.log('agent config 自检全部通过');

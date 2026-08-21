@@ -45,6 +45,13 @@
   config:
     sampleOverCapGlobResults: false
 
+# customSkillDirs 目前恰好是 fail-closed 的（缺省时 process.env.DSH_ANQI_
+# SKILLS_ROOT 是 undefined，dsh-skill-filesystem/lib/index.js 内部对
+# undefined 调用 resolve() 会抛 TypeError），但这依赖的是第三方包一处未文档
+# 化的实现细节，不是这里显式断言的结果——与 ../../anqi.cordis.yml 里
+# workspaceRoot/fs-sandbox.cwd/mcp cwd 三处对 DSH_CWD 缺失显式抛错的写法不
+# 一致。设计稿 §3.1「不得接受用户 YAML 提供的 skill root」与那三处对 cwd 的
+# 要求同级，这里改成同样的显式守卫，不再依赖上游包"当前版本恰好会抛错"。
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
   config:
@@ -52,7 +59,7 @@
     includeDefaultRoots: false
     watchFollowSymlinks: false
     customSkillDirs:
-      - !!js process.env.DSH_ANQI_SKILLS_ROOT
+      - !!js (() => { if (!process.env.DSH_ANQI_SKILLS_ROOT) throw new Error('DSH_ANQI_SKILLS_ROOT is required'); return process.env.DSH_ANQI_SKILLS_ROOT; })()
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'

@@ -76,6 +76,29 @@ function readDshVersion() {
 }
 const DSH_VERSION = readDshVersion();
 const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
+
+// session/preflight 的返回值必须被宿主逐字段核验——设计稿 §3.1「session/
+// preflight → exact scoped MCP registry + exact skill snapshot」与 §6 门禁 4
+// 「首个 request/header 同时含唯一 anqi skill 和精确 mcp__anqi-local__
+// case_folder_info」在这里对应的是唯一的宿主侧信任锚点：子进程 plugins/
+// dsh-anqi-jsonrpc/index.js 只校验了 tool 一侧，"唯一 anqi skill" 那一半此前
+// 完全没有宿主侧机械约束（只剩子进程自证）。逐字段核验照抄参考实现
+// driver.mjs 的 assertFirstRequestReadiness/preflight 断言块。
+function isPreflightReady(preflight) {
+  const visibleToolNames = preflight?.tools?.visibleNames;
+  const skillNames = preflight?.skills?.names;
+  return preflight?.ready === true
+    && preflight.tools?.required === REQUIRED_MCP_TOOL
+    && preflight.tools?.ready === true
+    && Array.isArray(visibleToolNames)
+    && visibleToolNames.includes(REQUIRED_MCP_TOOL)
+    && preflight.skills?.complete === true
+    && Array.isArray(skillNames)
+    && skillNames.length === 1
+    && skillNames[0] === REQUIRED_SKILL_NAME
+    && preflight.skills?.ready === true;
+}
+
 // repo-root/data：与 src/db.js 的 DB_PATH 默认值同一目录，已经被 .gitignore 的
 // `data/` 规则覆盖，不需要额外忽略规则。
 const DEFAULT_SESSION_ROOT = path.join(__dirname, '..', '..', 'data', 'agent-sessions');
@@ -209,16 +232,53 @@ function buildSpawnEnv({ config, apiKeyValue, internalKeyEnv, internalKeyValue, 
   };
 }
 
+function redactString(input, secretValues) {
+  let text = typeof input === 'string' ? input : JSON.stringify(input);
+  for (const secret of secretValues) text = text.split(secret).join(REDACTED);
+  if (text.length > MAX_EVENT_FIELD_CHARS) {
+    text = `${text.slice(0, MAX_EVENT_FIELD_CHARS)}…[truncated ${text.length - MAX_EVENT_FIELD_CHARS} chars]`;
+  }
+  return text;
+}
+
+// 逐叶子字段做 secret redaction + 长度截断，而不是对 JSON.stringify(整包) 之后
+// 的完整字符串做长度截断——旧实现把 MAX_EVENT_FIELD_CHARS 施加在整条序列化
+// JSON 上，截断点大概率落在字符串中间，产生的不是合法 JSON；_redactEventData
+// 再 JSON.parse 这段文本必然抛错，catch 分支把整条 data 静默丢成
+// {redacted:true}。assistant 长回答、anqi_case_get 的工具结果（白名单案卷
+// events+deadlines+tasks+worklog）日常就会超过 4KB，等于设计稿 §5「有限的
+// assistant 文本、工具调用摘要」在事件管道里恒为空。现在只对每个 string 叶子
+// 单独限长，容器结构（对象/数组）完整保留，只有真正过长的单个字符串字段会被
+// 截断。
+function redactDeep(value, secretValues, depth = 0) {
+  if (depth > 8) return '[REDACTED:max-depth]';
+  if (typeof value === 'string') return redactString(value, secretValues);
+  if (Array.isArray(value)) return value.map((item) => redactDeep(item, secretValues, depth + 1));
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) out[key] = redactDeep(item, secretValues, depth + 1);
+    return out;
+  }
+  return value;
+}
+
 function redactor(secretValues) {
   const values = secretValues.filter(Boolean);
-  return (input) => {
-    let text = typeof input === 'string' ? input : JSON.stringify(input);
-    for (const secret of values) text = text.split(secret).join(REDACTED);
-    if (text.length > MAX_EVENT_FIELD_CHARS) {
-      text = `${text.slice(0, MAX_EVENT_FIELD_CHARS)}…[truncated ${text.length - MAX_EVENT_FIELD_CHARS} chars]`;
-    }
-    return text;
-  };
+  const fn = (input) => redactString(input, values);
+  fn.deep = (data) => redactDeep(data, values);
+  return fn;
+}
+
+// 对外事件的 `type` 字段最终会成为下阶段 SSE 层的 `event:` 字段名（见文件头
+// 注释）；它完全由子进程的 wire 消息控制。之前只对它做过 secret redact，没有
+// 清洗控制字符——子进程塞一个含 \n 的 type，理论上可以在 SSE 帧里注入伪造的
+// 额外字段/事件。这里剥掉 C0 控制字符与 DEL，并把长度钉在一个事件类型名合理
+// 的范围内（远小于 MAX_EVENT_FIELD_CHARS，因为这是"名字"不是"内容"）。
+const MAX_EVENT_TYPE_CHARS = 200;
+function sanitizeEventType(rawType) {
+  const stripped = String(rawType || '').replace(/[\x00-\x1f\x7f]/g, '');
+  const truncated = stripped.length > MAX_EVENT_TYPE_CHARS ? stripped.slice(0, MAX_EVENT_TYPE_CHARS) : stripped;
+  return truncated || 'session.event';
 }
 
 function nowIso() {
@@ -250,7 +310,7 @@ class Worker {
     this.turnLock = Promise.resolve();
     this.currentAbort = null;
     this.firstTurnChecked = false;
-    this.redact = (text) => String(text);
+    this.redact = redactor([]); // 占位版本（含 .deep），start() 里换成真正带 secret 值的版本
     this.readyPromise = null;
     this._finalized = false;
   }
@@ -435,6 +495,15 @@ export class AgentSupervisor {
       () => this.status(caseId),
       (error) => {
         if (!TERMINAL_STATUSES.has(worker.status)) {
+          // 启动序列失败时（initialize/session-create/preflight 任意一步），
+          // 子进程往往已经正常收到并处理了前面几条 RPC、依然存活——之前这里
+          // 只把 worker 标成终态，从不终止子进程。门禁 4 之前形同虚设时这条
+          // 路径几乎不会触发；现在 session/preflight 会被宿主真正校验（见
+          // isPreflightReady），配错 provider/skill 的案件每次 start() 都会
+          // 走到这里，不 kill 就会真的泄漏一个 DSH 子进程。
+          if (child.exitCode === null) {
+            try { child.kill('SIGTERM'); } catch { /* 已经退出或不可 kill，忽略 */ }
+          }
           this._finalizeWorker(worker, 'error', `startup_failed:${error.message}`.slice(0, 200));
         }
         return this.status(caseId);
@@ -449,7 +518,10 @@ export class AgentSupervisor {
     if (created?.sessionId !== worker.sessionId) {
       throw new Error('session/create returned the wrong session identity');
     }
-    await this._request(worker, 'session/preflight', { sessionId: worker.sessionId }, this.preflightTimeoutMs);
+    const preflight = await this._request(worker, 'session/preflight', { sessionId: worker.sessionId }, this.preflightTimeoutMs);
+    if (!isPreflightReady(preflight)) {
+      throw new Error('session/preflight did not establish the required scoped tools and skill');
+    }
     worker.status = 'ready';
     worker.emit('worker/ready', {});
   }
@@ -531,7 +603,21 @@ export class AgentSupervisor {
       // id）。现在任何 turn 失败都统一走：本地 abort（立即生效）+ 终止整个
       // worker（异步收尾）。下一次 start() 必然是全新 session。
       if (!controller.signal.aborted) controller.abort(error);
-      if (LIVE_STATUSES.has(worker.status)) worker.status = 'ready';
+      // 之前这里把 status 改回 'ready'（一个 LIVE 状态）之后才异步调用
+      // this.stop()——stop() 内部有一次 shutdown 请求往返（最多 30s）加一次
+      // 强杀等待（最多 10s），这段窗口里 worker.status 仍是 'ready'：
+      //   (a) 已经排队、等在 worker.turnLock 后面的下一个 turn 会在这个窗口
+      //       里被 prompt()/_runTurn 顶部的 LIVE 守卫放行，抢在 worker 真正
+      //       终止前跑起来，继承上一个已判定失败的 turn 迟到的
+      //       running/idle/turn-end（wire 事件不带 turn id，见上面注释）；
+      //   (b) resolveApproval/resolveQuestion 的 LIVE_STATUSES 存活校验同样
+      //       形同虚设，一条本该 fail-closed 的审批可以在这段窗口里被放行
+      //       并真的写进已经判定失败的子进程 stdin。
+      // 现在 turn 一旦判失败，在这一行同步、立即离开 LIVE_STATUSES（不等
+      // stop() 的异步收尾），且立即清空 pendingInteractions——两处都不依赖
+      // 之后才会触发的 exit/fatal 事件。
+      if (LIVE_STATUSES.has(worker.status)) worker.status = 'stopping';
+      this._expirePendingInteractions(worker, 'turn_failed');
       worker.emit('turn/end', { turnId, outcome: 'failed', reason: worker.redact(error.message) });
       this.stop(worker.caseId, `turn_failed:${worker.redact(error.message)}`.slice(0, 200)).catch(() => {});
       throw error;
@@ -724,7 +810,7 @@ export class AgentSupervisor {
     // 必须先过 redact() 才能广播出去。注意下面 request/header / tool/call /
     // turn/end 的判断仍然用原始 event.type（未 redact），因为那是内部状态机
     // 比对，不是对外可见字段——两者互不影响。
-    worker.emit(worker.redact(String(event.type || 'session.event')), this._redactEventData(worker, event.data));
+    worker.emit(sanitizeEventType(worker.redact(String(event.type || 'session.event'))), this._redactEventData(worker, event.data));
 
     if (event.type === 'request/header') {
       if (!worker.firstTurnChecked) {
@@ -748,9 +834,16 @@ export class AgentSupervisor {
     const state = worker._turnResolvers;
     if (!state || !state.sawRunning || !state.sawIdle || !state.sawEnd) return;
     if (!worker.firstTurnChecked) {
-      const header = worker._firstRequestHeader;
-      const tools = header?.tools;
-      const ready = header?.reason === 'initial'
+      // rc.7 的 wire 形状：request/header 的 event.data = { header: EpochHeader,
+      // reason }（@deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js 的
+      // 'request/header' 类型、@deepseek-ai/dsh-sdk-jsonrpc-server/lib/index.js
+      // 原样透传 session event）——tools 在 data.header.tools 而不是 data.tools。
+      // 之前这里读的是 data.tools（恒为 undefined），门禁 4 在生产环境从未
+      // 真正校验过 header 里的 MCP 工具，参考实现 driver.mjs 的
+      // firstRequestHeader.header?.tools 才是正确路径。
+      const requestHeader = worker._firstRequestHeader;
+      const tools = requestHeader?.header?.tools;
+      const ready = requestHeader?.reason === 'initial'
         && Array.isArray(tools) && tools.some((tool) => tool?.name === REQUIRED_MCP_TOOL)
         && worker._sawRequiredMcpCall === true;
       if (!ready) {
@@ -769,8 +862,7 @@ export class AgentSupervisor {
 
   _redactEventData(worker, data) {
     try {
-      const text = worker.redact(JSON.stringify(data));
-      return JSON.parse(text.includes(REDACTED) ? JSON.stringify({ redacted: text }) : text);
+      return worker.redact.deep(data);
     } catch {
       return { redacted: true };
     }
@@ -891,6 +983,17 @@ export class AgentSupervisor {
     worker.emit('interaction/pending', { interactionId, type: 'question' });
   }
 
+  // 未消费的反向请求一律 fail-closed、one-shot 清表，不留悬空 Promise——
+  // _runTurn 判定 turn 失败、_handleFatal、_handleExit 三处共用同一份实现，
+  // 避免各自维护一份"clearTimeout + emit + delete"逻辑而遗漏其中一处。
+  _expirePendingInteractions(worker, reason) {
+    for (const [interactionId, record] of worker.pendingInteractions) {
+      clearTimeout(record.timer);
+      worker.emit('interaction/expired', { interactionId, type: record.type, reason });
+    }
+    worker.pendingInteractions.clear();
+  }
+
   _handleFatal(worker, error) {
     for (const entry of worker.pendingRpc.values()) entry.reject(error);
     worker.pendingRpc.clear();
@@ -903,21 +1006,15 @@ export class AgentSupervisor {
     // 的反向请求；真正的 exit 事件到达后 _finalizeWorker 仍会按 code/signal
     // 落一次准确的最终状态（stopped/crashed），不冲突。
     if (LIVE_STATUSES.has(worker.status)) worker.status = 'error';
-    for (const [interactionId, record] of worker.pendingInteractions) {
-      clearTimeout(record.timer);
-      worker.emit('interaction/expired', { interactionId, type: record.type, reason: 'worker_fatal' });
-    }
-    worker.pendingInteractions.clear();
+    this._expirePendingInteractions(worker, 'worker_fatal');
   }
 
   _handleExit(worker, code, signal) {
     this._handleFatal(worker, new Error(`worker exited (code=${code}, signal=${signal || 'none'})`));
-    // 未消费的反向请求一律 fail-closed，不留悬空 Promise。
-    for (const [interactionId, record] of worker.pendingInteractions) {
-      clearTimeout(record.timer);
-      worker.emit('interaction/expired', { interactionId, type: record.type, reason: 'worker_exit' });
-    }
-    worker.pendingInteractions.clear();
+    // _handleFatal 已经清过一次表；这里的 pendingInteractions 此时必然为空
+    // （同一个事件循环 tick 内同步执行，没有新请求能在两次调用之间插入），
+    // 调用只是为了在退出路径上留一个语义明确的收尾点，不会重复 emit。
+    this._expirePendingInteractions(worker, 'worker_exit');
     const wasClean = code === 0;
     this._finalizeWorker(worker, wasClean ? 'stopped' : 'crashed', `exit code=${code} signal=${signal || 'none'}`, { code, signal });
   }
@@ -946,4 +1043,5 @@ export const AGENT_RUNTIME_PATHS = Object.freeze({
   dshBin: DSH_BIN,
   trustedSkillsRoot: TRUSTED_SKILLS_ROOT,
   requiredMcpTool: REQUIRED_MCP_TOOL,
+  requiredSkillName: REQUIRED_SKILL_NAME,
 });

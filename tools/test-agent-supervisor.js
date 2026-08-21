@@ -3,11 +3,13 @@
 //   1. enabled=false 必须在读 credential、spawn 子进程之前短路返回；
 //   2. 案件夹越出 ANJIAN_FILES_ROOT（包括 symlink 越权）必须被拒绝，且同样
 //      不能走到 spawn 那一步。
-// 场景 4-7 用一个走 stdin/stdout JSON-RPC 协议的 FakeChild（不是真的 DSH 子
+// 场景 4-10 用一个走 stdin/stdout JSON-RPC 协议的 FakeChild（不是真的 DSH 子
 // 进程，只回放协议帧）验证修复轮审查发现的几条 turn/worker 生命周期红线：
 // turn 超时必须真正终止 worker、首个 turn 的 MCP 门禁失败不能被第二个 turn
 // 绕过、跨 session 的反向请求必须原地拒绝不入表、pendingInteractions 对外
-// 查询必须脱敏。
+// 查询必须脱敏、session/preflight 的宿主侧逐字段核验、turn 失败瞬间必须立即
+// 离开 LIVE 状态（不给已排队的下一个 turn 留抢跑窗口）、pendingInteractions
+// 必须在同一瞬间清空（不给 resolveApproval 留 fail-open 窗口）。
 //
 // DB_PATH 隔离到临时文件：这个脚本会插入案件行、写 agent_* 设置，绝不能碰
 // 仓库真实的 data/anjian.db——否则跑一次自检就会在真实设置表里把
@@ -29,8 +31,20 @@ const { AgentSupervisor, AGENT_RUNTIME_PATHS } = await import('../src/agent/supe
 const { AGENT_SETTINGS_KEYS } = await import('../src/agent/config.js');
 
 const REQUIRED_MCP_TOOL = AGENT_RUNTIME_PATHS.requiredMcpTool;
+const REQUIRED_SKILL_NAME = AGENT_RUNTIME_PATHS.requiredSkillName;
 
-// ---- 场景 4-7 共用：一个只回放 JSON-RPC 协议帧的假子进程，不拉起真 DSH ----
+// 一份能通过宿主侧 isPreflightReady() 逐字段核验的 session/preflight 结果——
+// 形状抄参考实现 driver.mjs 的断言块：ready、tools.required/ready/
+// visibleNames、skills.complete/names（唯一一个 anqi-case-brief）/ready 全部
+// 到位。场景 8 会在此基础上逐个字段改坏，验证宿主侧确实会因为每一项不满足
+// 而拒绝，而不是像修复前那样完全不看这个返回值。
+const VALID_PREFLIGHT_RESULT = {
+  ready: true,
+  tools: { required: REQUIRED_MCP_TOOL, ready: true, visibleNames: [REQUIRED_MCP_TOOL, 'read_file', 'search_files'] },
+  skills: { complete: true, names: [REQUIRED_SKILL_NAME], ready: true },
+};
+
+// ---- 场景 4-10 共用：一个只回放 JSON-RPC 协议帧的假子进程，不拉起真 DSH ----
 class FakeChild extends EventEmitter {
   constructor(onFrame) {
     super();
@@ -81,7 +95,7 @@ function makeFakeChild(sessionId, handlers = {}) {
     } else if (frame.method === 'session/create') {
       c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId } });
     } else if (frame.method === 'session/preflight') {
-      c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { ready: true } });
+      c.sendLine({ jsonrpc: '2.0', id: frame.id, result: VALID_PREFLIGHT_RESULT });
     } else if (frame.method === 'shutdown') {
       c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
       c.emitExit(0, null);
@@ -90,12 +104,17 @@ function makeFakeChild(sessionId, handlers = {}) {
   return child;
 }
 
+// rc.7 真实 wire 形状：request/header 的 event.data = { header: EpochHeader,
+// reason }，工具列表在 data.header.tools（不是 data.tools）——修复轮之前这里
+// 回放的是错误形状（data: {reason, tools}），结构上不可能发现字段路径 bug，
+// 所以这里必须照抄真实形状，同 supervisor.js 里 isPreflightReady/
+// _maybeResolveTurn 的读取路径保持一致。
 function sendRunningIdleTurnEnd(child, sessionId, { includeMcpEvidence }) {
   child.sendLine({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'running' } });
   if (includeMcpEvidence) {
     child.sendLine({
       jsonrpc: '2.0', method: 'session.event',
-      params: { sessionId, event: { type: 'request/header', data: { reason: 'initial', tools: [{ name: REQUIRED_MCP_TOOL }] } } },
+      params: { sessionId, event: { type: 'request/header', data: { reason: 'initial', header: { tools: [{ name: REQUIRED_MCP_TOOL }] } } } },
     });
     child.sendLine({
       jsonrpc: '2.0', method: 'session.event',
@@ -104,7 +123,7 @@ function sendRunningIdleTurnEnd(child, sessionId, { includeMcpEvidence }) {
   } else {
     child.sendLine({
       jsonrpc: '2.0', method: 'session.event',
-      params: { sessionId, event: { type: 'request/header', data: { reason: 'initial', tools: [] } } },
+      params: { sessionId, event: { type: 'request/header', data: { reason: 'initial', header: { tools: [] } } } },
     });
   }
   child.sendLine({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'idle' } });
@@ -179,7 +198,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'disabled', 'enabled 非 true 时必须返回 disabled');
   assert.equal(supervisor.workers.has(caseId), false, 'disabled 短路不应该创建 worker 记录');
-  console.log('  [1/7] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
+  console.log('  [1/10] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
 }
 
 // ---- 场景 2：enabled=true 但案件夹越出 ANJIAN_FILES_ROOT（不存在/未对应）----
@@ -203,7 +222,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'case_folder_missing');
   assert.equal(supervisor.workers.has(caseId) === false || supervisor.workers.get(caseId)?.status === 'error', true);
-  console.log('  [2/7] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [2/10] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // ---- 场景 3：案件夹是 symlink（越权手法之一）----
@@ -227,11 +246,13 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'cwd_invalid');
-  console.log('  [3/7] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [3/10] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
 }
 
-// 场景 4-7 共用：起一个用 FakeChild 顶替真实 DSH 子进程的 worker，跑到 ready。
-async function startFakeWorker({ handlers = {}, extra = {} } = {}) {
+// 场景 4-10 共用：起一个用 FakeChild 顶替真实 DSH 子进程的 worker。
+// startFakeWorkerRaw 不对最终状态做断言（场景 8 需要故意让 start() 失败）；
+// startFakeWorker 在此基础上断言必须进入 ready，是场景 4-7/9/10 的常规路径。
+async function startFakeWorkerRaw({ handlers = {}, extra = {} } = {}) {
   clearAgentSettings();
   setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
   setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
@@ -265,9 +286,14 @@ async function startFakeWorker({ handlers = {}, extra = {} } = {}) {
     ...extra,
   });
   const status = await supervisor.start(caseId);
-  assert.equal(status.status, 'ready', `worker 必须成功进入 ready（实际 ${status.status}/${status.error}）`);
   const worker = supervisor.workers.get(caseId);
-  return { supervisor, caseId, worker, sessionId };
+  return { supervisor, caseId, worker, sessionId, status };
+}
+
+async function startFakeWorker(opts) {
+  const result = await startFakeWorkerRaw(opts);
+  assert.equal(result.status.status, 'ready', `worker 必须成功进入 ready（实际 ${result.status.status}/${result.status.error}）`);
+  return result;
 }
 
 // ---- 场景 4：turn 超时必须真正终止 worker，不能只把 status 改回 ready ----
@@ -291,7 +317,7 @@ async function startFakeWorker({ handlers = {}, extra = {} } = {}) {
   assert.equal(becameNotLive, true, '超时后 worker 必须离开 ready/running（被终止）');
   const wasKilledOrShutdown = await waitUntil(() => child.killed || child.exitCode !== null);
   assert.equal(wasKilledOrShutdown, true, '超时后必须真正终止子进程（kill 或 shutdown→exit），不能只是 status 回 ready');
-  console.log('  [4/7] turn 超时：ok（真正终止了 worker，不是只改 status）');
+  console.log('  [4/10] turn 超时：ok（真正终止了 worker，不是只改 status）');
 }
 
 // ---- 场景 5：首个 turn 的 MCP 门禁失败不能被同一 worker 的下一个 turn 绕过 ----
@@ -315,7 +341,7 @@ async function startFakeWorker({ handlers = {}, extra = {} } = {}) {
   // firstTurnChecked=true"的免检资格——再 prompt 只会因为 worker 不在跑而被拒。
   assert.equal(worker.firstTurnChecked, false, 'firstTurnChecked 不应该在失败时被置 true');
   await assert.rejects(supervisor.prompt(caseId, '第二个 turn 想蹭免检'), /worker is not running/);
-  console.log('  [5/7] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
+  console.log('  [5/10] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
 }
 
 // ---- 场景 6：跨 session 的反向请求必须原地拒绝，不进 pendingInteractions ----
@@ -349,7 +375,7 @@ async function startFakeWorker({ handlers = {}, extra = {} } = {}) {
   const reply = framesFromSupervisor.find((f) => f.id === 9001);
   assert.ok(reply, '必须已经原地回了这条跨 session 请求的响应');
   assert.equal(reply.result?.outcome, 'unavailable', '跨 session 的 approval 必须回 unavailable，而不是悬在待办表里');
-  console.log('  [6/7] 跨 session 反向请求：ok（原地拒绝，未入表）');
+  console.log('  [6/10] 跨 session 反向请求：ok（原地拒绝，未入表）');
 }
 
 // ---- 场景 7：listPendingInteractions() 必须脱敏，不能原样吐出 toolName ----
@@ -380,7 +406,137 @@ async function startFakeWorker({ handlers = {}, extra = {} } = {}) {
   assert.equal(pending[0].toolName.includes(FAKE_KEY), false, 'listPendingInteractions 不能原样吐出 key 值');
   assert.equal(pending[0].toolName.includes('[REDACTED]'), true, 'toolName 必须被 redact 过');
   await supervisor.stop(caseId, 'test cleanup');
-  console.log('  [7/7] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
+  console.log('  [7/10] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
+}
+
+// ---- 场景 8：session/preflight 的返回值必须被宿主逐字段核验 ----
+// 修复前：supervisor 只 await session/preflight，从不检查它的返回值——子
+// 进程返回一个 tools/skills 都不满足门禁的结果，宿主照样把 worker 判成
+// ready。这里子进程回一个 ready:false、tools 里没有 REQUIRED_MCP_TOOL、
+// skills 里混了别的技能名的结果，验证 start() 必须失败，不能进入 ready。
+{
+  const badPreflight = {
+    ready: false,
+    tools: { required: REQUIRED_MCP_TOOL, ready: false, visibleNames: ['bash', 'web_search'] },
+    skills: { complete: false, names: [REQUIRED_SKILL_NAME, '用户自带技能', '另一个技能'], ready: false },
+  };
+  const { status, worker } = await startFakeWorkerRaw({
+    handlers: {
+      'session/preflight': (frame, c) => {
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: badPreflight });
+      },
+    },
+  });
+  assert.equal(status.status, 'error', `不满足门禁的 preflight 结果必须让 start() 失败（实际 ${status.status}）`);
+  assert.match(status.error || '', /startup_failed/, 'error 字段必须体现是启动序列失败');
+  const childKilled = await waitUntil(() => worker.child.killed || worker.child.exitCode !== null);
+  assert.equal(childKilled, true, 'preflight 门禁失败后必须终止子进程，不能泄漏');
+  console.log('  [8/10] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
+}
+
+// ---- 场景 9：turn 失败必须立即离开 LIVE 状态，不给已排队的下一个 turn 留 ----
+// ---- 抢跑窗口 ----
+// 修复前：失败分支把 status 改回 'ready'（LIVE）之后才异步 stop()；已经排队
+// 在 turnLock 后面的下一个 turn 会在这段 shutdown 往返窗口里被 LIVE 守卫放
+// 行，跑起来但一个模型事件都收不到，最终被 supervisor 当成"正常完成"。这里
+// 复现同样的排队时序：turn2 会超时失败，turn2 还在飞时就把 turn3 排上队，
+// 断言 turn3 必须因为 worker 不再存活而 reject，不能被静默 resolve。
+{
+  let promptCount = 0;
+  const { supervisor, caseId } = await startFakeWorker({
+    extra: { turnTimeoutMs: 80 },
+    handlers: {
+      'session/prompt': (frame, c) => {
+        promptCount += 1;
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+        if (promptCount === 1) {
+          // turn1：正常走完，让 firstTurnChecked 落定，不干扰 turn2 的超时判定。
+          sendRunningIdleTurnEnd(c, frame.params.sessionId, { includeMcpEvidence: true });
+        }
+        // turn2：故意不回 running/idle/turn-end，逼 supervisor 走超时分支。
+        // turn3 理论上不会有机会发出 session/prompt（worker 应该已经不在
+        // LIVE_STATUSES 里）；如果它真的发出去了，说明抢跑窗口仍然存在。
+      },
+      // 故意拖延 shutdown 的响应：生产环境里 stop() 的 shutdown 往返/强杀等待
+      // 有真实的秒级延迟，这里用一个明显大于 turnTimeoutMs（80ms）的延迟
+      // （300ms）在单测里复现同一种"turn 判失败"和"worker 真正终止"之间存在
+      // 时间差的场景——如果 turn 判失败的瞬间不立即离开 LIVE 状态，这段窗口
+      // 足够让排队的下一个 turn 在 worker 真正终止前抢跑。
+      shutdown: (frame, c) => {
+        const timer = setTimeout(() => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          c.emitExit(0, null);
+        }, 300);
+        timer.unref?.();
+      },
+    },
+  });
+  const turn1 = await settle(supervisor.prompt(caseId, 'turn1：正常完成'));
+  assert.equal(turn1.ok, true, 'turn1 应该正常完成');
+
+  const turn2 = supervisor.prompt(caseId, 'turn2：会超时失败');
+  // turn3 在 turn2 还没有结果时就排队——复现"迟到收尾窗口期被抢跑"的时序。
+  const turn3 = supervisor.prompt(caseId, 'turn3：排在 turn2 后面，不应该被静默放行');
+  // 两个 settle() 都必须在 turn2/turn3 刚创建、还没来得及 reject 时就同步挂上
+  // 处理函数——如果先 await settle(turn2) 再创建 settle(turn3) 的处理函数，
+  // turn3 可能在这段等待期间就已经 reject，Node 会把它当成一条没有挂
+  // 处理函数的 unhandled rejection 直接崩掉进程（不是测试想验证的东西）。
+  const turn2Settled = settle(turn2);
+  const turn3Settled = settle(turn3);
+  const outcome2 = await turn2Settled;
+  assert.equal(outcome2.ok, false, 'turn2 必须超时失败');
+  const outcome3 = await turn3Settled;
+  assert.equal(outcome3.ok, false, 'turn3 不能被静默 resolve——worker 必须已经离开 LIVE 状态');
+  assert.equal(promptCount, 2, 'turn3 不应该真的发出 session/prompt（worker 应在排队时已判定不再存活）');
+  console.log('  [9/10] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
+}
+
+// ---- 场景 10：turn 失败瞬间必须清空 pendingInteractions，approval 不能在 ----
+// ---- shutdown 往返窗口内被放行 ----
+// 修复前：turn 判定失败后 pendingInteractions 要等 exit/fatal 事件才清空，
+// resolveApproval 的 LIVE_STATUSES 校验又因为 status 被错误改回 ready 而形同
+// 虚设——一条本该 fail-closed 的审批可以在这段窗口里被放行、真的写进子进程
+// stdin。这里让子进程先发一条 approval/request，再让 turn 超时失败，断言在
+// turn 判失败之后立即调用 resolveApproval 必须返回 ok:false。
+{
+  const { supervisor, caseId } = await startFakeWorker({
+    extra: { turnTimeoutMs: 80, interactionTtlMs: 5000 },
+    handlers: {
+      'session/prompt': (frame, c) => {
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+        c.sendLine({
+          jsonrpc: '2.0', id: 9003, method: 'approval/request',
+          params: { sessionId: frame.params.sessionId, approvalId: 'a3', toolName: 'write' },
+        });
+        // 故意不回 running/idle/turn-end，逼 turn 走超时分支。
+      },
+      // 同场景 9：故意拖延 shutdown 的响应。这条延迟很关键——如果不拖延，
+      // 默认的 shutdown 处理器几乎立即应答，_handleExit 触发的"退出时兜底
+      // 清表"会在测试来得及断言之前就已经把 pendingInteractions 清空，掩盖
+      // 掉"turn 判失败瞬间就同步清空"这条修复是否真的存在；拖延后才能确认
+      // 断言时刻看到的空表确实来自 turn 失败分支本身，而不是碰巧提前完成的
+      // exit 路径。
+      shutdown: (frame, c) => {
+        const timer = setTimeout(() => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          c.emitExit(0, null);
+        }, 300);
+        timer.unref?.();
+      },
+    },
+  });
+  const turnOutcomePromise = settle(supervisor.prompt(caseId, '触发一个 approval 之后 turn 本身超时'));
+  const pendingAppeared = await waitUntil(() => supervisor.listPendingInteractions(caseId).length > 0);
+  assert.equal(pendingAppeared, true, '应该先出现一条待处理的 approval');
+  const interactionId = supervisor.listPendingInteractions(caseId)[0].id;
+  const outcome = await turnOutcomePromise;
+  assert.equal(outcome.ok, false, 'turn 应该因为超时而失败');
+  // turn 判失败与 pendingInteractions 清空必须是同一步——不需要再等待任何
+  // exit/fatal 事件，此刻 resolveApproval 必须已经 fail-closed。
+  const result = supervisor.resolveApproval(caseId, interactionId, 'allowed-once');
+  assert.equal(result.ok, false, 'turn 判失败后必须立即 fail-closed，approval 不能再被放行');
+  assert.deepEqual(supervisor.listPendingInteractions(caseId), [], 'pendingInteractions 必须已经清空');
+  console.log('  [10/10] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
 }
 
 clearAgentSettings();
