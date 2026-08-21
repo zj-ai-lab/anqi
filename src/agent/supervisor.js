@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectory } from '../lib/secure-files.js';
 import { loadAgentConfig } from './config.js';
+import { bindSession, unbindSession } from './session-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS_DIR = path.join(__dirname, 'assets');
@@ -448,6 +449,11 @@ export class AgentSupervisor {
     }
 
     const sessionId = `anqi-${randomUUID()}`;
+    // 设计稿 §2/§4：session→case 绑定必须在 supervisor 侧登记，/internal/
+    // agent-proposals 等路由才能按 session_id 反查、不再信任请求体里的
+    // case_id。在 spawn 之前登记，保证子进程第一次能发起 HTTP 请求时绑定
+    // 已经存在，不留任何"session 已注入子进程但服务端还查不到"的窗口。
+    bindSession(sessionId, caseId);
     const worker = new Worker(caseId, caseRow.name, sessionId);
     worker.provider = config.provider;
     worker.model = config.model;
@@ -1027,6 +1033,12 @@ export class AgentSupervisor {
     worker.status = status;
     worker.error = TERMINAL_STATUSES.has(status) && status !== 'stopped' ? detail : worker.error;
     worker.exitInfo = exitInfo;
+    // worker 一旦进入终态（graceful stop 或崩溃），它的 session_id 就不再是
+    // 一个活的绑定——不注销的话，一个已经退出的 worker 的 session_id 仍能
+    // 被拿去 /internal/agent-proposals 提交新提案，等于绕开了「案件 worker
+    // 必须活着」这条隐含前提（设计稿 §3.2「重启只允许从新的 turn 开始」同一
+    // 条精神）。
+    unbindSession(worker.sessionId);
     if (worker.skillsRootTmp) {
       rmSync(worker.skillsRootTmp, { recursive: true, force: true });
       worker.skillsRootTmp = null;

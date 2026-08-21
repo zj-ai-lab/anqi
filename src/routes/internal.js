@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db } from '../db.js';
 import { buildDigest } from '../lib/digest.js';
 import { enqueueLlmSuggestion, enqueueAgentProposal, releaseDueSnoozes } from '../lib/recommendations.js';
+import { caseIdForSession } from '../agent/session-registry.js';
 
 // 受信任自动化专用面。公网反向代理必须把 /internal/* 硬 404。
 // 写入口只有 /inbox —— LLM 产物必须过收件箱人工裁决（铁律 3 的接口层强制）。
@@ -68,7 +69,10 @@ r.post('/inbox', (req, res) => {
 
 // DSH agent 提案专用入口：与 /internal/inbox 分开，不复用其语义、不混入 case.next_action。
 // 只收 supervisor 已绑定 case/session 的 task-only 建议——kind/event/deadline 一律拒绝；
-// case_id、proposal_id、source_ref 由 supervisor 注入（不从模型正文推断），source 由服务端固定。
+// source 由服务端固定；case_id 绝不信任请求体，只按 session_id 反查
+// session-registry.js 里 supervisor.start() 登记的绑定（设计稿 §2「case_id：
+// 由 supervisor 的固定案件绑定产生，不从模型正文推断」/ §4「服务端从已存的
+// session binding 取得 case/agent，不信任客户端提交的 case/cwd」）。
 r.post('/agent-proposals', (req, res) => {
   const b = req.body || {};
   if (b.kind !== undefined && b.kind !== 'task') {
@@ -80,9 +84,15 @@ r.post('/agent-proposals', (req, res) => {
   if (!b.payload || typeof b.payload !== 'object' || Array.isArray(b.payload)) {
     return res.status(400).json({ error: 'payload 须为对象' });
   }
-  const caseId = Number(b.case_id);
-  if (!b.case_id || !Number.isInteger(caseId) || caseId <= 0) {
-    return res.status(400).json({ error: 'agent-proposals 必须由 supervisor 注入合法 case_id' });
+  const sessionId = b.session_id;
+  if (typeof sessionId !== 'string' || !sessionId.trim()) {
+    return res.status(400).json({ error: 'agent-proposals 必须携带 session_id', code: 'session_id_invalid' });
+  }
+  // 反查而不是信任：body.case_id 从不参与本路由的任何判断，即使带了也直接
+  // 丢弃——caseId 只可能来自 supervisor 登记表，查不到就是查不到。
+  const caseId = caseIdForSession(sessionId);
+  if (!caseId) {
+    return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝提案', code: 'session_not_bound' });
   }
   try {
     const result = enqueueAgentProposal({

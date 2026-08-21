@@ -361,42 +361,55 @@ export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef },
   const currentCase = caseRow.get(caseId);
   if (!currentCase) fail('案件不存在', 'case_not_found');
 
-  const propId = String(proposalId || '').trim();
+  // proposal_id 是本函数的幂等主键，必须是 supervisor/plugin 派发的字符串
+  // 本身；String(x) 强转会把 object/array/boolean 都塌缩成某个字符串，让
+  // 互不相关的提案在唯一索引上撞车（交付门禁 6 明确禁止的"互相吞并"）。
+  if (typeof proposalId !== 'string') fail('proposal_id 必须为字符串', 'proposal_invalid');
+  const propId = proposalId.trim();
   if (!propId) fail('proposal_id 缺失或非法', 'proposal_invalid');
   if (propId.length > 200) fail('proposal_id 过长', 'proposal_invalid');
 
-  const allowedPayload = new Set(['title', 'note', 'evidence']);
-  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('agent 提案 payload 非法');
+  // payload 字段名与校验规则和 enqueueLlmSuggestion 完全对齐（title/priority/
+  // basis）：一来这就是 DSH 插件 anqi_inbox_propose 实际发送的形状，二来
+  // today.js 的收件卡片本来就按 payload.basis 渲染"依据："——同一套字段名
+  // 让 agent 提案免费获得既有的事实来源展示，不需要另起一套 UI 分支。
+  const allowedPayload = new Set(['title', 'priority', 'basis']);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('agent 提案 payload 非法', 'proposal_invalid');
   const hidden = Object.keys(payload).filter((key) => !allowedPayload.has(key));
-  if (hidden.length) fail(`agent 提案含不允许字段：${hidden.join(',')}`);
+  if (hidden.length) fail(`agent 提案含不允许字段：${hidden.join(',')}`, 'proposal_invalid');
   const title = String(payload.title || '').trim();
-  if (!title) fail('agent 提案缺 title');
-  if (payload.note !== undefined && typeof payload.note !== 'string') fail('agent 提案 note 非法');
-  if (payload.evidence !== undefined && typeof payload.evidence !== 'string') fail('agent 提案 evidence 非法');
+  if (!title) fail('agent 提案缺 title', 'proposal_invalid');
+  const priority = payload.priority === undefined ? 'normal' : String(payload.priority);
+  if (!['high', 'normal', 'low'].includes(priority)) fail('agent 提案 priority 非法', 'proposal_invalid');
+  if (payload.basis !== undefined && typeof payload.basis !== 'string') fail('agent 提案 basis 非法', 'proposal_invalid');
   const cleanPayload = {
     title: title.slice(0, 500),
-    ...(payload.note ? { note: payload.note.trim().slice(0, 1000) } : {}),
-    ...(payload.evidence ? { evidence: payload.evidence.trim().slice(0, 1000) } : {}),
+    priority,
+    ...(payload.basis ? { basis: payload.basis.trim().slice(0, 1000) } : {}),
   };
   const contentKey = recommendationContentKey(title);
 
-  // source_ref 只保留可审计的 session/turn/tool-call 关联标识，绝不夹带敏感案卷正文。
-  let sourceRefText = '';
-  if (sourceRef !== undefined && sourceRef !== null) {
-    if (typeof sourceRef !== 'object' || Array.isArray(sourceRef)) fail('agent 提案 source_ref 非法');
-    const allowedRef = ['session', 'turn', 'toolCallId'];
-    const hiddenRef = Object.keys(sourceRef).filter((key) => !allowedRef.includes(key));
-    if (hiddenRef.length) fail(`agent 提案 source_ref 含不允许字段：${hiddenRef.join(',')}`);
-    const cleanRef = {};
-    for (const key of allowedRef) {
-      if (sourceRef[key] === undefined || sourceRef[key] === null) continue;
-      if (typeof sourceRef[key] !== 'string' && typeof sourceRef[key] !== 'number') {
-        fail(`agent 提案 source_ref.${key} 非法`);
-      }
-      cleanRef[key] = String(sourceRef[key]).slice(0, 200);
-    }
-    sourceRefText = JSON.stringify(cleanRef).slice(0, 1000);
+  // source_ref 是设计稿 §2 列在"每条 proposal 至少包含以下受信字段"里的必备
+  // 字段，不是可选项——缺失直接拒绝，不允许产生无审计关联的提案。字段名与
+  // DSH 插件实际发送的形状对齐（session_id/call_id/root_call_id），绝不
+  // 夹带敏感案卷正文。
+  if (sourceRef === undefined || sourceRef === null) fail('agent 提案缺 source_ref', 'proposal_invalid');
+  if (typeof sourceRef !== 'object' || Array.isArray(sourceRef)) fail('agent 提案 source_ref 非法', 'proposal_invalid');
+  const allowedRef = ['session_id', 'call_id', 'root_call_id'];
+  const hiddenRef = Object.keys(sourceRef).filter((key) => !allowedRef.includes(key));
+  if (hiddenRef.length) fail(`agent 提案 source_ref 含不允许字段：${hiddenRef.join(',')}`, 'proposal_invalid');
+  if (typeof sourceRef.session_id !== 'string' || !sourceRef.session_id.trim()) {
+    fail('agent 提案 source_ref.session_id 必须为非空字符串', 'proposal_invalid');
   }
+  const cleanRef = {};
+  for (const key of allowedRef) {
+    if (sourceRef[key] === undefined || sourceRef[key] === null) continue;
+    if (typeof sourceRef[key] !== 'string' && typeof sourceRef[key] !== 'number') {
+      fail(`agent 提案 source_ref.${key} 非法`, 'proposal_invalid');
+    }
+    cleanRef[key] = String(sourceRef[key]).slice(0, 200);
+  }
+  const sourceRefText = JSON.stringify(cleanRef).slice(0, 1000);
 
   const intentKey = 'v1:agent-proposal';
   const scope = ['agent-propose', 'task', caseId, intentKey, propId];
@@ -411,7 +424,9 @@ export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef },
     if (existing) {
       touchInbox(existing);
       audit(actor, 'agent-proposal-retry', 'inbox', existing.id, `${intentKey}:${propId}:${existing.status}`);
-      return publicResult(existing, 'coalesced', existing.status);
+      // touchInbox 之后必须重新 SELECT 再回给调用方（与上面 L2 分支写法一致）
+      // ——否则 seen_count 等字段回给调用方的是 touch 之前的陈旧快照。
+      return publicResult(db.prepare('SELECT * FROM inbox WHERE id=?').get(existing.id), 'coalesced', existing.status);
     }
 
     const info = db.prepare(

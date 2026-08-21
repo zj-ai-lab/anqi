@@ -1,7 +1,10 @@
 // enqueueAgentProposal() 单元冒烟：proposal_id 幂等 retry、同 title 异 proposal_id 并存、
 // decline 记忆只属于该 proposal_id（不因案件状态变化重开）、与既有 L2 case.next_action
 // 去重状态机互不覆盖——这四条正是设计稿 §2 与 spike REPORT §9 记录的 L2 去重误吞 agent
-// 提案 bug 的验收点。
+// 提案 bug 的验收点。另外覆盖修复轮的四个契约点：proposal_id 必须是字符串（不接受
+// object/array 静默塌缩）、payload 字段名与 enqueueLlmSuggestion 对齐（title/priority/
+// basis）、source_ref 必备且字段名对齐 DSH 插件实际形状（session_id/call_id/root_call_id）、
+// coalesced 分支返回 touch 之后的新鲜行。
 //
 // DB_PATH 隔离到临时文件：db.js 的 DB_PATH 在模块首次执行时读一次 process.env，必须在
 // 任何静态 import 触发它加载之前设置好，所以延后到动态 import（与 tools/test-agent-config.js
@@ -25,40 +28,46 @@ function inboxRow(id) {
   return db.prepare('SELECT * FROM inbox WHERE id=?').get(id);
 }
 
+const ref = (callId) => ({ session_id: 'sess-1', call_id: callId, root_call_id: 'root-1' });
+
 // ---- 用例 1：proposal_id 幂等 retry ----
-// 同一 proposal_id 重试必须命中同一行，不重复插入，且不刷新 payload。
+// 同一 proposal_id 重试必须命中同一行，不重复插入，且不刷新 payload；命中的行
+// 必须是 touch 之后的新鲜快照（seen_count 已自增），不是陈旧行。
 const first = enqueueAgentProposal({
   caseId,
   proposalId: 'prop-001',
-  payload: { title: '核对送达回证', note: '首次提案', evidence: '证据摘要 A' },
-  sourceRef: { session: 'sess-1', turn: '1', toolCallId: 'call-1' },
+  payload: { title: '核对送达回证', basis: '首次提案证据摘要 A' },
+  sourceRef: ref('call-1'),
 }, 'test');
 assert.equal(first.created, true, '首次提案应新建');
 assert.equal(inboxRow(first.item_id).source, 'agent-propose');
 assert.equal(inboxRow(first.item_id).intent_key, 'v1:agent-proposal');
 assert.equal(inboxRow(first.item_id).state_fingerprint, 'prop-001');
+assert.equal(inboxRow(first.item_id).seen_count, 1);
 
 const retry = enqueueAgentProposal({
   caseId,
   proposalId: 'prop-001',
-  payload: { title: '核对送达回证（重试时模型换了措辞）', note: '重试提案', evidence: '证据摘要 B' },
-  sourceRef: { session: 'sess-1', turn: '2', toolCallId: 'call-2' },
+  payload: { title: '核对送达回证（重试时模型换了措辞）', basis: '重试提案证据摘要 B' },
+  sourceRef: ref('call-2'),
 }, 'test');
 assert.equal(retry.created, false, 'retry 不应新建');
 assert.equal(retry.item_id, first.item_id, 'retry 必须命中同一行');
+assert.equal(retry.item.seen_count, 2, 'coalesced 分支必须返回 touch 之后的新鲜行，不是陈旧快照');
 assert.equal(
   db.prepare("SELECT COUNT(*) c FROM inbox WHERE source='agent-propose'").get().c,
   1,
   '同一 proposal_id 不应重复插入'
 );
 const afterRetryPayload = JSON.parse(inboxRow(first.item_id).payload);
-assert.equal(afterRetryPayload.note, '首次提案', 'retry 不应刷新已存的 payload');
+assert.equal(afterRetryPayload.basis, '首次提案证据摘要 A', 'retry 不应刷新已存的 payload');
 
 // ---- 用例 2：同 title 不同 proposal_id 各自建行，互不吞并 ----
 const secondSameTitle = enqueueAgentProposal({
   caseId,
   proposalId: 'prop-002',
   payload: { title: '核对送达回证' },
+  sourceRef: ref('call-3'),
 }, 'test');
 assert.equal(secondSameTitle.created, true, '不同 proposal_id 即使标题相同也必须新建');
 assert.notEqual(secondSameTitle.item_id, first.item_id);
@@ -77,6 +86,7 @@ const afterDecline = enqueueAgentProposal({
   caseId,
   proposalId: 'prop-002',
   payload: { title: '核对送达回证' },
+  sourceRef: ref('call-4'),
 }, 'test');
 assert.equal(afterDecline.created, false, 'declined 后同 proposal_id 重试不应重开');
 assert.equal(afterDecline.item_id, secondSameTitle.item_id);
@@ -86,6 +96,7 @@ const thirdNewProposal = enqueueAgentProposal({
   caseId,
   proposalId: 'prop-003',
   payload: { title: '核对送达回证' },
+  sourceRef: ref('call-5'),
 }, 'test');
 assert.equal(thirdNewProposal.created, true);
 assert.equal(inboxRow(thirdNewProposal.item_id).status, 'pending');
@@ -112,27 +123,49 @@ for (const id of [first.item_id, secondSameTitle.item_id, thirdNewProposal.item_
   assert.equal(inboxRow(id).intent_key, 'v1:agent-proposal', 'agent-propose 行的 intent_key 不应被 L2 覆盖');
 }
 // 反过来：agent-propose 的重试也不应影响 llm-suggest 那一行的状态。
-enqueueAgentProposal({ caseId, proposalId: 'prop-001', payload: { title: '核对送达回证' } }, 'test');
+enqueueAgentProposal({ caseId, proposalId: 'prop-001', payload: { title: '核对送达回证' }, sourceRef: ref('call-6') }, 'test');
 assert.equal(inboxRow(llmSuggestion.item_id).source, 'llm-suggest');
 assert.equal(inboxRow(llmSuggestion.item_id).status, 'pending');
 
 // ---- 附加校验：非法输入必须拒绝（供 route 层复用的契约） ----
 assert.throws(
-  () => enqueueAgentProposal({ caseId, proposalId: '', payload: { title: 'x' } }, 'test'),
+  () => enqueueAgentProposal({ caseId, proposalId: '', payload: { title: 'x' }, sourceRef: ref('c') }, 'test'),
   /proposal_id/
 );
 assert.throws(
-  () => enqueueAgentProposal({ caseId, proposalId: 'p', payload: { title: '' } }, 'test'),
+  () => enqueueAgentProposal({ caseId, proposalId: { a: 1 }, payload: { title: 'x' }, sourceRef: ref('c') }, 'test'),
+  /proposal_id 必须为字符串/,
+  'proposal_id 非字符串必须直接拒绝，不能被 String() 静默塌缩成幂等主键'
+);
+assert.throws(
+  () => enqueueAgentProposal({ caseId, proposalId: ['x'], payload: { title: 'x' }, sourceRef: ref('c') }, 'test'),
+  /proposal_id 必须为字符串/
+);
+assert.throws(
+  () => enqueueAgentProposal({ caseId, proposalId: 'p', payload: { title: '' }, sourceRef: ref('c') }, 'test'),
   /title/
 );
 assert.throws(
-  () => enqueueAgentProposal({ caseId, proposalId: 'p', payload: { title: 'x', kind: 'event' } }, 'test'),
+  () => enqueueAgentProposal({ caseId, proposalId: 'p', payload: { title: 'x', kind: 'event' }, sourceRef: ref('c') }, 'test'),
   /不允许字段/
 );
 assert.throws(
-  () => enqueueAgentProposal({ caseId: 999999, proposalId: 'p', payload: { title: 'x' } }, 'test'),
+  () => enqueueAgentProposal({ caseId: 999999, proposalId: 'p', payload: { title: 'x' }, sourceRef: ref('c') }, 'test'),
   /案件不存在/
+);
+// source_ref 是必备字段（设计稿 §2），缺失必须拒绝，不能默认放行成无审计关联的提案。
+assert.throws(
+  () => enqueueAgentProposal({ caseId, proposalId: 'p-no-ref', payload: { title: 'x' } }, 'test'),
+  /source_ref/
+);
+assert.throws(
+  () => enqueueAgentProposal({
+    caseId, proposalId: 'p-bad-ref', payload: { title: 'x' },
+    sourceRef: { session: 'sess-1', turn: '1', toolCallId: 'call-1' },
+  }, 'test'),
+  /不允许字段/,
+  'source_ref 字段名必须是 session_id/call_id/root_call_id，旧字段名必须被拒绝'
 );
 
 fs.rmSync(scratch, { recursive: true, force: true });
-console.log('agent proposals tests: 幂等 retry + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖 passed');
+console.log('agent proposals tests: 幂等 retry(新鲜快照) + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖 + proposal_id/source_ref 强校验 passed');
