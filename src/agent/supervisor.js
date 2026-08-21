@@ -468,9 +468,17 @@ function nowIso() {
 // 次可以骗过前端渲染逻辑的伪造。这里给两条来源分别打上 origin 标记，并且只
 // 有 wire 侧的 type 在撞上 supervisor 保留名时才会被强制加前缀重写成
 // `wire/<type>`（supervisor 侧永远是这些字面量本身，不需要、也不会被重写）。
+// 'status' 也在保留名之列：它不是本文件 Worker.emit() 出来的字面量（那些已
+// 经在这张表里），而是 SSE 路由层（src/routes/agent.js）在连接建立/重连时
+// 单独 send('status', supervisor.publicStatus(caseId)) 下发的宿主快照帧名——
+// 但它同样是"前端不校验 origin 就信"的可信帧名（真快照顶层没有 origin/data
+// 包装，见路由层注释），子进程一样能靠 session.event 里塞 type:'status' 撞
+// 名，把伪造的状态（例如 status:'crashed'）当成宿主快照喂给前端，锁死整个
+// 抽屉。和其它九个保留名同等对待，撞名一律重写成 wire/status。
 const SUPERVISOR_RESERVED_EVENT_TYPES = new Set([
   'worker/ready', 'turn/start', 'turn/end', 'stderr', 'protocol-error',
   'notification', 'interaction/pending', 'interaction/expired', 'worker/exit',
+  'status',
 ]);
 
 function namespaceWireEventType(type) {

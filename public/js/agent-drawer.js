@@ -24,24 +24,41 @@
 //   - 'assistant/message'：origin 'wire'，data.message.content 是内容块数组，
 //     用来在一段助手发言结束时用权威文本收口（覆盖，不是追加）。
 //   - 'tool/call' / 'tool/result'：origin 'wire'，只渲染成一行摘要（工具名 +
-//     只读/写入性质），不展开完整参数/返回值。anqi_inbox_propose 的
-//     tool/result created=true 会额外触发一条「已提交建议到收件箱」提示。
+//     只读/写入性质），不展开完整参数/返回值。两者按 callId 关联（tool/call
+//     data 形状是 {turn,step,callId,name,arguments}；tool/result data 形状是
+//     {turn,step,message,error?,meta?}，message 是
+//     createToolResultMessage() 产出的 {..., content:[{type:'tool-result',
+//     toolCallId,content,isError}]}，与前者的 callId 是同一个值——见
+//     @deepseek-ai/dsh-agent-loop/lib/index.js 的 appendToolCall/
+//     appendToolResult）。data 顶层没有 created 字段：anqi_inbox_propose 的
+//     {created:true,...} 是工具返回值，经 renderJson 变成
+//     message.content[0].content[0].text 里的 JSON 文本，需要解析后才能读到
+//     created，data.meta 则只有声明了 output.presentationMeta 的工具才有
+//     （本工具没有）。按 callId 关联而不是按到达顺序猜，是因为并行工具调用
+//     下 tool/call A → tool/call B → tool/result A 时「记住上一次」的写法会
+//     错配到 B。
 //   - 'interaction/pending' / 'interaction/expired'：origin 'supervisor'，
 //     approval 卡片（允许一次/拒绝）与 question 卡片（受限答案表单）。
 import { api, el, toast } from './api.js';
 
 const STATUS_LABEL = {
   disabled: '未启用', starting: '启动中', ready: '就绪', running: '运行中',
-  stopped: '已停止', error: '出错', crashed: '已崩溃',
+  stopping: '停止中', stopped: '已停止', error: '出错', crashed: '已崩溃',
 };
 const STATUS_CHIP_CLASS = {
   disabled: 'c-gray', starting: 'c-amber', ready: 'c-green', running: 'c-blue',
-  stopped: 'c-gray', error: 'c-red', crashed: 'c-red',
+  stopping: 'c-amber', stopped: 'c-gray', error: 'c-red', crashed: 'c-red',
 };
 // 会触发「启动/重新启动」按钮的状态：还没起过、或已经落终态但不是 disabled。
 const STARTABLE_STATUSES = new Set(['stopped', 'error', 'crashed']);
+// 只读工具白名单：anqi 自己的三个只读工具，加上 preset 挂的 dsh-tool-fs /
+// dsh-tool-fs-search 里天然只读的 read/read_image（读文件）与 glob/grep（搜
+// 索）——这四个是助理最高频调用的工具，漏标会让律师看到「🔧 read · 写入」
+// 这种误导性的性质标注。write/edit 不在此列——preset 的 sandbox-policy 把它
+// 们钉死 read-only，必然被拒，标「写入」才是对的（见 agent.cordis.yml）。
 const READONLY_TOOLS = new Set([
   'mcp__anqi-local__case_folder_info', 'anqi_case_get', 'anqi_digest',
+  'read', 'read_image', 'glob', 'grep',
 ]);
 const PROPOSE_TOOL = 'anqi_inbox_propose';
 const MAX_PROMPT_CHARS = 8000;
@@ -60,7 +77,7 @@ export async function mountAgentDrawer(caseId) {
     status: 'stopped',
     currentBubble: null,
     currentBubbleText: '',
-    lastToolCall: null,
+    pendingToolCalls: new Map(), // callId -> name（tool/call 与 tool/result 按 callId 关联，不能按顺序猜——并行工具调用下顺序会错配）
     cards: new Map(), // interactionId -> { el }
   };
 
@@ -122,6 +139,22 @@ export async function mountAgentDrawer(caseId) {
     const node = el('div', { class: 'agent-msg agent-msg-tool' }, `🔧 ${name} · ${kind}`);
     logEl.append(node);
     scrollLogDown();
+  }
+
+  // 从真实的 tool/result data 里取出 anqi_inbox_propose 的 created 字段——
+  // data.message.content[0].content 是工具 render 出来的内容块数组，
+  // renderJson 只产出一个 {type:'text',text:JSON字符串} 块（见
+  // src/agent/assets/plugins/dsh-anqi/index.js 的 renderJson()）。解析失败
+  // （形状不对/非 JSON）一律当作「不是一次成功的建议提交」处理，不抛错。
+  function readProposalCreated(resultData) {
+    try {
+      const blocks = resultData?.message?.content?.[0]?.content;
+      const textBlock = Array.isArray(blocks) ? blocks.find((b) => b?.type === 'text') : null;
+      if (!textBlock?.text) return false;
+      return JSON.parse(textBlock.text)?.created === true;
+    } catch {
+      return false;
+    }
   }
 
   function appendProposalNotice() {
@@ -297,16 +330,19 @@ export async function mountAgentDrawer(caseId) {
     es.addEventListener('tool/call', (e) => {
       const frame = JSON.parse(e.data);
       if (frame.origin !== 'wire') return;
-      const name = frame.data?.name;
+      const { callId, name } = frame.data || {};
       if (!name) return;
-      state.lastToolCall = name;
+      if (callId != null) state.pendingToolCalls.set(callId, name);
       appendToolCall(name);
     });
     es.addEventListener('tool/result', (e) => {
       const frame = JSON.parse(e.data);
       if (frame.origin !== 'wire') return;
-      if (state.lastToolCall === PROPOSE_TOOL && frame.data?.created === true) appendProposalNotice();
-      state.lastToolCall = null;
+      const data = frame.data || {};
+      const callId = data.message?.content?.[0]?.toolCallId;
+      const name = callId != null ? state.pendingToolCalls.get(callId) : undefined;
+      if (callId != null) state.pendingToolCalls.delete(callId);
+      if (name === PROPOSE_TOOL && readProposalCreated(data)) appendProposalNotice();
     });
     es.addEventListener('interaction/pending', (e) => {
       const data = JSON.parse(e.data).data || {};
@@ -350,7 +386,8 @@ export async function mountAgentDrawer(caseId) {
     try {
       await api(`/cases/${caseId}/agent/cancel`, { method: 'POST' });
       appendSystem('已请求停止');
-    } finally { stopBtn.disabled = false; }
+    } catch { /* api() 已经 toast 过错误 */ }
+    finally { stopBtn.disabled = false; }
   });
 
   promptForm.addEventListener('submit', async (e) => {

@@ -1440,6 +1440,14 @@ async function startFakeWorker(opts) {
     method: 'session.event',
     params: { sessionId, event: { type: 'interaction/pending', data: { spoof: '伪造的审批卡片' } } },
   });
+  // 撞名：'status' 不是 Worker.emit() 的字面量，是路由层单独下发的宿主快照帧
+  // 名——同样必须在这张表里，否则子进程能靠它伪造一份假状态锁死案件抽屉
+  // （见本文件上方注释与 supervisor.js 的 SUPERVISOR_RESERVED_EVENT_TYPES）。
+  worker.child.sendLine({
+    jsonrpc: '2.0',
+    method: 'session.event',
+    params: { sessionId, event: { type: 'status', data: { spoofStatus: '伪造的状态快照' } } },
+  });
   // 不撞名：一条普通的 wire 事件，必须原样透出、不加前缀。
   worker.child.sendLine({
     jsonrpc: '2.0',
@@ -1447,8 +1455,10 @@ async function startFakeWorker(opts) {
     params: { sessionId, event: { type: 'agent/message', data: { plain: '正常事件' } } },
   });
 
-  const gotBoth = await waitUntil(() => events.some((e) => e.data?.spoof) && events.some((e) => e.data?.plain));
-  assert.equal(gotBoth, true, '两条 wire 事件都必须被转发出来（撞名的那条也不该被静默丢弃）');
+  const gotAll = await waitUntil(() => (
+    events.some((e) => e.data?.spoof) && events.some((e) => e.data?.spoofStatus) && events.some((e) => e.data?.plain)
+  ));
+  assert.equal(gotAll, true, '三条 wire 事件都必须被转发出来（撞名的两条也不该被静默丢弃）');
 
   const spoofed = events.find((e) => e.data?.spoof);
   assert.equal(
@@ -1457,13 +1467,20 @@ async function startFakeWorker(opts) {
   );
   assert.equal(spoofed.origin, 'wire', 'wire 转发事件的 origin 必须是 wire，不能伪装成 supervisor');
 
+  const spoofedStatus = events.find((e) => e.data?.spoofStatus);
+  assert.equal(
+    spoofedStatus.type, 'wire/status',
+    'wire 侧撞上 status 保留名同样必须被重写成 wire/status，不能原样冒充宿主的状态快照帧锁死抽屉'
+  );
+  assert.equal(spoofedStatus.origin, 'wire', 'wire 转发的伪造状态帧 origin 必须是 wire');
+
   const plain = events.find((e) => e.data?.plain);
   assert.equal(plain.type, 'agent/message', '不撞上保留名的 wire type 不应该被加前缀（否则正常事件名全部变形）');
   assert.equal(plain.origin, 'wire', '不撞名的 wire 事件 origin 同样是 wire');
 
   unsubscribe();
   await supervisor.stop(caseId, 'test cleanup: 场景 23 收尾');
-  console.log('  [23/23] wire 事件 type 撞名隔离：ok（保留名被重写成 wire/<type>，origin 区分 supervisor/wire）');
+  console.log('  [23/23] wire 事件 type 撞名隔离：ok（保留名被重写成 wire/<type>，含 status，origin 区分 supervisor/wire）');
 }
 
 clearAgentSettings();
