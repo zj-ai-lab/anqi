@@ -72,6 +72,15 @@ function ipv4FromMappedHex(rest) {
 
 function isPrivateOrLoopbackHost(hostname) {
   let lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
+  // 尾点 FQDN（如 "localhost."、"api.localhost."）——WHATWG URL 会原样保留
+  // 这个尾部的点（`new URL('http://LOCALHOST./v1').hostname === 'localhost.'`），
+  // 但 DNS 侧 "localhost." 与 "localhost" 解析结果完全相同。不去掉这个点的
+  // 话，下面 `lower === 'localhost'`、`.endsWith('.localhost')`、
+  // `.endsWith('.local')` 这几条判断全部落空（探针实测
+  // http://LOCALHOST./v1、http://api.localhost./v1、http://foo.local./v1
+  // 均被 ALLOW），等于用一个记号法差异就绕开了先前刚补上的 *.localhost 拦
+  // 截——这正是要堵的"baseURL 被指回本机/anqi 自己 internal API"那条路。
+  lower = lower.replace(/\.$/, '');
   // ::ffff:a.b.c.d（或其规范化后的十六进制形式 ::ffff:7f00:1）是 IPv4-mapped
   // IPv6：不展开的话，套一层这个壳就能让 127.0.0.1/10.0.0.0/8 等纯 IPv4 正则
   // 检查全部落空，但地址本身依然可达对应的 IPv4 回环/内网目标。
@@ -109,6 +118,11 @@ function isPrivateOrLoopbackHost(hostname) {
   // 第二个十六进制组的取值范围是 0x80-0xbf（次高两位固定为 '10'），也就是
   // 十六进制第二位落在 8/9/a/b 这四个字符里。
   if (/^fe[89ab][0-9a-f]{0,2}:/.test(lower)) return true;
+  // IPv6 站点本地 fec0::/10（fec0:: 到 feff:ffff:...，第二个十六进制组第二
+  // 位落在 c/d/e/f）——RFC 3879 已废弃，但仍是等价于私网地址的历史保留段，
+  // 拦掉与上面的链路本地一并兜底，避免只挡了一半 fe80::/10 就留下相邻这一
+  // 段没挡。
+  if (/^fe[cdef][0-9a-f]{0,2}:/.test(lower)) return true;
   return false;
 }
 

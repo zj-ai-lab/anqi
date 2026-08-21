@@ -168,12 +168,16 @@ const MAX_EVENT_FIELD_CHARS = 4000;
 // redactDeep 的总量兜底：逐叶子限长只保证单个字符串字段不超过
 // MAX_EVENT_FIELD_CHARS，但一个事件可以有成千上万个叶子（例如工具结果里一
 // 个超长数组，每个元素都是几百字符的短字符串）——探针曾用这种形状产出过一
-// 条 1.56MB 的单事件，逐叶子限长对此完全没有约束力。这里加两道总量闸门：
-// 一是整个事件序列化后的累计字节预算，二是单个数组允许保留的元素个数上限；
-// 任何一道触顶，超出部分直接折叠成一条 "[truncated N items]" 标记，不再逐
-// 项处理（也不再消耗预算）。
+// 条 1.56MB 的单事件，逐叶子限长对此完全没有约束力。这里加三道总量闸门：
+// 一是整个事件序列化后的累计字节预算（对象 key 名与数字/布尔/null 叶子也计
+// 入，不只是字符串叶子——否则 {k0..k99999: 1} 这种"key 多但 value 是数字"
+// 的形状能完全绕开预算，探针复现过 1MB+ 的这类单事件），二是单个数组允许
+// 保留的元素个数上限，三是单个对象允许保留的 key 个数上限（否则对象没有类
+// 似数组的条目数上限，key 数量可以无限堆）。任何一道触顶，超出部分直接折叠
+// 成一条 "[truncated N items/keys]" 标记，不再逐项处理。
 const MAX_EVENT_TOTAL_BYTES = 256 * 1024;
 const MAX_EVENT_ARRAY_ITEMS = 200;
+const MAX_EVENT_OBJECT_KEYS = 200;
 const REDACTED = '[REDACTED]';
 
 function timeoutPromise(ms, message) {
@@ -321,12 +325,16 @@ function byteLength(str) {
 // 但逐叶子限长只约束"单个字符串"，约束不了"叶子数量"——一个几千元素的数
 // 组，每个元素都是几百字符的短字符串，逐叶子检查全部合规，序列化后的整个
 // 事件依然可以轻松几百 KB 到几 MB（探针曾复现过 1.56MB 的单事件）。这里加
-// 两道总量闸门，跨递归调用共享同一份可变预算 `budget`（同一次 .deep() 调用
+// 三道总量闸门，跨递归调用共享同一份可变预算 `budget`（同一次 .deep() 调用
 // 的所有叶子共用，不是每个叶子各自开一份）：
-//   - budget.remaining：整个结构累计消耗的字节数，触顶后后续叶子一律折叠
-//     成占位符，不再继续递归展开；
+//   - budget.remaining：整个结构累计消耗的字节数，字符串叶子、对象 key 名、
+//     数字/布尔/null 叶子都按各自序列化后的字节数扣减（不止字符串叶子——
+//     否则一个几十万条数字叶子的宽对象可以完全绕开预算），触顶后后续叶子
+//     一律折叠成占位符，不再继续递归展开；
 //   - MAX_EVENT_ARRAY_ITEMS：单个数组保留的元素个数上限，超出的元素不逐个
-//     处理（不消耗预算），整体折叠成一条 `[truncated N items]` 标记。
+//     处理，整体折叠成一条 `[truncated N items]` 标记；
+//   - MAX_EVENT_OBJECT_KEYS：单个对象保留的 key 个数上限，超出的 key 不逐
+//     个处理，整体折叠成一条 `[truncated]: "N more keys"` 标记。
 function redactDeep(value, secretValues, budget, depth = 0) {
   if (depth > 8) return '[REDACTED:max-depth]';
   if (budget.remaining <= 0) return '[REDACTED:budget-exceeded]';
@@ -343,16 +351,45 @@ function redactDeep(value, secretValues, budget, depth = 0) {
       if (budget.remaining <= 0) break;
       out.push(redactDeep(value[kept], secretValues, budget, depth + 1));
     }
-    if (kept < value.length) out.push(`[truncated ${value.length - kept} items]`);
-    return out;
-  }
-  if (value && typeof value === 'object') {
-    const out = {};
-    for (const [key, item] of Object.entries(value)) {
-      out[key] = budget.remaining > 0 ? redactDeep(item, secretValues, budget, depth + 1) : '[REDACTED:budget-exceeded]';
+    if (kept < value.length) {
+      const marker = `[truncated ${value.length - kept} items]`;
+      budget.remaining -= byteLength(marker);
+      out.push(marker);
     }
     return out;
   }
+  if (value && typeof value === 'object') {
+    // 对象的 key 名本身来自子进程、同样可能被用来夹带 secret 值——之前这里
+    // 只对 value 递归脱敏，key 原样透传（`out[key] = ...`），等于给
+    // redactDeep 留了一条不脱敏的旁路：子进程把 apiKeyValue 塞进任意键名就
+    // 能整条穿透到 SSE 帧（value 侧被 [REDACTED]、key 侧明文出街）。现在 key
+    // 也过 redactString，并把 key 的字节数计入预算；同时对象的 key 数量也
+    // 设上限（对齐数组的 MAX_EVENT_ARRAY_ITEMS——之前对象没有任何条目数上
+    // 限，配合下面"数字/布尔/null 叶子也计费"，堵住"几十万个数字叶子的
+    // 宽对象完全绕开总量预算"这条路，探针曾用这种形状复现过 1MB+ 的单事件）。
+    const entries = Object.entries(value);
+    const keep = Math.min(entries.length, MAX_EVENT_OBJECT_KEYS);
+    const out = {};
+    let kept = 0;
+    for (; kept < keep; kept++) {
+      if (budget.remaining <= 0) break;
+      const [key, item] = entries[kept];
+      const redactedKey = redactString(String(key), secretValues);
+      budget.remaining -= byteLength(redactedKey);
+      out[redactedKey] = redactDeep(item, secretValues, budget, depth + 1);
+    }
+    if (kept < entries.length) {
+      const marker = `${entries.length - kept} more keys`;
+      budget.remaining -= byteLength(marker);
+      out['[truncated]'] = marker;
+    }
+    return out;
+  }
+  // number/boolean/null 等原语叶子本身不含 secret、无需脱敏，但序列化后仍
+  // 占字节——之前这里零消耗，一个几十万条数字叶子的对象可以完全绕开总量预
+  // 算（探针复现过 1,088,900 字节的单事件，预算 262,144 完全没触发）。这里
+  // 按其 JSON 文本形式的字节数扣减，口径与字符串叶子一致。
+  budget.remaining -= byteLength(String(value));
   return value;
 }
 
@@ -450,6 +487,7 @@ export class AgentSupervisor {
     this.workers = new Map(); // caseId -> Worker
     this.listeners = new Map(); // caseId -> Set<listener>，与 worker 生命周期解耦（见 Worker 类注释）
     this.stopPromises = new Map(); // caseId -> 在飞的 stop() Promise，见 start()/stop() 的互斥说明
+    this.startPromises = new Map(); // caseId -> 在飞的 start() 互斥 Promise，见 start()/_startWorker() 的互斥说明
   }
 
   // ---- 对外只读状态 ----
@@ -563,12 +601,39 @@ export class AgentSupervisor {
         : this.status(caseId);
     }
 
+    // 互斥：下面 _startWorker() 里"等在飞 stop() 落定"到"workers.set() 完成
+    // spawn"之间隔着好几个 await（db 查询、skill 根校验/隔离拷贝、runtime
+    // link 确保……），而这一段中途 this.workers 里对该 caseId 要么还是旧的
+    // 'stopping' worker、要么暂时为空，上面 existing/LIVE_STATUSES 那次判断
+    // 挡不住第二个并发 start()。以前这里没有互斥：'stopping' 窗口内两个
+    // start() 会双双越过等待点各自 spawn 出一个 worker，后跑完的那个把先跑
+    // 完、甚至已经 ready 的那个从 this.workers 顶掉——被顶掉的 worker 既不
+    // 在 workers 表里也从未被 _finalizeWorker 收尾：子进程永远不会被
+    // stopAll()/forceKillAll() 够到，它绑定的 sessionId 在 caseIdForSession()
+    // 里依然查得到（可以永远拿去打 /internal/agent-proposals），0700 临时
+    // skill 目录也永久泄漏。现在同一 caseId 的 start() 全部 join 同一个
+    // in-flight promise，任意时刻只有一次真正的启动序列在跑。
+    const inFlightStart = this.startPromises.get(caseId);
+    if (inFlightStart) return inFlightStart;
+
+    const startPromise = this._startWorker(caseId);
+    this.startPromises.set(caseId, startPromise);
+    try {
+      return await startPromise;
+    } finally {
+      if (this.startPromises.get(caseId) === startPromise) this.startPromises.delete(caseId);
+    }
+  }
+
+  async _startWorker(caseId) {
     // 同一案件的上一个 worker 可能正在 stop()（异步、最多 30s shutdown 往返
-    // + 10s 强杀等待）——'stopping' 不在 LIVE_STATUSES 里，上面那个判断会直
-    // 接放过，走到下面重新 spawn 一个全新 worker，而旧 worker 的子进程可能
-    // 还没真正退出：两个活子进程同时挂在同一个 caseId 名下，违反"每案最多
-    // 一个 active worker"。这里先等在飞的 stop() 完成——它落定之后旧 worker
-    // 必然已经终态化（_finalizeWorker 已跑过），再往下走的 spawn 是安全的。
+    // + 10s 强杀等待）——'stopping' 不在 LIVE_STATUSES 里，start() 顶部那个
+    // 判断会直接放过，走到下面重新 spawn 一个全新 worker，而旧 worker 的子
+    // 进程可能还没真正退出：两个活子进程同时挂在同一个 caseId 名下，违反
+    // "每案最多一个 active worker"。这里先等在飞的 stop() 完成——它落定之
+    // 后旧 worker 必然已经终态化（_finalizeWorker 已跑过），再往下走的
+    // spawn 是安全的。start() 顶部的互斥保证同一时刻只有一次 _startWorker
+    // 在执行，所以这里不必再担心被另一个并发 start() 抢跑。
     const inFlightStop = this.stopPromises.get(caseId);
     if (inFlightStop) await inFlightStop;
 
@@ -789,9 +854,14 @@ export class AgentSupervisor {
       // 协议，唯一手段是终止整个 worker 进程，防止一个已经判定失败的 turn
       // 之后还悄悄跑到 anqi_inbox_propose。之前这里只把 status 改回 ready、
       // 从不 abort/kill，导致超时后子进程继续跑，迟到的 running/idle/turn-end
-      // 会被下一个 turn 的 resolver 误当成自己的完成事件——wire 事件其实带
-      // turn id（session.event 的 event.data.turn），只有 session.status 通知
-      // （running/idle 就来自这里）不带；但宿主侧目前就是靠 worker._turnResolvers
+      // 会被下一个 turn 的 resolver 误当成自己的完成事件——带 turn id 的只是
+      // 一部分 session.event 子类型（权威定义见 runtime 依赖里的
+      // @deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js 的
+      // SessionEventMap：turn/end、tool/call、assistant/*、step/* 这几类带
+      // event.data.turn），session.status 通知（running/idle 就来自这里）不
+      // 带，request/header、todo/write、user/message、request/context、
+      // approval/* 这些 session.event 子类型同样不带——不是"只有 status 不
+      // 带"这么整齐。但宿主侧目前就是靠 worker._turnResolvers
       // 这一个单槽位状态机匹配 running/idle/turn-end，不按 turn id 区分，所以
       // 同一个槽位依旧会把迟到事件误记成"当前"turn 的。现在任何 turn 失败都
       // 统一走：本地 abort（立即生效）+ 终止整个

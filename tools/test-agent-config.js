@@ -101,23 +101,41 @@ for (const host of ['http://127.0.0.1:3007', 'http://localhost:9999', 'http://10
 }
 
 // 11.5) *.localhost 后缀（RFC 6761 保留、天然解析回回环地址）与 IPv6 链路本地
-//       fe80::/10——探针曾用 http://api.localhost/v1 实测被 ALLOW（之前只挡了
-//       裸 'localhost' 和 *.local，没覆盖这个同样常见的后缀）；fe80::/10 之前
-//       只挡了 ULA fc00::/7，同样漏了。
+//       fe80::/10、已废弃的站点本地 fec0::/10——探针曾用 http://api.localhost/v1
+//       实测被 ALLOW（之前只挡了裸 'localhost' 和 *.local，没覆盖这个同样常
+//       见的后缀）；fe80::/10 之前只挡了 ULA fc00::/7，同样漏了；fec0::/10
+//       挨着 fe80::/10，虽然 RFC 3879 已废弃但仍是私网等价段，一并挡上。
 for (const host of [
   'http://api.localhost/v1',
   'http://foo.bar.localhost:8080/',
   'http://[fe80::1]/',
   'http://[fe80::abcd:1234]/',
   'http://[febf:ffff::1]/', // fe80::/10 段末尾
+  'http://[fec0::1]/', // 已废弃的 IPv6 站点本地 fec0::/10 起始
+  'http://[feff:ffff::1]/', // fec0::/10 段末尾
 ]) {
   setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
   const rejected = loadAgentConfig();
-  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（.localhost 后缀 / fe80::/10 链路本地）`);
+  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（.localhost 后缀 / fe80::/10 链路本地 / fec0::/10 站点本地）`);
 }
-// 边界之外的地址必须仍然放行，确认没有误伤——fec0:: 已经在 fe80::/10 之外。
-setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://[fec0::1]/');
-assert.equal(loadAgentConfig().enabled, true, 'fe80::/10 段之外的 fec0:: 不应该被误伤');
+// 边界之外的地址必须仍然放行，确认没有误伤——2001:db8::1 是文档用途的公网
+// IPv6 段，既不在 fe80::/10 也不在 fec0::/10 里。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://[2001:db8::1]/');
+assert.equal(loadAgentConfig().enabled, true, 'fe80::/10 与 fec0::/10 段之外的公网 IPv6 不应该被误伤');
+
+// 11.6) 尾点 FQDN（"localhost."、"api.localhost."、"foo.local."）——WHATWG
+//       URL 会原样保留 hostname 末尾这个点，但 DNS 侧解析结果与去掉点之后完
+//       全相同。探针实测过这三种写法均被 ALLOW，等于换一种记号法就绕开了
+//       刚补上的 *.localhost / *.local 拦截。
+for (const host of [
+  'http://LOCALHOST./v1',
+  'http://api.localhost./v1',
+  'http://foo.local./v1',
+]) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（尾点 FQDN 与去掉尾点后解析到同一回环/内网地址）`);
+}
 
 // 12) deepseek-official 的 baseURL 只允许官方域名，不能被覆盖成任意第三方
 //     host（否则等于把 deepseek 的 key 发给攻击者服务器）。

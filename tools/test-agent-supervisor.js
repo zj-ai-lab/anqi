@@ -778,6 +778,80 @@ async function startFakeWorker(opts) {
   await supervisor.stop(caseId, 'test cleanup: 场景 16 收尾');
 }
 
+// ---- 场景 16b：redactDeep 的累计字节预算必须独立于数组/对象的条目数上限 ----
+// 场景 16 喂的是一个 5000 元素的大数组——它之所以被折叠，完全可能只是撞上了
+// MAX_EVENT_ARRAY_ITEMS（200）这道条目数上限，跟字节预算本身有没有生效毫无
+// 关系（审查证实：把 MAX_EVENT_TOTAL_BYTES 改成 Infinity、只留数组上限，场景
+// 16 依然全绿）。这里刻意构造一个"条目数不超过任何一道上限，但累计字节超
+// 预算"的形状：一个对象，正好 200 个 key（不超过 MAX_EVENT_OBJECT_KEYS），
+// 每个 key 对应一个正好 200 个元素的数字数组（不超过 MAX_EVENT_ARRAY_ITEMS），
+// 数字刻意钉在 6 位数区间——40000 个数字叶子单独看都不算长，条目数上的两道
+// 闸门也都没有被触发，但序列化后的总字节数会明显超过 256KB 的预算。之前
+// redactDeep 的对象/数组分支只对 string 叶子扣预算，数字叶子零消耗，这类
+// "数字叶子多但每个都不长"的形状会完全绕开总量闸门（探针复现过用这种形状
+// 撑出 1MB+ 单事件）。断言：a) 折叠后的字节数必须明显小于原始输入；b) 结构
+// 深处必须能找到 "[REDACTED:budget-exceeded]" 这个字节预算专属占位符（不是
+// 条目数上限的 "[truncated N items]"/"N more keys" 占位符）——这是证明"确
+// 实是字节预算把它拦下来的，不是条目数上限"的关键区分点。
+{
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  const keyCount = 200; // 恰好等于 MAX_EVENT_OBJECT_KEYS，不超限
+  const arrayLen = 200; // 恰好等于 MAX_EVENT_ARRAY_ITEMS，不超限
+  const wideNumeric = {};
+  for (let i = 0; i < keyCount; i++) {
+    // 数字钉在 7 位区间（1000000 起步）——budget 只按每个叶子序列化后的"内容
+    // 字节数"扣减（不含 JSON 逗号/引号/冒号这些结构性开销），所以要留出足够
+    // 余量：40000 个 7 位数字叶子累计消耗 ~280000 字节，明显超过 256KB 预算；
+    // 6 位数字试过，算上结构开销的富余量后实测总消耗仍压在预算之内、完全没
+    // 触发（教训：这里必须实测，不能只靠估算），所以钉在 7 位。没有任何单
+    // 条叶子、任何一层容器的条目数触发条目数上限（keyCount/arrayLen 都恰好
+    // 等于各自的上限，不超过）。
+    wideNumeric[`row${i}`] = Array.from({ length: arrayLen }, (_, j) => 1000000 + i * 1000 + j);
+  }
+  const originalBytes = Buffer.byteLength(JSON.stringify(wideNumeric), 'utf8');
+  const redacted = worker.redact.deep(wideNumeric);
+  const redactedBytes = Buffer.byteLength(JSON.stringify(redacted), 'utf8');
+  assert.ok(redactedBytes < originalBytes, `字节预算必须真正约束数字叶子：折叠后（${redactedBytes}）应该小于原始输入（${originalBytes}），否则说明数字叶子零消耗预算`);
+  // 证明"确实是字节预算把它拦下来的，不是条目数上限"：这里 keyCount 恰好等
+  // 于 MAX_EVENT_OBJECT_KEYS（keep = min(200, 200) = 200），对象自身的 for
+  // 循环只有在 budget.remaining 中途降到 <= 0 才会 break，让 kept < entries.
+  // length 成立、从而补一条 '[truncated]' 汇总 key——单靠"条目数上限"这条
+  // 闸门，keep 本来就等于 entries.length，循环会正常跑满 200 次，不可能触发
+  // 这条汇总 key。所以只要这条 key 出现，就证明是字节预算提前打断了循环。
+  const rowKeys = Object.keys(redacted).filter((k) => k.startsWith('row'));
+  assert.ok(rowKeys.length < keyCount, `字节预算必须提前打断对象的 key 遍历：保留的 row* key 数（${rowKeys.length}）应该明显少于原始 keyCount（${keyCount}），否则说明数字叶子确实零消耗预算、条目数上限单独就够不着这个结构`);
+  assert.ok(Object.prototype.hasOwnProperty.call(redacted, '[truncated]'), '必须能找到对象层面的 "[truncated]" 汇总 key，证明是字节预算中途打断了 key 遍历（而不是条目数上限——keyCount 恰好等于上限，条目数上限本身不会产生这条汇总 key）');
+  console.log('  [16b/22] redactDeep 字节预算独立于条目数上限：ok（宽而浅的数字叶子结构也会被字节预算拦下）');
+  await supervisor.stop(caseId, 'test cleanup: 场景 16b 收尾');
+}
+
+// ---- 场景 16c：redactDeep 必须脱敏对象的 key 名，不能只脱敏 value ----
+// 修复前：对象分支 `for (const [key, item] of Object.entries(value)) { out
+// [key] = ... }` 只对 value 递归脱敏，key 原样保留，从不过 redact。子进程
+// （脱敏管道唯一的信任边界）把 secret 值塞进任意对象键名就能整条穿透——探针
+// 端到端复现过：子进程发的 data 是 `{"<secret>": "x", "note": "<同一个
+// secret>"}`，下行 SSE 帧原始字节里 value 侧被 [REDACTED]、key 侧却明文出
+// 街。这里直接调用 worker.redact.deep()，喂一个"key 本身就是 secret 值"的
+// 对象，断言：a) 脱敏后的对象里找不到任何原样保留的 secret key（序列化整体
+// 检查，覆盖嵌套）；b) 对应的 value 依然被正确脱敏（confirm 修复没有连带破
+// 坏既有行为）。
+{
+  const secret = 'not-a-real-key'; // 与 startFakeWorker 里 TEST_DEEPSEEK_FAKE_API_KEY 的值一致
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  const withSecretAsKey = {
+    [secret]: 'value-alongside-secret-key',
+    nested: { [`prefix-${secret}-suffix`]: 'nested-value', note: secret },
+  };
+  const redacted = worker.redact.deep(withSecretAsKey);
+  const serialized = JSON.stringify(redacted);
+  assert.ok(!serialized.includes(secret), `脱敏后的序列化结果不能包含明文 secret（无论出现在 key 还是 value 里）：${serialized}`);
+  assert.ok(Object.keys(redacted).some((k) => k === '[REDACTED]'), '顶层"key 本身等于 secret"的那一条，脱敏后的 key 必须是 [REDACTED]');
+  assert.ok(Object.keys(redacted.nested).some((k) => k.includes('[REDACTED]')), '嵌套对象里"key 包含 secret 子串"的那一条，脱敏后的 key 必须替换掉 secret 子串');
+  assert.equal(redacted.nested.note, '[REDACTED]', 'value 侧原有的脱敏行为不能被这次修复破坏');
+  console.log('  [16c/22] redactDeep 脱敏对象 key 名：ok（key 侧不再是绕过脱敏的旁路）');
+  await supervisor.stop(caseId, 'test cleanup: 场景 16c 收尾');
+}
+
 // ---- 场景 17：'stopping' 态必须阻止同一案件重复 spawn ----
 // 修复前：LIVE_STATUSES 不含 'stopping'，turn 失败后 worker 进入 'stopping'
 // 到真正终态化之间有一段窗口（最坏 30s shutdown 往返 + 10s 强杀等待）；这段
@@ -853,6 +927,102 @@ async function startFakeWorker(opts) {
   // 轮询的话这次 await 也会真的永远挂起。
   await settle(supervisor.stop(caseId, 'test cleanup: 场景 17 收尾'));
   console.log('  [17/22] "stopping" 态阻止重复 spawn：ok（start() 等在飞 stop() 落定才重新 spawn）');
+}
+
+// ---- 场景 17b：'stopping' 窗口内并发多次 start() 必须只重新 spawn 一次 ----
+// 上面场景 17 只覆盖了"stopping 窗口里发一次 start()"这条 happy path，恰好
+// 绕开了真正的并发场景：审查发现修复轮六加的 `await this.stopPromises.get
+// (caseId)` 只是等在飞 stop() 落定，await 之后并不重新复查 this.workers——
+// 'stopping' 窗口里两个并发 start() 会双双穿过这一行、双双走到 spawn，后跑
+// 完的把先跑完（甚至已经 ready）的那个从 this.workers 顶掉，被顶掉的 worker
+// 永远不会被 _finalizeWorker 收尾（stopAll()/forceKillAll() 都够不着，
+// sessionId 反查依然有效，0700 临时 skill 目录永久泄漏）。这里手工制造同样
+// 的 stopping 窗口，但这次用 `Promise.all` 真正并发发起两次 start()，断言：
+// a) 只重新 spawn 了一次（不是两次)；b) 两次调用拿到的必须是同一个 worker
+// 的快照（同一个 pid）；c) 旧 worker 的子进程确实已经真正退出；d) 并发落定
+// 之后 this.workers 里那个 worker 就是新 spawn 的那个，没有任何 worker 被
+// 顶掉/孤儿化；e) 落定后再补一次 start() 不应该触发第三次 spawn（复用同一
+// worker），间接验证 startPromises 这个互斥表用完之后被正确清理，不会一直
+// 挡住之后正常的 start()。
+{
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+
+  const caseName = `自检案-防并发重复spawn-${Math.random().toString(36).slice(2)}`;
+  const caseId = insertCase(caseName);
+  fs.mkdirSync(path.join(filesRoot, caseName));
+
+  const children = [];
+  const supervisor = new AgentSupervisor({
+    filesRoot,
+    turnTimeoutMs: 80,
+    spawnFn: () => {
+      const child = makeFakeChild(undefined, {
+        'session/create': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: frame.params.sessionId } });
+        },
+        'session/prompt': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          // 故意不回 running/idle/turn-end——逼超时，触发内部 stop()。
+        },
+        shutdown: (frame, c) => {
+          const timer = setTimeout(() => {
+            c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+            c.emitExit(0, null);
+          }, 300);
+          timer.unref?.();
+        },
+      });
+      children.push(child);
+      return child;
+    },
+  });
+
+  const status1 = await supervisor.start(caseId);
+  assert.equal(status1.status, 'ready');
+  const firstChild = children[0];
+
+  const turnOutcome = settle(supervisor.prompt(caseId, '会超时失败，触发内部 stop()'));
+  const enteredStopping = await waitUntil(() => supervisor.workers.get(caseId).status === 'stopping');
+  assert.equal(enteredStopping, true, 'turn 超时后 worker 应该先进入 stopping');
+
+  // 关键：这里是真正的并发——两个 start() 调用都在 stopping 窗口内发起，谁
+  // 都不等谁。修复前两者都会各自穿过 `await inFlightStop` 之后独立往下跑
+  // spawn；修复后应该只有一个真正执行 _startWorker，另一个 join 同一个
+  // in-flight promise。
+  const [settledA, settledB] = await Promise.all([
+    settle(supervisor.start(caseId)),
+    settle(supervisor.start(caseId)),
+  ]);
+  await turnOutcome;
+
+  assert.equal(settledA.ok, true, '并发 start() 之一不应该 reject');
+  assert.equal(settledB.ok, true, '并发 start() 之二不应该 reject');
+  assert.equal(children.length, 2, '"stopping" 窗口内并发两次 start() 也只应该重新 spawn 一次（总计 2 = 旧的 1 + 新的 1）');
+  assert.equal(firstChild.exitCode, 0, '旧 worker 的子进程必须已经真正退出，两次并发 start() 都不能抢跑在它之前 spawn');
+  assert.equal(settledA.value.status, 'ready', '并发 start() 之一必须正常进入 ready');
+  assert.equal(settledB.value.status, 'ready', '并发 start() 之二必须正常进入 ready');
+
+  const liveWorker = supervisor.workers.get(caseId);
+  const secondChild = children[1];
+  assert.equal(liveWorker.pid, secondChild.pid, 'workers 表里活着的必须是新 spawn 出的那一个，不能被另一个并发调用顶掉/孤儿化');
+  assert.equal(liveWorker.status, 'ready', '并发落定之后 this.workers 里的 worker 必须是 ready 终态，不是半途孤儿');
+  assert.equal(caseIdForSession(liveWorker.sessionId), caseId, '存活 worker 的 sessionId 反查必须依然指回本案，不能出现"两个 session 同时绑定一个 caseId"的错位');
+
+  // 落定之后再补一次 start()：应该走"复用同一 worker"的 fast path，不应该
+  // 触发第三次 spawn——顺带验证 startPromises 互斥表已经被正确清理，没有
+  // 遗留任何"永远挡住后续 start()"的状态。
+  const status3 = await supervisor.start(caseId);
+  assert.equal(children.length, 2, '落定后再次 start() 不应该触发第三次 spawn（应该复用同一个已 ready 的 worker）');
+  assert.equal(status3.status, 'ready');
+
+  await settle(supervisor.stop(caseId, 'test cleanup: 场景 17b 收尾'));
+  console.log('  [17b/22] "stopping" 窗口内并发 start() 防重复 spawn：ok（互斥表让两次并发调用只跑一次真正的启动序列，无孤儿 worker）');
 }
 
 // ---- 场景 18：_handleFatal 必须真正 kill + 落终态，即使子进程卡死不退出 ----
