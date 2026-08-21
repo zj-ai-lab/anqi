@@ -1,6 +1,7 @@
 // /internal/agent-proposals 路由层回归：kind=event/deadline→400、source 伪造→400、
 // session_id 缺失/未绑定→400/403、payload/source_ref 白名单、case_id 绝不信任请求体
 // （即使 body 带 case_id 也必须被忽略，caseId 只能来自 session-registry 反查）、
+// source_ref.session_id 同理绝不信任请求体（落库的必须是反查用的权威 session_id）、
 // case_not_found→404、201/200 幂等状态码。
 //
 // 这条路由的"必须由 supervisor 登记 session→case 绑定"是设计稿 §2/§4 的红线要求，
@@ -95,6 +96,19 @@ try {
   const storedPayload = JSON.parse(created.item.payload);
   assert.equal(storedPayload.basis, 'HTTP 回归依据', 'payload.basis 必须原样落库，供 today.js 渲染"依据："');
 
+  // ---- source_ref.session_id 绝不信任请求体：即使 body 里的 source_ref.session_id
+  //      填了一个别的 session，落库的必须是路由反查用的那个真实 session_id ----
+  const spoofedRefCreated = await post(
+    {
+      session_id: sessionId, proposal_id: 'p-6b', payload: { title: '核对身份证复印件' },
+      source_ref: { session_id: 'attacker-claimed-session', call_id: 'c6b', root_call_id: 'root-1' },
+    },
+    201
+  );
+  const spoofedRefStored = JSON.parse(spoofedRefCreated.item.source_ref);
+  assert.equal(spoofedRefStored.session_id, sessionId, 'source_ref.session_id 必须被服务端权威值覆盖，不采信 body 自报值');
+  assert.notEqual(spoofedRefStored.session_id, 'attacker-claimed-session', 'body 里伪造的 session_id 不应该原样落库');
+
   // ---- payload 白名单：note/evidence 等旧字段名必须被拒绝 ----
   await post(
     { session_id: sessionId, proposal_id: 'p-7', payload: { title: 'x', note: '旧字段名' }, source_ref: ref('c7') },
@@ -137,7 +151,7 @@ try {
   assert.equal(notFound.code, 'case_not_found');
   unbindSession(staleSession);
 
-  console.log('agent-proposals HTTP tests: kind/source 白名单 + session 绑定信任边界 + payload/source_ref 白名单 + 幂等状态码 passed');
+  console.log('agent-proposals HTTP tests: kind/source 白名单 + session 绑定信任边界 + payload/source_ref 白名单 + source_ref.session_id 服务端覆盖 + 幂等状态码 passed');
 } finally {
   server.close();
   fs.rmSync(scratch, { recursive: true, force: true });

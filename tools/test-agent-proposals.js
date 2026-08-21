@@ -1,10 +1,11 @@
 // enqueueAgentProposal() 单元冒烟：proposal_id 幂等 retry、同 title 异 proposal_id 并存、
 // decline 记忆只属于该 proposal_id（不因案件状态变化重开）、与既有 L2 case.next_action
 // 去重状态机互不覆盖——这四条正是设计稿 §2 与 spike REPORT §9 记录的 L2 去重误吞 agent
-// 提案 bug 的验收点。另外覆盖修复轮的四个契约点：proposal_id 必须是字符串（不接受
+// 提案 bug 的验收点。另外覆盖修复轮的几个契约点：proposal_id 必须是字符串（不接受
 // object/array 静默塌缩）、payload 字段名与 enqueueLlmSuggestion 对齐（title/priority/
 // basis）、source_ref 必备且字段名对齐 DSH 插件实际形状（session_id/call_id/root_call_id）、
-// coalesced 分支返回 touch 之后的新鲜行。
+// coalesced 分支返回 touch 之后的新鲜行、source_ref.session_id 必须被服务端反查用的权威
+// boundSessionId 覆盖（不采信 worker 自报值，防审计字段被伪造）。
 //
 // DB_PATH 隔离到临时文件：db.js 的 DB_PATH 在模块首次执行时读一次 process.env，必须在
 // 任何静态 import 触发它加载之前设置好，所以延后到动态 import（与 tools/test-agent-config.js
@@ -29,6 +30,9 @@ function inboxRow(id) {
 }
 
 const ref = (callId) => ({ session_id: 'sess-1', call_id: callId, root_call_id: 'root-1' });
+// 生产环境下这是路由层反查 caseIdForSession(session_id) 时用到的权威值；
+// 这里的单元测试直接调 lib 函数、绕过路由，所以显式模拟同一个值。
+const BOUND_SESSION_ID = 'sess-1';
 
 // ---- 用例 1：proposal_id 幂等 retry ----
 // 同一 proposal_id 重试必须命中同一行，不重复插入，且不刷新 payload；命中的行
@@ -38,6 +42,7 @@ const first = enqueueAgentProposal({
   proposalId: 'prop-001',
   payload: { title: '核对送达回证', basis: '首次提案证据摘要 A' },
   sourceRef: ref('call-1'),
+  boundSessionId: BOUND_SESSION_ID,
 }, 'test');
 assert.equal(first.created, true, '首次提案应新建');
 assert.equal(inboxRow(first.item_id).source, 'agent-propose');
@@ -50,6 +55,7 @@ const retry = enqueueAgentProposal({
   proposalId: 'prop-001',
   payload: { title: '核对送达回证（重试时模型换了措辞）', basis: '重试提案证据摘要 B' },
   sourceRef: ref('call-2'),
+  boundSessionId: BOUND_SESSION_ID,
 }, 'test');
 assert.equal(retry.created, false, 'retry 不应新建');
 assert.equal(retry.item_id, first.item_id, 'retry 必须命中同一行');
@@ -68,6 +74,7 @@ const secondSameTitle = enqueueAgentProposal({
   proposalId: 'prop-002',
   payload: { title: '核对送达回证' },
   sourceRef: ref('call-3'),
+  boundSessionId: BOUND_SESSION_ID,
 }, 'test');
 assert.equal(secondSameTitle.created, true, '不同 proposal_id 即使标题相同也必须新建');
 assert.notEqual(secondSameTitle.item_id, first.item_id);
@@ -87,6 +94,7 @@ const afterDecline = enqueueAgentProposal({
   proposalId: 'prop-002',
   payload: { title: '核对送达回证' },
   sourceRef: ref('call-4'),
+  boundSessionId: BOUND_SESSION_ID,
 }, 'test');
 assert.equal(afterDecline.created, false, 'declined 后同 proposal_id 重试不应重开');
 assert.equal(afterDecline.item_id, secondSameTitle.item_id);
@@ -97,6 +105,7 @@ const thirdNewProposal = enqueueAgentProposal({
   proposalId: 'prop-003',
   payload: { title: '核对送达回证' },
   sourceRef: ref('call-5'),
+  boundSessionId: BOUND_SESSION_ID,
 }, 'test');
 assert.equal(thirdNewProposal.created, true);
 assert.equal(inboxRow(thirdNewProposal.item_id).status, 'pending');
@@ -123,9 +132,37 @@ for (const id of [first.item_id, secondSameTitle.item_id, thirdNewProposal.item_
   assert.equal(inboxRow(id).intent_key, 'v1:agent-proposal', 'agent-propose 行的 intent_key 不应被 L2 覆盖');
 }
 // 反过来：agent-propose 的重试也不应影响 llm-suggest 那一行的状态。
-enqueueAgentProposal({ caseId, proposalId: 'prop-001', payload: { title: '核对送达回证' }, sourceRef: ref('call-6') }, 'test');
+enqueueAgentProposal({ caseId, proposalId: 'prop-001', payload: { title: '核对送达回证' }, sourceRef: ref('call-6'), boundSessionId: BOUND_SESSION_ID }, 'test');
 assert.equal(inboxRow(llmSuggestion.item_id).source, 'llm-suggest');
 assert.equal(inboxRow(llmSuggestion.item_id).status, 'pending');
+
+// ---- 用例 5：source_ref.session_id 必须被服务端权威值覆盖，不采信 body 自报值 ----
+// 审查发现：worker 可能（被 prompt 注入或写错）在 source_ref.session_id 里填一个
+// 别的 session；案件归属靠 caseId 反查守住了，但审计字段本身如果照抄 body，
+// 就等于强制存了一个不可信的值。这里故意让 sourceRef.session_id 与
+// boundSessionId 不一致，断言落库的是后者。
+const spoofedRefProposal = enqueueAgentProposal({
+  caseId,
+  proposalId: 'prop-spoofed-session',
+  payload: { title: '核对送达回证' },
+  sourceRef: { session_id: 'attacker-claimed-session', call_id: 'call-7', root_call_id: 'root-1' },
+  boundSessionId: BOUND_SESSION_ID,
+}, 'test');
+assert.equal(spoofedRefProposal.created, true);
+const storedRef = JSON.parse(inboxRow(spoofedRefProposal.item_id).source_ref);
+assert.equal(storedRef.session_id, BOUND_SESSION_ID, 'source_ref.session_id 必须是服务端反查用的权威值，不是 body 自报的伪造值');
+assert.notEqual(storedRef.session_id, 'attacker-claimed-session', 'body 里伪造的 session_id 不应该原样落库');
+assert.equal(storedRef.call_id, 'call-7', 'call_id/root_call_id 仍然是模型自报值，不受影响');
+
+// 服务端反查得不到绑定 sessionId 时（理论上路由层已经先 403 挡住，这里是 lib
+// 层自身的防御性校验）必须拒绝，不能默默放行成无 boundSessionId 的提案。
+assert.throws(
+  () => enqueueAgentProposal({
+    caseId, proposalId: 'prop-no-bound-session', payload: { title: 'x' }, sourceRef: ref('c'),
+  }, 'test'),
+  /服务端绑定的 session_id/,
+  '缺少 boundSessionId 必须被拒绝'
+);
 
 // ---- 附加校验：非法输入必须拒绝（供 route 层复用的契约） ----
 assert.throws(
@@ -168,4 +205,4 @@ assert.throws(
 );
 
 fs.rmSync(scratch, { recursive: true, force: true });
-console.log('agent proposals tests: 幂等 retry(新鲜快照) + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖 + proposal_id/source_ref 强校验 passed');
+console.log('agent proposals tests: 幂等 retry(新鲜快照) + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖 + proposal_id/source_ref 强校验 + session_id 服务端覆盖 passed');

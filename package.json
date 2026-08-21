@@ -30,7 +30,8 @@
     "files": [
       "server.js",
       "src/**",
-      "!src/agent/**",
+      "!src/agent/runtime/**",
+      "!src/agent/assets/**",
       "public/**",
       "rules/**",
       "tools/**",

@@ -357,7 +357,7 @@ export function enqueueLlmSuggestion({ payload, sourceRef = '', caseId, recommen
 //   - 不同 proposal_id 即使标题相同也各自建行，互不吞并（content_key 只服务展示稳定性）。
 // 这正是 spike 报告里 L2 去重（按状态指纹折叠）会误吞 agent 提案的修法：agent 提案的
 // “状态”定义是提案本身的身份，不是案件当前状态。
-export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef }, actor = 'internal') {
+export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef, boundSessionId }, actor = 'internal') {
   const currentCase = caseRow.get(caseId);
   if (!currentCase) fail('案件不存在', 'case_not_found');
 
@@ -401,6 +401,16 @@ export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef },
   if (typeof sourceRef.session_id !== 'string' || !sourceRef.session_id.trim()) {
     fail('agent 提案 source_ref.session_id 必须为非空字符串', 'proposal_invalid');
   }
+  // boundSessionId 是路由层反查 caseIdForSession() 时用到的、来自
+  // session-registry 服务端登记表的权威 session_id——不是 body 里那个。
+  // worker 完全可能（被 prompt 注入或纯粹写错）在 source_ref.session_id 里
+  // 填一个别的 session，审计字段因此必须由服务端覆盖，不能采信正文：
+  // caseId 归属已经靠"body.case_id 从不参与判断"守住了，但如果这里仍然
+  // 落库调用方自报的 session_id，唯一能把 inbox 行连回真实 session 的
+  // 审计字段本身就是不可信的。
+  if (typeof boundSessionId !== 'string' || !boundSessionId.trim()) {
+    fail('agent 提案缺少服务端绑定的 session_id', 'proposal_invalid');
+  }
   const cleanRef = {};
   for (const key of allowedRef) {
     if (sourceRef[key] === undefined || sourceRef[key] === null) continue;
@@ -409,6 +419,7 @@ export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef },
     }
     cleanRef[key] = String(sourceRef[key]).slice(0, 200);
   }
+  cleanRef.session_id = boundSessionId;
   const sourceRefText = JSON.stringify(cleanRef).slice(0, 1000);
 
   const intentKey = 'v1:agent-proposal';

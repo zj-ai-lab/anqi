@@ -100,6 +100,10 @@ r.post('/agent-proposals', (req, res) => {
       proposalId: b.proposal_id,
       payload: b.payload,
       sourceRef: b.source_ref,
+      // source_ref.session_id 落库前必须被这个反查用的权威 sessionId 覆盖
+      // ——见 recommendations.js 里 boundSessionId 的注释：body.source_ref
+      // 里的 session_id 是 worker 自报值，不可信。
+      boundSessionId: sessionId,
     }, req.actor);
     return res.status(result.created ? 201 : 200).json(result);
   } catch (error) {

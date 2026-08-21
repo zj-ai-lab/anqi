@@ -259,7 +259,16 @@ function inboxRow(i) {
       p.basis ? el('div', { class: 'inb-src' }, `依据：${p.basis}`) : null,
       i.change_summary ? el('div', { class: 'inb-src' }, `↻ ${i.change_summary}`) : null,
       el('div', { class: 'inb-src' }, `来源：${i.source}`, i.case_name ? ` · ${i.case_name}` : '',
-        Number(i.seen_count || 1) > 1 ? ` · 周检重复命中 ${i.seen_count} 次，已合并` : '')
+        // seen_count 自增的含义按来源分叉：L2 的「周检」是真的周期性重复扫描命中；
+        // agent-propose 的 seen_count 自增来自模型在同一个 turn 内对同一 proposal_id
+        // 的重试（见 recommendations.js enqueueAgentProposal 的 coalesced 分支），
+        // 与「周检」毫无关系——两者共用同一句文案会让律师在裁决面上看到一句不成立
+        // 的说明（"周检重复命中"却其实是助理刚才在一个 turn 里自己重试了几次）。
+        Number(i.seen_count || 1) > 1
+          ? (i.source === 'agent-propose'
+              ? ` · 助理重复提交 ${i.seen_count} 次，已合并`
+              : ` · 周检重复命中 ${i.seen_count} 次，已合并`)
+          : '')
     ),
     el('div', { class: 'inb-acts' },
       el('button', {

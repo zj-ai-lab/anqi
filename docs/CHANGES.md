@@ -60,6 +60,14 @@
 
 ---
 
+## 未发布 — AI 助理 sidecar（分支 `feat/agent-sidecar`，尚未合并 `main`）
+
+**状态：在 worktree 上迭代中，本条目随分支一起进入 `main` 前必须核对是否需要更新——若分支被放弃或大改，本条目也要相应撤除/改写。**
+
+- 新增受信任写面 `POST /internal/agent-proposals`：DSH agent 的 task-only 提案专用入口，与既有 `/internal/inbox`（L2 自动化）分开、不共用去重状态机；event/deadline 一律拒绝，`source`/`case_id` 由服务端固定，`case_id` 只能来自 `session-registry.js` 的 session→case 绑定反查，body 里带的 `case_id` 一律被忽略；`source_ref.session_id` 同样由服务端用反查得到的权威值覆盖，不采信 worker 自报值。落库后复用 `/api/today` 收件卡片渲染。
+- 新增 `agent_*` 系统设置键（`agent_enabled`/`agent_provider`/`agent_base_url`/`agent_model`/`agent_api_key_env`，定义在 `src/agent/config.js`）：sidecar **默认关闭**（`agent_enabled` 未显式置 `true` 时不读 credential、不 spawn 子进程、不发模型请求），启用需要逐项配置；这批键尚未接入 `/api/settings` 的用户可见白名单，当前只能直接写 `settings` 表或走后续管理面。
+- `AgentSupervisor`（`src/agent/supervisor.js`）尚未接入 `server.js`/Electron 主进程——本阶段只有单元/HTTP 回归覆盖 worker 生命周期与 session 绑定，动态门禁验收（真实 DSH 子进程、真实模型 key）留给后续 workflow。
+
 ## 未发布 — 依赖升级
 
 - Express 4.22 → 5.2：路由全为简单 `:param`，未使用 v5 移除的 API；`tools/check.sh` 全绿，无行为变化。
