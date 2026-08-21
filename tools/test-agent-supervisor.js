@@ -758,7 +758,7 @@ async function startFakeWorker(opts) {
   console.log('  [15/22] stdio 管道故障不崩宿主：ok（stderr/stdin 的 error 事件均被接住并落终态）');
 }
 
-// ---- 场景 16：redactDeep 的总量兜底（累计字节预算 + 数组元素数上限）----
+// ---- 场景 16：redactDeep 的数组元素数上限 ----
 // 修复前：redactDeep 只对每个 string 叶子单独限长，容器结构（数组/对象）本身
 // 没有总量约束——一个几千元素的数组，每个元素都是几百字符的短字符串，逐叶子
 // 检查全部合规，序列化后的整个事件依然可以轻松几百 KB 到几 MB（探针曾复现过
@@ -766,6 +766,10 @@ async function startFakeWorker(opts) {
 // 内部使用的同一个函数），喂一个 5000 元素的大数组，断言：a) 数组被截到不超过
 // 元素数上限，多出的部分折叠成一条 "[truncated N items]" 标记；b) 折叠后的
 // 结构整体序列化后的字节数远小于原始输入。
+// 注意：这条场景喂的数组本身就超过 MAX_EVENT_ARRAY_ITEMS（200），单靠这道
+// 条目数上限就足以让它通过——不能证明累计字节预算独立生效（把
+// MAX_EVENT_TOTAL_BYTES 改成 Infinity、只留数组上限，这条场景依然全绿）。
+// 字节预算独立于条目数上限的证明见场景 16b。
 {
   const { supervisor, caseId, worker } = await startFakeWorker({});
   const originalItemCount = 5000;
@@ -779,7 +783,7 @@ async function startFakeWorker(opts) {
   const redactedBytes = Buffer.byteLength(JSON.stringify(redacted), 'utf8');
   assert.ok(redactedBytes < originalBytes / 10, `折叠后的字节数（${redactedBytes}）应该远小于原始输入（${originalBytes}），不能只做了逐叶子限长`);
   assert.ok(redacted.items.length < originalItemCount, '保留的元素个数必须明显少于原始数组长度');
-  console.log('  [16/22] redactDeep 总量兜底：ok（数组元素数上限 + 累计字节预算均生效）');
+  console.log('  [16/22] redactDeep 数组元素数上限：ok（字节预算独立生效的证明见场景 16b）');
   await supervisor.stop(caseId, 'test cleanup: 场景 16 收尾');
 }
 
@@ -855,6 +859,55 @@ async function startFakeWorker(opts) {
   assert.equal(redacted.nested.note, '[REDACTED]', 'value 侧原有的脱敏行为不能被这次修复破坏');
   console.log('  [16c/22] redactDeep 脱敏对象 key 名：ok（key 侧不再是绕过脱敏的旁路）');
   await supervisor.stop(caseId, 'test cleanup: 场景 16c 收尾');
+}
+
+// ---- 场景 16d：redactDeep 的深度上限与预算耗尽占位符必须计入字节预算 ----
+// 修复前：`if (depth > 8) return '[REDACTED:max-depth]';` 和
+// `if (budget.remaining <= 0) return '[REDACTED:budget-exceeded]';` 这两条早
+// 退直接返回占位符、一个字节都不扣预算——审查用端到端探针复现过：子进程发一
+// 条 3 叉 9 层嵌套数字数组的 session.event（59,047 字节），因为每个数字叶子
+// 在 depth>8 处都被替换成 20 字节的占位符、替换次数随分支数指数增长且完全免
+// 费，宿主 emit 出去的 event.data 序列化后膨胀到 472,390 字节（8.0x 放大，
+// 1.8x 超过 256KB 预算），而预算的 budget-exceeded/条目数上限截断标记全程一
+// 次都没被触发——总量兜底名存实亡。这里直接调用 worker.redact.deep()，喂同
+// 样形状（3 叉、9 层嵌套、叶子是数字 0），断言：a) 深度超限占位符
+// "[REDACTED:max-depth]" 确实出现（证明深度上限本身还在生效）；b) 但出现次
+// 数必须明显少于叶子总数 3^9=19683（如果占位符不计费，深度上限会对每个叶子
+// 都成立，出现次数就会精确等于叶子总数，说明预算完全没有拦住这条路径）；
+// c) 折叠后的总字节数必须被限制在一个远低于"不计费"放大倍数（8x 原始输入）
+// 的范围内，不能重演探针复现的那种指数级膨胀。
+{
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  const branches = 3;
+  const levels = 9;
+  function buildNested(remainingLevels) {
+    if (remainingLevels === 0) return 0;
+    return Array.from({ length: branches }, () => buildNested(remainingLevels - 1));
+  }
+  const deepTree = buildNested(levels);
+  const originalBytes = Buffer.byteLength(JSON.stringify(deepTree), 'utf8');
+  const redacted = worker.redact.deep(deepTree);
+  const serialized = JSON.stringify(redacted);
+  const redactedBytes = Buffer.byteLength(serialized, 'utf8');
+  const maxDepthMarkerCount = (serialized.match(/\[REDACTED:max-depth\]/g) || []).length;
+  const totalLeaves = branches ** levels;
+  assert.ok(maxDepthMarkerCount > 0, '深度上限本身必须仍然生效，输出里必须能找到 "[REDACTED:max-depth]" 占位符');
+  assert.ok(
+    maxDepthMarkerCount < totalLeaves,
+    `深度超限占位符必须计入预算、提前打断后续叶子的处理：占位符出现次数（${maxDepthMarkerCount}）必须明显少于叶子总数（${totalLeaves}），否则说明占位符零消耗、预算完全没拦住这条路径`,
+  );
+  // 用字节预算本身（256KB，与 src/agent/supervisor.js 的 MAX_EVENT_TOTAL_BYTES
+  // 保持同一常量口径）而不是原始输入的倍数作为上界——3 叉 9 层这个形状即便计
+  // 费生效，折叠输出仍然会因为提前打断点分散在树的各层、外加 JSON 结构性开销
+  // 而比预算本身略大（实测约 1.2x 预算），但必须远低于修复前"零计费"观测到
+  // 的 472,390 字节（8.0x 原始输入、1.8x 预算）那种指数级放大。
+  const budgetBytes = 256 * 1024;
+  assert.ok(
+    redactedBytes < budgetBytes * 2,
+    `深度超限占位符计费后，折叠输出（${redactedBytes} 字节）必须被限制在预算量级附近（< ${budgetBytes * 2} 字节），不能重演修复前 472,390 字节那种指数级放大`,
+  );
+  console.log(`  [16d/22] redactDeep 深度超限/预算耗尽占位符计入预算：ok（占位符 ${maxDepthMarkerCount}/${totalLeaves} 个叶子后即被预算拦下，${originalBytes}→${redactedBytes} 字节）`);
+  await supervisor.stop(caseId, 'test cleanup: 场景 16d 收尾');
 }
 
 // ---- 场景 17：'stopping' 态必须阻止同一案件重复 spawn ----

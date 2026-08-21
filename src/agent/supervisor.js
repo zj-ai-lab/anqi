@@ -169,12 +169,20 @@ const MAX_EVENT_FIELD_CHARS = 4000;
 // MAX_EVENT_FIELD_CHARS，但一个事件可以有成千上万个叶子（例如工具结果里一
 // 个超长数组，每个元素都是几百字符的短字符串）——探针曾用这种形状产出过一
 // 条 1.56MB 的单事件，逐叶子限长对此完全没有约束力。这里加三道总量闸门：
-// 一是整个事件序列化后的累计字节预算（对象 key 名与数字/布尔/null 叶子也计
-// 入，不只是字符串叶子——否则 {k0..k99999: 1} 这种"key 多但 value 是数字"
-// 的形状能完全绕开预算，探针复现过 1MB+ 的这类单事件），二是单个数组允许
-// 保留的元素个数上限，三是单个对象允许保留的 key 个数上限（否则对象没有类
-// 似数组的条目数上限，key 数量可以无限堆）。任何一道触顶，超出部分直接折叠
-// 成一条 "[truncated N items/keys]" 标记，不再逐项处理。
+// 一是叶子内容字节预算（对象 key 名与数字/布尔/null 叶子也计入，不只是字符
+// 串叶子——否则 {k0..k99999: 1} 这种"key 多但 value 是数字"的形状能完全绕
+// 开预算，探针复现过 1MB+ 的这类单事件；深度超限/预算耗尽后返回的占位符本
+// 身也计入，避免深层嵌套结构靠"零成本占位符"指数级放大输出），二是单个数
+// 组允许保留的元素个数上限，三是单个对象允许保留的 key 个数上限（否则对象
+// 没有类似数组的条目数上限，key 数量可以无限堆）。任何一道触顶，超出部分直
+// 接折叠成一条 "[truncated N items/keys]" 标记，不再逐项处理。
+//
+// 注意：MAX_EVENT_TOTAL_BYTES 是"叶子内容字节"预算，不是序列化后 JSON 文本
+// 的精确字节数——逗号/引号/冒号/括号这些结构性开销不计入。对宽而浅的短数字
+// 叶子（如 6~7 位数字组成的大数组），这个常数因子的膨胀在实测中大约是 2 倍
+// （tools/test-agent-supervisor.js 场景 16b 的注释里有实测数字）。这里把它当
+// 成一个近似的成本刹车、不是"单条事件序列化后 ≤ 256KB"的精确硬上限，调用方
+// 不应依赖后者。
 const MAX_EVENT_TOTAL_BYTES = 256 * 1024;
 const MAX_EVENT_ARRAY_ITEMS = 200;
 const MAX_EVENT_OBJECT_KEYS = 200;
@@ -336,8 +344,21 @@ function byteLength(str) {
 //   - MAX_EVENT_OBJECT_KEYS：单个对象保留的 key 个数上限，超出的 key 不逐
 //     个处理，整体折叠成一条 `[truncated]: "N more keys"` 标记。
 function redactDeep(value, secretValues, budget, depth = 0) {
-  if (depth > 8) return '[REDACTED:max-depth]';
-  if (budget.remaining <= 0) return '[REDACTED:budget-exceeded]';
+  // 这两条早退此前直接 return 占位符、一个字节都不扣预算——对深度超限这条
+  // 尤其致命：一个 3 叉 9 层的嵌套数组，第 9 层每个数字叶子都在此处被替换成
+  // 20 字节的 "[REDACTED:max-depth]"，替换次数随分支数指数增长，探针复现过
+  // 59KB 输入放大成 472KB 输出（8x）、预算全程未触发一次。现在两条占位符也
+  // 按自身字节数扣预算，口径与字符串/数字叶子一致，触顶后同样不再继续展开。
+  if (depth > 8) {
+    const marker = '[REDACTED:max-depth]';
+    budget.remaining -= byteLength(marker);
+    return marker;
+  }
+  if (budget.remaining <= 0) {
+    const marker = '[REDACTED:budget-exceeded]';
+    budget.remaining -= byteLength(marker);
+    return marker;
+  }
   if (typeof value === 'string') {
     const redacted = redactString(value, secretValues);
     budget.remaining -= byteLength(redacted);
@@ -857,11 +878,17 @@ export class AgentSupervisor {
       // 会被下一个 turn 的 resolver 误当成自己的完成事件——带 turn id 的只是
       // 一部分 session.event 子类型（权威定义见 runtime 依赖里的
       // @deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js 的
-      // SessionEventMap：turn/end、tool/call、assistant/*、step/* 这几类带
-      // event.data.turn），session.status 通知（running/idle 就来自这里）不
-      // 带，request/header、todo/write、user/message、request/context、
-      // approval/* 这些 session.event 子类型同样不带——不是"只有 status 不
-      // 带"这么整齐。但宿主侧目前就是靠 worker._turnResolvers
+      // SessionEventMap，本注释第三次修订、逐条核对过完整类型表，以下两侧均
+      // 已穷举，不再是抽样枚举）：带 event.data.turn 的是 turn/start、
+      // turn/end、step/start、step/end、assistant/chunk、assistant/message、
+      // tool/call、tool/result 这八种（即 turn/*、step/*、assistant/*、
+      // tool/call、tool/result）；不带的除 session.status 通知（running/idle
+      // 就来自这里）外，还有 request/header、request/context、todo/write、
+      // user/message、approval/asked、approval/decided、approval/policy（即
+      // approval/*）、tool/code-dispatch-start、tool/code-dispatch、
+      // goal/change、command/run、command/done、session/end-seed、
+      // agent/inbox/spliced——不是"只有 status 不带"这么整齐。但宿主侧目前就
+      // 是靠 worker._turnResolvers
       // 这一个单槽位状态机匹配 running/idle/turn-end，不按 turn id 区分，所以
       // 同一个槽位依旧会把迟到事件误记成"当前"turn 的。现在任何 turn 失败都
       // 统一走：本地 abort（立即生效）+ 终止整个
