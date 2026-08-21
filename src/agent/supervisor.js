@@ -78,6 +78,16 @@ function resolveAgentSubdir(name) {
 
 const ASSETS_DIR = resolveAgentSubdir('assets');
 const RUNTIME_DIR = resolveAgentSubdir('runtime');
+
+// 是否正在用打包目录（Contents/Resources/agent-runtime/assets），而不是仓库
+// 路径——下面 ensureAssetsNodeModulesLink() 需要用它来决定"能不能在这棵目录
+// 里写东西"：打包目录是已签名 app 资源树的一部分（hardenedRuntime +
+// ad-hoc/正式签名，build/adhoc-sign.cjs 的 codesign --deep 会把当时目录里的
+// 一切都封进签名），运行时再写入/改动任何一个文件都会撕开 codesign
+// --verify --deep --strict 的资源封条（"a sealed resource is missing or
+// invalid"）——这不是权限问题（目录本身在磁盘上仍然可写），是签名完整性
+// 问题，权限允许写不代表允许写。
+const AGENT_DIR_IS_PACKAGED = ASSETS_DIR !== path.join(__dirname, 'assets');
 const CORDIS_CONFIG = path.join(ASSETS_DIR, 'anqi.cordis.yml');
 const DSH_BIN = path.join(
   RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-sdk-jsonrpc-demo', 'lib', 'bin.js'
@@ -98,17 +108,64 @@ const REQUIRED_SKILL_FILE = path.join(TRUSTED_SKILLS_ROOT, REQUIRED_SKILL_NAME, 
 // CommonJS require() 的搜索路径，对 ESM import 说明符解析完全不生效，不能
 // 用它替代这条链接）。
 //
-// 这条链接之前是直接提交进仓库的符号链接对象（git 记录一个 120000 类型的
-// blob，内容是相对路径 "../runtime/node_modules"）——问题是它指向的目标从不
-// 进仓库，任何全新 clone 在跑 runtime 自己那次 npm install 之前，这条提交
-// 进仓库的链接天然是悬空的；打包/归档流程（electron-builder、tar 等）对
-// "仓库里的一条符号链接"处理方式也不总是可靠。现在改成 supervisor 在每次
-// start() 真正 spawn 子进程之前运行时确保：链接不存在就创建，存在但指向不
-// 对就重建，指向已经正确就什么都不做——不再依赖 git 树里那个提交的对象。
+// 这条链接在 dev 模式下之前是直接提交进仓库的符号链接对象（git 记录一个
+// 120000 类型的 blob，内容是相对路径 "../runtime/node_modules"）——问题是它
+// 指向的目标从不进仓库，任何全新 clone 在跑 runtime 自己那次 npm install 之
+// 前，这条提交进仓库的链接天然是悬空的。现在改成 supervisor 在每次 start()
+// 真正 spawn 子进程之前运行时确保：链接不存在就创建，存在但指向不对就重
+// 建，指向已经正确就什么都不做——不再依赖 git 树里那个提交的对象。
+//
+// 打包模式下不能用同一套"运行时确保"：ASSETS_DIR 这时候指向已签名 app 资源
+// 树里的 Contents/Resources/agent-runtime/assets（见上面 AGENT_DIR_IS_PACKAGED
+// 的注释），start() 每次都无条件尝试在这里创建/重建符号链接，会在应用签名
+// 完成后持续修改一份已被 codesign --deep 封存的资源目录——首次触发就把
+// codesign --verify --deep --strict 从 valid 变成 "a sealed resource is
+// missing or invalid"（真实复现：打包冒烟第一次跑 AI 助理之后，重新校验
+// 签名当场报这个错）。这条链接现在改为构建期建好并随 build/adhoc-sign.cjs
+// 的 --deep 重签一并封进签名（见 build/afterpack-agent-runtime-link.cjs，
+// package.json 的 build.afterPack 钩子，在 afterSign 之前运行）——打包模式
+// 下这里只做只读校验，链接不存在或指向不对直接报错（不静默、也不在运行时
+// 尝试自愈写入，写入本身就是问题所在）。
 const ASSETS_NODE_MODULES_LINK = path.join(ASSETS_DIR, 'node_modules');
 const RUNTIME_NODE_MODULES_DIR = path.join(RUNTIME_DIR, 'node_modules');
 
+function resolvedSymlinkTarget(linkPath) {
+  let target;
+  try {
+    target = readlinkSync(linkPath);
+  } catch {
+    return null;
+  }
+  return path.resolve(path.dirname(linkPath), target);
+}
+
 function ensureAssetsNodeModulesLink() {
+  if (AGENT_DIR_IS_PACKAGED) {
+    // 只读校验，绝不写入已签名资源树——见上方大段注释。
+    let currentStat;
+    try {
+      currentStat = lstatSync(ASSETS_NODE_MODULES_LINK);
+    } catch (error) {
+      throw new Error(
+        `打包资源里缺少 agent-runtime/assets/node_modules 链接（${ASSETS_NODE_MODULES_LINK}）——`
+        + `构建期的 afterPack 钩子（build/afterpack-agent-runtime-link.cjs）应该已经建好这条链接`
+        + `并随签名一起封存，缺失说明打包流程本身有问题，不应该在运行时补建`,
+        { cause: error },
+      );
+    }
+    if (!currentStat.isSymbolicLink()) {
+      throw new Error(`打包资源里 ${ASSETS_NODE_MODULES_LINK} 不是符号链接（意外条目）`);
+    }
+    const resolvedCurrent = resolvedSymlinkTarget(ASSETS_NODE_MODULES_LINK);
+    if (resolvedCurrent !== RUNTIME_NODE_MODULES_DIR) {
+      throw new Error(
+        `打包资源里 ${ASSETS_NODE_MODULES_LINK} 指向 ${resolvedCurrent ?? '(无法解析)'}，`
+        + `与期望的 ${RUNTIME_NODE_MODULES_DIR} 不一致`,
+      );
+    }
+    return;
+  }
+
   let currentStat;
   try {
     currentStat = lstatSync(ASSETS_NODE_MODULES_LINK);
@@ -122,15 +179,7 @@ function ensureAssetsNodeModulesLink() {
       // catch 分支转成 error 状态。
       throw new Error(`unexpected non-symlink entry at ${ASSETS_NODE_MODULES_LINK}`);
     }
-    let currentTarget;
-    try {
-      currentTarget = readlinkSync(ASSETS_NODE_MODULES_LINK);
-    } catch {
-      currentTarget = null;
-    }
-    const resolvedCurrent = currentTarget
-      ? path.resolve(path.dirname(ASSETS_NODE_MODULES_LINK), currentTarget)
-      : null;
+    const resolvedCurrent = resolvedSymlinkTarget(ASSETS_NODE_MODULES_LINK);
     if (resolvedCurrent === RUNTIME_NODE_MODULES_DIR) return; // 已经指对了
     rmSync(ASSETS_NODE_MODULES_LINK, { force: true });
   }
@@ -178,7 +227,14 @@ function isPreflightReady(preflight) {
 }
 
 // repo-root/data：与 src/db.js 的 DB_PATH 默认值同一目录，已经被 .gitignore 的
-// `data/` 规则覆盖，不需要额外忽略规则。
+// `data/` 规则覆盖，不需要额外忽略规则。这个默认值只对"裸 node server.js 跑
+// 在仓库里"（dev、Docker、tools/check.sh）成立——__dirname 在 Electron 打包后
+// 解析进 Contents/Resources/app/src/agent，同一相对路径会把 session
+// transcript 写进已签名的 app 资源树本体。真正的桌面版路径由
+// electron/main.js 的 startBackend() 把 ANJIAN_AGENT_SESSION_ROOT 设成
+// dataDir 下的目录，server.js 构造 AgentSupervisor 时读这个环境变量传进
+// sessionRoot；未设置时才落回这里的默认值，构造函数签名见下方
+// constructor 的 sessionRoot 参数默认值。
 const DEFAULT_SESSION_ROOT = path.join(__dirname, '..', '..', 'data', 'agent-sessions');
 
 const TERMINAL_STATUSES = new Set(['stopped', 'crashed', 'error', 'disabled']);

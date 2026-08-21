@@ -24,7 +24,21 @@ if (!app.isPackaged) app.commandLine.appendSwitch('no-sandbox');
 // （app.getPath('userData') 走 Electron 默认规则）；只有显式设置这个环境变量、
 // 指向一个调用方自建的临时目录时，才会覆盖 userData 路径——必须在 app 触碰任何
 // 路径之前调用 app.setPath('userData', ...)，所以紧跟在文件顶部。
-if (process.env.ANJIAN_TEST_USERDATA) {
+//
+// 单独一个环境变量不够：任何本地非特权进程都能
+// `launchctl setenv ANJIAN_TEST_USERDATA <攻击者选定的路径>`，且对之后启动的
+// 全部 GUI 应用生效（不需要提权）——生产 DMG 若只认这一个变量，等于给了本机
+// 任意进程一个不需要提权就能重定向 config.json（存 passHash 与 dataDir）读取
+// 位置的开关：攻击者可以预置自己已知的凭据，再拿受害者真实 dataDir 去打回环
+// API。command-line switch 不存在这个问题——Chromium/Electron 的命令行参数
+// 只能通过启动这个进程时的 argv 传入，`launchctl setenv` 只影响环境变量继承，
+// 不能给已安装应用的后续启动注入 argv（不经过修改 .app 本体或改变启动方式）。
+// 这里要求两者同时出现才生效：env 变量给出目标路径，argv 开关充当"这次启动
+// 确实是调用方主动构造的测试调用"的凭证，环境变量单独出现时静默忽略（保留
+// 默认行为，不报错——沿用之前"未设置等价不生效"的调用惯例，只是把触发条件
+// 从"设置了这一个变量"收紧成"两者都在"）。
+const TEST_USERDATA_ACK_SWITCH = 'anjian-test-userdata-ack';
+if (process.env.ANJIAN_TEST_USERDATA && app.commandLine.hasSwitch(TEST_USERDATA_ACK_SWITCH)) {
   app.setPath('userData', process.env.ANJIAN_TEST_USERDATA);
 }
 
@@ -89,6 +103,13 @@ async function startBackend(config) {
     HOST: '127.0.0.1',   // 桌面版后端固定只听本机；Dockerfile 另行显式设为 0.0.0.0
     DB_PATH: path.join(config.dataDir, 'anjian.db'),
     ANJIAN_FILES_ROOT: path.join(config.dataDir, '案件夹'),
+    // AI 助理 session transcript（session.jsonl）根目录，同 DB_PATH 一个模式：
+    // src/agent/supervisor.js 的默认值是 __dirname 相对路径，打包后会解析进
+    // Contents/Resources/app（已签名的 app 资源树本体），而不是用户的
+    // dataDir——这里显式钉死在 dataDir 下，session 数据才会跟着用户选的数据
+    // 目录走（备份/迁移/卸载重装时行为与其它数据一致），也不再反复写坏
+    // codesign --deep 的资源封条。
+    ANJIAN_AGENT_SESSION_ROOT: path.join(config.dataDir, 'agent-sessions'),
     ANJIAN_USER: config.user,
     ANJIAN_PASS_HASH: config.passHash,
     ANJIAN_INTERNAL_KEY: internalKey,

@@ -1,9 +1,12 @@
 node_modules/
 # src/agent/assets/node_modules 是 supervisor.js 的 ensureAssetsNodeModulesLink()
-# 在每次 start() 前运行时按需创建/纠正的符号链接（指回 src/agent/runtime/
-# node_modules，供 cordis 插件/mcp server.mjs 的 ESM import 解析）——不再提交
-# 进仓库；顶部的 `node_modules/` 规则按目录匹配，对这里的符号链接条目不生效
-# （git status 会把它当成未跟踪文件），所以单独钉一条精确路径规则。
+# 在 dev 模式下每次 start() 前运行时按需创建/纠正的符号链接（指回 src/agent/
+# runtime/node_modules，供 cordis 插件/mcp server.mjs 的 ESM import 解析）——
+# 不提交进仓库；顶部的 `node_modules/` 规则按目录匹配，对这里的符号链接条目
+# 不生效（git status 会把它当成未跟踪文件），所以单独钉一条精确路径规则。
+# 打包模式下同名链接由 build/afterpack-agent-runtime-link.cjs 在 electron-
+# builder 的 afterPack 阶段建在打包产物里（随 afterSign 一起签名封存），不
+# 落在这棵仓库路径下，与这条规则无关。
 /src/agent/assets/node_modules
 data/
 *.db

@@ -57,8 +57,45 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install AI 助理 runtime 依赖
+        # src/agent/runtime 是一个独立的 npm 包根（@anqi/agent-runtime），根
+        # package.json 没有 workspaces，根 npm ci 永远装不到它——但
+        # package.json 的 build.extraResources 会把这整棵目录（含
+        # node_modules）随包分发进 DMG，src/agent/supervisor.js 打包模式下
+        # 直接从这里 spawn DSH 子进程（DSH_BIN 指向
+        # runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js）。
+        # 这一步不装，electron-builder 不会报错（extraResources 的 filter 只
+        # 是少匹配到文件），发行版里 AI 助理会是一个含义不明的 crashed
+        # worker——下面的 "Verify agent runtime bundled in DMG" 步骤专门核验
+        # 这一步确实生效，不依赖这里"跑了就一定对"。
+        # --ignore-scripts：与主 package.json 的 allowScripts 惯例一致，这棵
+        # 依赖树里没有任何脚本需要在 CI 里跑。
+        working-directory: src/agent/runtime
+        run: npm ci --ignore-scripts
+
       - name: Build arm64 and x64 DMGs
         run: npm run dist -- --publish never
+
+      - name: Verify agent runtime bundled in DMG
+        # electron-builder 对 extraResources 里 node_modules 的静默跳过坑
+        # （见 tools/test-pack-manifest.js 顶部大段注释）只有真正打包才会
+        # 现形——这里对两个架构的打包产物各做一次机械核验：DSH 的可执行入口
+        # 必须真的落在 Contents/Resources/agent-runtime/runtime/node_modules
+        # 下，而不是 build.extraResources"复制成功"但内容为空。
+        run: |
+          set -euo pipefail
+          for outdir in mac-arm64 mac; do
+            bin="dist-electron/${outdir}/案齐.app/Contents/Resources/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js"
+            link="dist-electron/${outdir}/案齐.app/Contents/Resources/agent-runtime/assets/node_modules"
+            test -f "$bin" || {
+              echo "FATAL: $bin 不存在——AI 助理 runtime 依赖未被打包进 ${outdir} 产物"
+              exit 1
+            }
+            test -L "$link" || {
+              echo "FATAL: $link 不是符号链接——build/afterpack-agent-runtime-link.cjs 是否未生效？"
+              exit 1
+            }
+          done
 
       - name: Verify artifacts and generate SHA-256
         env:
@@ -109,12 +146,35 @@ jobs:
         run: |
           set -euo pipefail
           files=(release/*)
+          # 语义化版本的预发行段（形如 2.7.0-beta.1、2.7.0-rc.1，MAJOR.MINOR.PATCH
+          # 之后紧跟一个 "-"）一律标成 GitHub 的 prerelease——不加这个标记时
+          # `gh release create` 默认创建的是普通（非预发行）Release，
+          # electron/updater.js 走的 GitHub provider 会把它当成最新版推给全部
+          # 现网用户升级，等于把 beta/rc 当稳定版发布。这里只用一次正则识别，
+          # 不依赖开发者在打 tag 时手动记得加 --prerelease。
+          # 用普通字符串（而不是数组）装这个可选 flag——数组在空时展开
+          # "${arr[@]}" 在旧版 bash（例如 macOS 系统自带的 3.2，虽然这个 job
+          # 固定跑在 ubuntu-latest，但不依赖 runner 具体 bash 版本更稳妥）
+          # 配合 `set -u` 会报 "unbound variable"；空字符串变量本身没有这个
+          # 坑，未加引号展开在这里安全（值只可能是空或字面量 "--prerelease"，
+          # 不含空格/glob 特殊字符）。
+          prerelease_flag=""
+          if [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+-.+ ]]; then
+            prerelease_flag="--prerelease"
+            echo "版本 $VERSION 带预发行段，本次发布将标记为 GitHub prerelease"
+          fi
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$GITHUB_REF_NAME" "${files[@]}" \
               --repo "$GITHUB_REPOSITORY" --clobber
+            # 已存在的 Release（例如失败重跑）也要同步 prerelease 状态，不能
+            # 只在首次创建时生效。
+            if [ -n "$prerelease_flag" ]; then
+              gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --prerelease
+            fi
           else
             gh release create "$GITHUB_REF_NAME" "${files[@]}" \
               --repo "$GITHUB_REPOSITORY" \
               --title "案齐 ANQI $VERSION" \
-              --generate-notes
+              --generate-notes \
+              $prerelease_flag
           fi

@@ -65,14 +65,23 @@ assert.ok(agentEntry, 'build.extraResources 缺少 from:"src/agent" 条目——
 assert.equal(agentEntry.to, 'agent-runtime', `build.extraResources 里 from:"src/agent" 的 to 必须是 "agent-runtime"（与 supervisor.js 的 process.resourcesPath 拼接约定一致），实际是 "${agentEntry.to}"`);
 
 // R2 ② 注释所述的 node_modules 硬编码坑：对每个 extraResources 条目，"from" 目录
-// 下不得存在字面顶层子目录 "node_modules"——存在就意味着 electron-builder 会把它
-// 整棵静默跳过（见上方大段注释的实测复现）。
+// 本身不得是一个 npm 包根——是的话，一次 npm install/ci 就会在它的直接子目录下
+// 长出字面名为 "node_modules" 的目录，electron-builder 会把它整棵静默跳过。
+//
+// 判据用 "from 目录下是否存在 package.json"，不用 "from 目录下是否存在
+// node_modules"：后者曾经是这里的实现，但 node_modules 从不提交进仓库（本来就被
+// .gitignore 忽略、且只在本机手动跑过一次 npm ci 之后才会出现），在一次全新
+// clone / CI checkout（从未跑过 npm ci --ignore-scripts 装 runtime 依赖）上这棵
+// 目录天然不存在——用它当判据时，这条断言在唯一真正会把坑带进发行产物的环境
+// （CI、全新 clone）里必然放行，只在开发者本机凑巧手动装过依赖时才会生效，等于
+// 专为防这个坑写的断言在它最需要生效的地方是空转的。package.json 是 git 追踪的
+// 文件，不管有没有跑过 npm install 都存在，判据不随本机磁盘状态漂移。
 for (const entry of extraResources) {
   if (!entry || typeof entry.from !== 'string') continue;
-  const directNodeModules = path.join(REPO_ROOT, entry.from, 'node_modules');
+  const packageJsonAtFrom = path.join(REPO_ROOT, entry.from, 'package.json');
   assert.ok(
-    !fs.existsSync(directNodeModules),
-    `build.extraResources 条目 from:"${entry.from}" 的直接子目录下存在字面名为 "node_modules" 的目录——electron-builder 的 extraResources 复制会把它整棵静默跳过（app-builder-lib 的 createFilter()：相对路径恰好等于 "node_modules" 时无条件返回 false，不报错也不警告）。请把 "from" 指向更高一级目录，让 node_modules 变成 "xxx/node_modules" 这样的相对路径（不再字面等于 "node_modules"），再用 filter 精确圈定要复制的子树。`
+    !fs.existsSync(packageJsonAtFrom),
+    `build.extraResources 条目 from:"${entry.from}" 的目录下存在 package.json（是一个 npm 包根）——一次 npm install/ci 会在它的直接子目录下长出字面名为 "node_modules" 的目录，electron-builder 的 extraResources 复制会把它整棵静默跳过（app-builder-lib 的 createFilter()：相对 from 的路径恰好等于 "node_modules" 时无条件返回 false，不报错也不警告）。请把 "from" 指向更高一级目录，让 node_modules 变成 "xxx/node_modules" 这样的相对路径（不再字面等于 "node_modules"），再用 filter 精确圈定要复制的子树。`
   );
 }
 

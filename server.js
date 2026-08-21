@@ -43,7 +43,21 @@ app.get('/healthz', (req, res) => res.json({ ok: true }));
 // agentRouter 共用它——路由层负责把 HTTP/SSE 请求转成 supervisor 调用，
 // supervisor 自己管理 spawn/生命周期/turn 串行化（见 src/agent/supervisor.js
 // 顶部注释）。同一个实例还要在下面的优雅退出钩子里被 stopAll()。
-const agentSupervisor = new AgentSupervisor();
+//
+// sessionRoot 显式读一个环境变量而不是吃 supervisor.js 的内置默认值——那个
+// 默认值是 __dirname 相对路径（repo-root/data/agent-sessions），只在"裸
+// node server.js 跑在仓库里"这一种形态下才落在合理位置。Electron 打包后
+// __dirname 解析到 Contents/Resources/app/src/agent，默认值会把 session
+// transcript 写进已签名的 app 资源树本体——不但违反"用户数据只进
+// dataDir"，反复写入还会撕掉 codesign --deep 的资源封条（同一类问题也发生
+// 在 DB_PATH：那里已经是 env 注入模式，这里补齐同一模式）。electron/main.js
+// 的 startBackend() 会把 ANJIAN_AGENT_SESSION_ROOT 设成
+// path.join(config.dataDir, 'agent-sessions')；未设置时（裸 server.js、
+// Docker、tools/check.sh 等）显式传 undefined 让 AgentSupervisor 的构造期
+// 默认参数接管，行为与此前完全一致。
+const agentSupervisor = new AgentSupervisor({
+  sessionRoot: process.env.ANJIAN_AGENT_SESSION_ROOT || undefined,
+});
 const agentRouter = createAgentRouter(agentSupervisor);
 
 app.use('/api', authRouter); // /api/login /api/logout（自带限速，不过会话门）

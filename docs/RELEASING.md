@@ -23,6 +23,15 @@ npm ci
 npm run check
 ```
 
+打 macOS tag 前，若要在本机验证完整打包（而不仅是 `npm run check`），还需要单独装一次 AI 助理 runtime 依赖——根 `npm ci` 装不到它（`src/agent/runtime` 是独立 npm 包根，根 package.json 无 workspaces）：
+
+```sh
+(cd src/agent/runtime && npm ci --ignore-scripts)
+npm run dist
+```
+
+`.github/workflows/release.yml` 已经把这一步做成显式 CI 步骤（"Install AI 助理 runtime 依赖"），并在打包后核验两个架构的 DMG 里都真的含有 DSH 运行时（"Verify agent runtime bundled in DMG"）——不装这一步不会让 `electron-builder` 报错，只会让发行版里的 AI 助理变成一个含义不明的 crashed worker，所以这条核验是发版门禁的一部分，不是可选诊断。
+
 必须满足：
 
 - `npm run check` 显示 `ALL GREEN`，不得用 skip、删除测试或放松断言换取通过。
@@ -75,11 +84,12 @@ git push origin android-vX.Y.Z
 
 1. 校验 tag 与 `package.json.version` 一致。
 2. `npm ci`，按 Electron ABI 重建 `better-sqlite3`。
-3. 分别构建 arm64 与 x64 DMG。
-4. 无 Developer ID 时运行 `build/adhoc-sign.cjs`，确保应用获得本项目自己的 ad-hoc 签名而非 Electron 出厂 linker 签名；配置正式证书时钩子自动跳过。
-5. 为每个 DMG 生成独立 `.sha256`，并校验名称、架构和版本。
-6. 先把 DMG、校验文件和必要的更新元数据上传为 workflow artifact。
-7. 仅当 `github.ref` 以 `refs/tags/` 开头时，创建同名 GitHub Release 并上传产物。
+3. 单独 `npm ci --ignore-scripts`（`src/agent/runtime` 目录内）装 AI 助理 runtime 依赖——根 `npm ci` 装不到这棵独立 npm 包根，不装这一步不报错，只会让发行版里的 DSH 子进程找不到 `bin.js` 而崩溃。
+4. 分别构建 arm64 与 x64 DMG。electron-builder 的 `afterPack` 钩子（`build/afterpack-agent-runtime-link.cjs`）在签名前把 `agent-runtime/assets/node_modules` 符号链接建进两份打包产物；核验步骤确认两个架构的 DMG 里都真的含有 `agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js` 及该符号链接。
+5. 无 Developer ID 时运行 `build/adhoc-sign.cjs`，确保应用获得本项目自己的 ad-hoc 签名而非 Electron 出厂 linker 签名；配置正式证书时钩子自动跳过。
+6. 为每个 DMG 生成独立 `.sha256`，并校验名称、架构和版本。
+7. 先把 DMG、校验文件和必要的更新元数据上传为 workflow artifact。
+8. 仅当 `github.ref` 以 `refs/tags/` 开头时，创建同名 GitHub Release 并上传产物。
 
 桌面版 `electron-updater` 使用 GitHub provider 查版本。当前发行物若未做 Developer ID 签名和公证，只能提示使用者到 GitHub Release 手动下载 DMG；不得承诺静默自动安装。下载后应核对 Release 附带的 SHA-256。
 
@@ -147,7 +157,7 @@ migration 是自托管升级中风险最高的部分：
 - [ ] 公开发布步骤均有 `startsWith(github.ref, 'refs/tags/')` 门
 - [ ] workflow 没有 `pull_request` 或 `pull_request_target` 发布触发器
 - [ ] 手动演练没有创建 Release、推送 GHCR 或连接外部主机
-- [ ] macOS：双架构 DMG、签名状态、首次启动与版本检查通过
+- [ ] macOS：双架构 DMG、签名状态、首次启动与版本检查通过；AI 助理 runtime 依赖已随包（`agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js` 与 `agent-runtime/assets/node_modules` 符号链接均存在——release.yml 的 "Verify agent runtime bundled in DMG" 步骤已覆盖，本地手动打包时需自行核对）
 - [ ] Docker：公开 manifest、版本 tag、digest 与隔离启动冒烟通过
 - [ ] Android（如发布）：APK 签名、包名、版本、深链与文件交互通过
 - [ ] Release 说明包含主要变更、升级注意、已知限制与校验方法

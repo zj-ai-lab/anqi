@@ -58,6 +58,7 @@
         ]
       }
     ],
+    "afterPack": "build/afterpack-agent-runtime-link.cjs",
     "afterSign": "build/adhoc-sign.cjs",
     "copyright": "Copyright © 2026 方律",
     "mac": {
