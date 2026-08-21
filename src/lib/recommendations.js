@@ -349,6 +349,82 @@ export function enqueueLlmSuggestion({ payload, sourceRef = '', caseId, recommen
   });
 }
 
+// DSH agent 提案闭环：与 enqueueLlmSuggestion() 并列、不共用状态机。
+// intent_key 固定为 v1:agent-proposal；state_fingerprint 直接是 supervisor 派发的
+// trusted proposal_id（不做 hash），因此 proposal_id 本身就是幂等主键：
+//   - 同一 proposal_id 重试 → 命中同一行，原样返回（不刷新 payload、不因案件状态变化
+//     重开/重新接受，accept/decline 记忆永远只属于这个 proposal_id）；
+//   - 不同 proposal_id 即使标题相同也各自建行，互不吞并（content_key 只服务展示稳定性）。
+// 这正是 spike 报告里 L2 去重（按状态指纹折叠）会误吞 agent 提案的修法：agent 提案的
+// “状态”定义是提案本身的身份，不是案件当前状态。
+export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef }, actor = 'internal') {
+  const currentCase = caseRow.get(caseId);
+  if (!currentCase) fail('案件不存在', 'case_not_found');
+
+  const propId = String(proposalId || '').trim();
+  if (!propId) fail('proposal_id 缺失或非法', 'proposal_invalid');
+  if (propId.length > 200) fail('proposal_id 过长', 'proposal_invalid');
+
+  const allowedPayload = new Set(['title', 'note', 'evidence']);
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) fail('agent 提案 payload 非法');
+  const hidden = Object.keys(payload).filter((key) => !allowedPayload.has(key));
+  if (hidden.length) fail(`agent 提案含不允许字段：${hidden.join(',')}`);
+  const title = String(payload.title || '').trim();
+  if (!title) fail('agent 提案缺 title');
+  if (payload.note !== undefined && typeof payload.note !== 'string') fail('agent 提案 note 非法');
+  if (payload.evidence !== undefined && typeof payload.evidence !== 'string') fail('agent 提案 evidence 非法');
+  const cleanPayload = {
+    title: title.slice(0, 500),
+    ...(payload.note ? { note: payload.note.trim().slice(0, 1000) } : {}),
+    ...(payload.evidence ? { evidence: payload.evidence.trim().slice(0, 1000) } : {}),
+  };
+  const contentKey = recommendationContentKey(title);
+
+  // source_ref 只保留可审计的 session/turn/tool-call 关联标识，绝不夹带敏感案卷正文。
+  let sourceRefText = '';
+  if (sourceRef !== undefined && sourceRef !== null) {
+    if (typeof sourceRef !== 'object' || Array.isArray(sourceRef)) fail('agent 提案 source_ref 非法');
+    const allowedRef = ['session', 'turn', 'toolCallId'];
+    const hiddenRef = Object.keys(sourceRef).filter((key) => !allowedRef.includes(key));
+    if (hiddenRef.length) fail(`agent 提案 source_ref 含不允许字段：${hiddenRef.join(',')}`);
+    const cleanRef = {};
+    for (const key of allowedRef) {
+      if (sourceRef[key] === undefined || sourceRef[key] === null) continue;
+      if (typeof sourceRef[key] !== 'string' && typeof sourceRef[key] !== 'number') {
+        fail(`agent 提案 source_ref.${key} 非法`);
+      }
+      cleanRef[key] = String(sourceRef[key]).slice(0, 200);
+    }
+    sourceRefText = JSON.stringify(cleanRef).slice(0, 1000);
+  }
+
+  const intentKey = 'v1:agent-proposal';
+  const scope = ['agent-propose', 'task', caseId, intentKey, propId];
+
+  return withImmediateTransaction(() => {
+    releaseDueSnoozes();
+    const existing = db.prepare(
+      `SELECT * FROM inbox
+        WHERE source=? AND kind=? AND case_id=? AND intent_key=? AND state_fingerprint=?
+        ORDER BY id DESC LIMIT 1`
+    ).get(...scope);
+    if (existing) {
+      touchInbox(existing);
+      audit(actor, 'agent-proposal-retry', 'inbox', existing.id, `${intentKey}:${propId}:${existing.status}`);
+      return publicResult(existing, 'coalesced', existing.status);
+    }
+
+    const info = db.prepare(
+      `INSERT INTO inbox
+        (kind,payload,source,source_ref,case_id,intent_key,content_key,state_fingerprint,last_seen_at)
+       VALUES ('task',?,'agent-propose',?,?,?,?,?,datetime('now','+8 hours'))`
+    ).run(JSON.stringify(cleanPayload), sourceRefText, caseId, intentKey, contentKey, propId);
+    const row = db.prepare('SELECT * FROM inbox WHERE id=?').get(info.lastInsertRowid);
+    audit(actor, 'create', 'inbox', row.id, `agent-propose:${propId}`);
+    return { created: true, outcome: 'created', reason: '', item_id: row.id, item: row };
+  });
+}
+
 // 1.6 线上既有 L2 行没有 intent/state。历史弃置进入独立长期 suppression，绝不
 // 用部署时状态伪造裁决时 fingerprint；最近的未裁决/已采纳行只补 intent，待下次命中刷新。
 export function backfillRecommendationMemory() {

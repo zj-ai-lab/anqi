@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import { db } from '../db.js';
 import { buildDigest } from '../lib/digest.js';
-import { enqueueLlmSuggestion, releaseDueSnoozes } from '../lib/recommendations.js';
+import { enqueueLlmSuggestion, enqueueAgentProposal, releaseDueSnoozes } from '../lib/recommendations.js';
 
 // 受信任自动化专用面。公网反向代理必须把 /internal/* 硬 404。
 // 写入口只有 /inbox —— LLM 产物必须过收件箱人工裁决（铁律 3 的接口层强制）。
@@ -62,6 +62,40 @@ r.post('/inbox', (req, res) => {
     return res.status(error.code === 'case_not_found' ? 404 : 400).json({
       error: error.message,
       code: error.code || 'recommendation_invalid',
+    });
+  }
+});
+
+// DSH agent 提案专用入口：与 /internal/inbox 分开，不复用其语义、不混入 case.next_action。
+// 只收 supervisor 已绑定 case/session 的 task-only 建议——kind/event/deadline 一律拒绝；
+// case_id、proposal_id、source_ref 由 supervisor 注入（不从模型正文推断），source 由服务端固定。
+r.post('/agent-proposals', (req, res) => {
+  const b = req.body || {};
+  if (b.kind !== undefined && b.kind !== 'task') {
+    return res.status(400).json({ error: 'agent-proposals 只接受 task-only 建议；event/deadline 一律拒绝' });
+  }
+  if (b.source !== undefined && b.source !== 'agent-propose') {
+    return res.status(400).json({ error: 'source 由服务端固定为 agent-propose' });
+  }
+  if (!b.payload || typeof b.payload !== 'object' || Array.isArray(b.payload)) {
+    return res.status(400).json({ error: 'payload 须为对象' });
+  }
+  const caseId = Number(b.case_id);
+  if (!b.case_id || !Number.isInteger(caseId) || caseId <= 0) {
+    return res.status(400).json({ error: 'agent-proposals 必须由 supervisor 注入合法 case_id' });
+  }
+  try {
+    const result = enqueueAgentProposal({
+      caseId,
+      proposalId: b.proposal_id,
+      payload: b.payload,
+      sourceRef: b.source_ref,
+    }, req.actor);
+    return res.status(result.created ? 201 : 200).json(result);
+  } catch (error) {
+    return res.status(error.code === 'case_not_found' ? 404 : 400).json({
+      error: error.message,
+      code: error.code || 'proposal_invalid',
     });
   }
 });
