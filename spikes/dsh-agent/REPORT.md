@@ -1,10 +1,10 @@
 # Spike A：anqi 内置 DSH sidecar 可行性报告
 
 日期：2026-08-19
-最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过；同日晚些修复轮：§14.4/14.5 与 `docs/packaging-numbers.md` 的 5 处审查发现——cold_ms 数字张冠李戴、tool-call「逐项一致」措辞、§14.7 命令缺失注入变量、临时 SEA driver 副本描述有误、驱动/打包 exit code 与 hash 前后快照证据补强——已逐条核实修正，见对应小节）
+最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过；同日晚些修复轮：§14.4/14.5 与 `docs/packaging-numbers.md` 的 5 处审查发现——cold_ms 数字张冠李戴、tool-call「逐项一致」措辞、§14.7 命令缺失注入变量、临时 SEA driver 副本描述有误、驱动/打包 exit code 与 hash 前后快照证据补强——已逐条核实修正，见对应小节；同日收尾轮：头部结论状态、§1 四点与 §3/§15.3 尾句原先仍写 actual B trace/trace-derived scratch/SEA build「被阻塞」，与 §14.4–14.6 已记录的真实动态结果不一致，本轮据 §14/§15 现状重写，唯一保留的残留缺口是 SEA `session/preflight` 的真实 `.mjs` include 不兼容与本会话 `secretctl` 超时导致未能补拍的 scratch 单跑前后快照）
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）已于 2026-08-21 完成动态复验：full-preset mount、reject/allow-once 审批闭环、ask-user 反向问答与首个 initial header 的完整工具集均由真实模型-backed redacted wire 证实（§13.4），此前的 ⛔ 未复验与 ⚠️ 部分通过已全部转为 ✅。Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同日补跑并按 §15.5 命令注入 `ANJIAN_INTERNAL_KEY` 后，`anqi_case_get` / `anqi_digest` 也已动态通过，成功读回本案期限且未改动 `deadlines` 表（§15.4）。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）已于 2026-08-21 完成动态复验：full-preset mount、reject/allow-once 审批闭环、ask-user 反向问答与首个 initial header 的完整工具集均由真实模型-backed redacted wire 证实（§13.4）。Commit 2 的 actual B loaded trace、trace-derived reached-only scratch 闭包及其 B 复跑、SEA build 均已由 2026-08-21 的本机真实执行动态通过（§14.4–§14.6）：固定 B 场景 reached 84/363 dependency roots（23.14% 包数／35.46% 字节数），scratch 闭包（71,444 KiB，`tar.gz` 19,235,570 B，相当于 v2.6.0 arm64 DMG 的 13.70%）连续 3 次成功复跑，SEA packager exit 0 产出已签名 executable + helper；唯一仍未达成的是 **SEA runtime 完整 B end-to-end**——`initialize`/`session/create` 3/3 成功，但 `session/preflight` 因真实的 `extension ".mjs" not supported` include 不兼容三次全部失败（非权限拦截），仍为 ⚠️ 部分通过。Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已由真实模型-backed redacted wire 动态通过，含此前受 `ANJIAN_INTERNAL_KEY` 缺失阻塞、现已补跑通过的 anqi domain tools 期限读取（§15.4bis）。仍不建议合入生产：产品方向与交互闭环已验证，但 SEA 打包路线需先修复 `.mjs` include 不兼容并补一次完整 B end-to-end，且 `docs/mainline-plan.md` §6 的十项交付门禁（supervisor 生命周期、proposal 去重、HTTP/SSE 鉴权等）尚待落地为代码。**
 
 ## 1. 结论
 
@@ -12,12 +12,12 @@ DSH rc.7 可以作为 anqi 的进程外 sidecar：anqi 可用一个 Node supervi
 
 本次尚不能给出“可上线”的结论，原因有四项：
 
-1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F；Phase 2 的 real-preset interactive response loop 与 Commit 3 readiness gate 已完成源码和 no-secret/static 验证，Commit 3 readiness 又在 2026-08-21 获得了真实模型-backed wire 证据。
-2. 首个 `request/header` 早于 MCP ready、默认 skills root 暴露用户技能的 Phase 1 问题，已由 Commit 3 的 exact-agent preflight、materialized anqi-owned skill root、首 header 门禁和同 turn MCP call 动态复验覆盖；anqi domain data read 此前受 `ANJIAN_INTERNAL_KEY` 注入缺失阻塞，已于 2026-08-21 补跑注入后动态通过（§15.4）。
-3. 未裁剪安装闭包为 252,160 KiB / 179,023,145 regular-file bytes。actual B loaded trace 与 trace-derived scratch B 复跑均未获执行，fixture 不能替代它们。
-4. symlink-free full staging 与压缩测量已完成；exact `@yao-pkg/pkg@6.21.0 --sea` 启动在执行外部 package code 前被权限层拒绝，因此没有 SEA executable、签名或 runtime 数字。
+1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F；Phase 2 Commit 1 的 real-preset interactive response loop（full-preset mount、reject/allow-once、ask-user、首 header）已由 2026-08-21 真实模型-backed redacted wire 动态通过（§13.4）；Commit 2 的 actual B trace、trace-derived scratch B 复跑、SEA build 同样已由本机真实执行动态通过（§14.4–§14.6）；Commit 3 readiness gate 也已获得真实模型-backed wire 证据（§15.3）。仍为 ⚠️ 部分通过的只剩 SEA runtime 完整 B end-to-end（见第 4 点）。
+2. 首个 `request/header` 早于 MCP ready、默认 skills root 暴露用户技能的 Phase 1 问题，已由 Commit 3 的 exact-agent preflight、materialized anqi-owned skill root、首 header 门禁和同 turn MCP call 动态复验覆盖；anqi domain data read 此前受 `ANJIAN_INTERNAL_KEY` 注入缺失阻塞，已于 2026-08-21 补跑注入后动态通过，成功读回本案期限且未改动 `deadlines` 表（§15.4bis）。
+3. 未裁剪安装闭包为 252,160 KiB / 179,023,145 regular-file bytes——这一步是 [M] 本机测量，早已完成；actual B loaded trace 与 trace-derived scratch B 复跑此前确实未获执行，但已于 2026-08-21 补跑并动态通过（§14.4）：固定 B 场景 `complete=true`，reached 84/363 dependency roots（23.14% 包数／35.46% 字节数，14 个为 direct dependency）；按 reached 包物理复制得到的 trace-derived scratch 闭包（71,444 KiB，`tar.gz` 19,235,570 B，相当于 v2.6.0 arm64 DMG 的 13.70%）连续 3 次成功 B 复跑，`deadlines` 表内容与已知 seed 基线比对保持一致，未被写入或修改。唯一残留缺口：本轮尝试为该次 scratch 复跑单独补一组「跑前/跑后」成对快照时，`secretctl run anjian.local` 本身持续 `authorization timeout`（`env echo hello` 亦可复现，非命令语法问题），该项仍为 **[B] blocked**，不影响闭包测量与 3 次成功复跑本身的结论。
+4. symlink-free full staging 与压缩测量已完成；exact `@yao-pkg/pkg@6.21.0 --sea` 已于 2026-08-21 真实执行成功（此前一轮的「权限层拒绝」未复现），exit 0，产出 main executable（176,279,520 B，Mach-O arm64，含 pkg 自带 ad-hoc 签名）与相邻 `spawn-helper`（50,480 B）。运行时验证部分成功：`initialize`/`session/create` 3/3 次动态通过（cold_ms 334.5–796.7，仅到 `session/create`），但 `session/preflight` 三次全部因真实的 `extension ".mjs" not supported` include 错误失败——packaged runtime 的 Cordis include loader 拒绝对 snapshot 之外、留在宿主磁盘上的 `mcp/server.mjs` 做动态 include，这是本轮真实执行发现的具体不兼容点，不是权限拦截。因此完整 B end-to-end 与「一次完整 turn 的 cold initialize/首 token」仍未达成，SEA 尚不可用作交付路径。
 
-因此产品判断是：**sidecar 方向可继续；现有全闭包不随 DMG bundled、暂按首次启用下载，但在 actual B trace、validated scratch、SEA runtime，以及 anqi 内部认证配置下的完整领域工具复跑补齐前不进入生产主线。**
+因此产品判断是：**sidecar 的交互闭环（域工具读取/写边界、审批 fail-closed、ask-user、skill 隔离、首请求门禁、response loop）已全部由真实模型-backed 动态跑验证通过，方向确认可继续；闭包侧结论也已从「未测」变为「已测」——若要 bundle 运行时闭包，应 bundle trace-derived 的 reached-only scratch 闭包（约 71,444 KiB，相当于 DMG 的 13.70%），不要 bundle 现有全闭包（252,160 KiB，占比更高）或 SEA 单文件（本身已比整个 DMG 大，且因真实的 `.mjs` include 不兼容尚未跑通完整 B 场景）。在（a）修复 SEA 打包的 `.mjs` include 问题并补一次 SEA 下完整 B end-to-end + 3 次完整-turn cold initialize，以及（b）按 `docs/mainline-plan.md` §6 的十项交付门禁把 supervisor 生命周期、agent-proposal 去重与幂等、approval/user-question 的 authenticated one-shot 回路、HTTP/SSE 鉴权等设计条目落地为可审查的代码之前，仍不进入生产主线。**
 
 ## 2. 实现边界
 
@@ -55,8 +55,8 @@ ff343c8 spike(dsh): add restricted anqi agent preset
 | C. 待办建议进入 pending、无 deadline | ✅ 通过（有设计发现） | §12.2：`anqi_inbox_propose` 落 pending；deadlines 表前后 hash 一致；但触发了 L2 去重的「刷新覆盖」语义，见 §12.5 |
 | D. user skills + 本地 stdio MCP | ✅ 通过 | §12.3：会话日志有 `skill-catalog` 用户消息（11 个技能）；第二个 `request/header` 含 `mcp__anqi-local__case_folder_info` |
 | E. 无 UI 审批 fail closed + future answerer | ✅ 通过 | §12.4：`FS_SANDBOX_DENIED` → 升权重试 → 「requires approval, but no approval channel is available」，桌面文件未生成 |
-| F. 闭包、initialize、首 token、API 面 | ✅ Phase 1 / ⚠️ Phase 2 部分 | Phase 1：247 MiB、cold_ms 567–608、first chunk 1015–1796 ms。Phase 2：full closure/staging 已量化；actual B trace 与 validated scratch 被阻塞，见 §14。 |
-| G. 单文件 / SEA | ⚠️ 部分 | exact upstream route 与 symlink-free staging 已核实；packager 启动前被权限层拒绝，无 executable/runtime 证据，见 §14.5。 |
+| F. 闭包、initialize、首 token、API 面 | ✅ 通过 | Phase 1：247 MiB、cold_ms 567–608、first chunk 1015–1796 ms。Phase 2：full closure/staging 已量化；actual B trace（reached 84/363 deps）与 trace-derived scratch（3 次成功 B 复跑）已于 2026-08-21 动态通过，见 §14.4。 |
+| G. 单文件 / SEA | ⚠️ 部分 | exact upstream route、symlink-free staging 与 SEA build 均已由 2026-08-21 真实执行验证（exit 0，executable 已签名）；`initialize`/`session/create` 3/3 动态成功，但 `session/preflight` 因真实的 `.mjs` include 不兼容三次全部失败，完整 B end-to-end 未达成，见 §14.5。 |
 | H. 设置 schema | ✅ 通过 | §11 |
 
 ## 4. A：anqi 隔离开发实例
@@ -1021,7 +1021,7 @@ driver 同时复核 preflight 返回的 exact skill/tool 条件；turn 完成时
 | first initial header with MCP tool | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** 同一 session 首个 `request/header` 的 `reason` 为 `initial`，`header.tools` 含精确 MCP 名称；不是后续 `reason: change` header。 |
 | anqi domain tools read deadlines | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，注入 `ANJIAN_INTERNAL_KEY` 后复跑]** 同一 session/turn 内 `anqi_case_get`、`anqi_digest` 均成功返回，读回本案（张三诉李四民间借贷纠纷）`deadlines[0]`（上诉期（判决），due_on 2026-08-21，民诉法 §171，critical/pending）与 digest `red[0]`（同一期限，days_left 0）；最终回答逐项引用上述 anqi 返回字段，未自行计算或编造期限；跑前/跑后 `deadlines` 表行数与内容 hash 均为 3 行 / `aefb85ec...39fb21` 完全一致。 |
 
-上述四项 Commit 3 readiness 均已由真实模型-backed run 通过，含此前 blocked 的期限读取项。actual B trace、trace-derived scratch 与 SEA runtime 的 blocked 状态不变。
+上述四项 Commit 3 readiness 均已由真实模型-backed run 通过，含此前 blocked 的期限读取项。actual B trace 与 trace-derived scratch 已于 2026-08-21 由本机真实执行动态通过，见 §14.4–§14.6；仍未达成的只有 SEA runtime 完整 B end-to-end——`initialize`/`session/create` 3/3 成功，但 `session/preflight` 因真实的 `.mjs` include 不兼容三次全部失败，见 §14.5。
 
 ### 15.4 2026-08-21 动态 readiness run
 
