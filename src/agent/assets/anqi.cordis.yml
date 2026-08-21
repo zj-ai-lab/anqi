@@ -1,0 +1,142 @@
+# anqi DSH sidecar 的宿主面 Cordis 组合。
+#
+# 移植自 anqi-spike-dsh 的 anqi.cordis.yml（同一套 rc.7 服务行，来源见
+# spikes/dsh-agent/REPORT.md §9/§13）。唯一改造点是路径引用：本文件与 preset/、
+# plugins/、mcp/ 同处 src/agent/assets/，supervisor.js 拉起子进程时把 cwd 钉死为
+# 本目录（assets 根），因此下面 `process.cwd()` 系列引用在本仓库中原样成立，
+# 不需要按 spike 的相对路径重新计算。
+#
+# stdout 只承载 JSON-RPC frame；诊断走 stderr（§9 踩坑 #4）。
+- id: llm
+  name: '@deepseek-ai/dsh-llm'
+
+- id: session
+  name: '@deepseek-ai/dsh-session'
+
+- id: user-questions
+  name: '@deepseek-ai/dsh-user-questions'
+
+- id: agent
+  name: '@deepseek-ai/dsh-agent'
+
+- id: agent-presets
+  name: '@deepseek-ai/dsh-agent-presets'
+  config:
+    default: anqi
+    roots:
+      - path: !!js process.cwd() + '/preset'
+        trust: system
+    includeUserRoot: false
+
+- id: llm-retry
+  name: '@deepseek-ai/dsh-llm-retry'
+
+- id: credentials
+  name: '@deepseek-ai/dsh-credentials-local'
+
+- id: session-persistence-jsonl
+  name: '@deepseek-ai/dsh-session-persistence-jsonl'
+  config:
+    root: !!js process.env.DSH_SESSION_ROOT ?? './.runtime/sessions'
+    compression: none
+
+- id: attachment-local
+  name: '@deepseek-ai/dsh-attachment-local'
+
+- id: subprocess
+  name: '@deepseek-ai/dsh-subprocess-local'
+
+# mode 与 policy 都钉死为常量，不接受任何 env 覆盖——同 spike 不同的是，主线
+# preset 只暴露 fs 读/搜索（见 preset/anqi/agent.cordis.yml 顶部注释：dsh-tool-fs
+# 包本身不可拆分 read/write/edit，只能整包挂载再用沙箱层锁死）。read-only 是
+# dsh-sandbox-policy 的 schema 默认值，这里显式写出防止未来改动误删；'never' 让
+# 任何升级到 workspace-write/danger-full-access 的 escalation 请求走确定性拒绝
+# （不产生 wire round-trip，不落 supervisor 的 pending-interaction 表）。
+- id: sandbox-policy
+  name: '@deepseek-ai/dsh-sandbox-policy'
+  config:
+    mode: read-only
+    workspaceRoot: !!js process.env.DSH_CWD ?? process.cwd()
+
+- id: approval
+  name: '@deepseek-ai/dsh-user-approval'
+  config:
+    policy: never
+
+# `dsh-permission-presets` 不挂：它会 inject `shell`（bash 执行器），任何案件夹
+# worker 都不允许拿到 shell 工具（设计稿 §3.1「不得获得 shell、web、subagent、
+# workflow 或 ralph 工具」）。真正生效的旋钮是上面 sandbox-policy.mode 与
+# user-approval.policy。
+
+- id: fs-observation-policy
+  name: '@deepseek-ai/dsh-fs-observation-policy'
+
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+- id: skill
+  name: '@deepseek-ai/dsh-skill'
+
+- id: tools
+  name: '@deepseek-ai/dsh-tools'
+
+# system-prompt 是 host-owned service，不能在 preset 里再发布一份（§9 踩坑 #16）；
+# 宿主保留空 registry，真正的人设文本来自 preset 里 scope-only 的 dsh-persona。
+- id: system-prompt
+  name: '@deepseek-ai/dsh-system-prompt'
+
+- id: agent-loop
+  name: '@deepseek-ai/dsh-agent-loop'
+  config:
+    agents: []
+
+- id: fs-sandbox
+  name: '@deepseek-ai/dsh-fs-sandbox'
+  config:
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+# 模型可见的 filesystem/skill/question/todo 与 anqi 领域工具只在 preset/anqi 里
+# 挂载；宿主面不挂 bash/web/subagent/workflow/ralph 中任何一个。
+
+- id: llm-deepseek
+  name: '@deepseek-ai/dsh-llm-deepseek'
+  disabled: !!js (process.env.DSH_PROVIDER_KIND ?? 'deepseek-official') !== 'deepseek-official'
+  config:
+    apiKeyEnv: !!js process.env.DSH_API_KEY_ENV ?? 'DEEPSEEK_API_KEY'
+    baseURL: !!js process.env.DSH_BASE_URL ?? 'https://api.deepseek.com'
+    models:
+      - id: !!js process.env.DSH_MODEL ?? 'deepseek-chat'
+
+- id: llm-pi-ai
+  name: '@deepseek-ai/dsh-llm-pi-ai'
+  disabled: !!js (process.env.DSH_PROVIDER_KIND ?? 'deepseek-official') !== 'openai-completions'
+  config:
+    providers:
+      anqi-openai:
+        displayName: Anqi OpenAI-compatible endpoint
+        apiKeyEnv: !!js process.env.DSH_API_KEY_ENV ?? 'OPENAI_API_KEY'
+        api: openai-completions
+        baseURL: !!js process.env.DSH_BASE_URL
+        models:
+          - id: !!js process.env.DSH_MODEL
+            name: !!js process.env.DSH_MODEL
+
+- id: mcp-anqi-local
+  name: '@deepseek-ai/dsh-mcp-client'
+  config:
+    serverName: anqi-local
+    transport: stdio
+    command: !!js process.execPath
+    args:
+      - !!js process.cwd() + '/mcp/server.mjs'
+    env: {}
+    cwd: !!js process.env.DSH_CWD ?? process.cwd()
+    toolCallTimeoutMs: 60000
+    failOnStartupError: true
+
+- id: sdk-jsonrpc-server
+  name: './plugins/dsh-anqi-jsonrpc/index.js'
+  config:
+    maxTokensAsSuccess: false

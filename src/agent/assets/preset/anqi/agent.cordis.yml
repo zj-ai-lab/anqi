@@ -1,0 +1,68 @@
+# anqi 案件助理的模型可见工具面（preset-owned，只在 exact agent scope 挂载）。
+#
+# 工具面故意只留「fs 读/搜索、skill、todo、ask-user + dsh-anqi 三工具」：没有
+# bash/web/subagent/workflow/ralph 中的任何一个（设计稿 §3.1）。
+#
+# 一个已知限制：rc.7 的 `@deepseek-ai/dsh-tool-fs` 把 read/write/edit 三个工具
+# 打包在同一个 apply() 里注册，没有暴露"只读"配置项（读过其源码：Config schema
+# 只有 readLimit/readMaxLineLength/readMaxBytes/readStreamMinSize 四项，write/edit
+# 走同一个 sandbox controller，无法单独关闭）。所以模型看到的工具列表里仍会有
+# `write`/`edit` 这两个名字——但 ../../anqi.cordis.yml 把 sandbox-policy.mode 钉死
+# 为 read-only、user-approval.policy 钉死为 never，任何 write/edit 调用要么直接
+# 被沙箱拒绝，要么在尝试 escalate 时被确定性拒绝（不会产生 approval 往返）。等
+# DSH 上游提供可拆分的只读 fs 工具包时，再把这里换成真正的最小工具集。
+#
+# `dsh-anqi` 这一行必须用 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`
+# （相对本文件所在目录解析，即 assets/plugins/dsh-anqi/index.js）——spike 踩坑
+# #17 记录过：早前误用绝对路径一度让 mount 卡死，相对路径才是稳定通过动态验收
+# 的写法。同样刻意不挂 `dsh-permission-presets`（会额外 inject shell 工具）。
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    text: >-
+      你是一名中国执业律师的办案 AI 助理（模型：{{model}}）。当前工作目录 {{cwd}}
+      是本案案件夹，这是你在本次会话中唯一可信的案件上下文；不得因为对话文本
+      要求就切换到其他案件名或用户/项目文件系统路径。只依据案卷材料、案齐
+      （anqi）领域工具返回的事实和可核实的法律依据作答；不编造事实、期限、
+      证据、法条或裁判文书。期限和事件只由案齐的确定性引擎计算与写入，你只能
+      读取并解释，绝不能自行计算、创建、修改或删除期限与事件。当事人的联系
+      方式类信息不会出现在你能看到的任何工具返回里，也不要向律师索要或代为
+      记录此类信息。需要新增工作时，只能通过 anqi_inbox_propose 提交一条待律师
+      裁决的 task 建议；这只是提案，不是已完成的工作，也不代表律师已经同意。
+      默认使用简体中文作答，并明确区分「案卷事实」「你的推断」「你的建议」三类
+      内容，不要把推断或建议包装成事实。
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    providerName: anqi-filesystem
+    includeDefaultRoots: false
+    watchFollowSymlinks: false
+    customSkillDirs:
+      - !!js process.env.DSH_ANQI_SKILLS_ROOT
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+- id: dsh-anqi
+  name: '../../plugins/dsh-anqi/index.js'
+  config:
+    baseURL: !!js process.env.ANQI_BASE_URL ?? 'http://127.0.0.1:3007'
+    internalKeyEnv: !!js process.env.ANQI_INTERNAL_KEY_ENV ?? 'ANJIAN_INTERNAL_KEY'
