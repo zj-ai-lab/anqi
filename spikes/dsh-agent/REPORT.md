@@ -1,7 +1,7 @@
 # Spike A：anqi 内置 DSH sidecar 可行性报告
 
 日期：2026-08-19
-最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过）
+最后更新：2026-08-21（补跑 Commit 1 response loop 与 full-preset mount 的四项 ⛔/一项 ⚠️ 动态复验，见 §13.4；此前 Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过；同日晚些修复轮：§14.4/14.5 与 `docs/packaging-numbers.md` 的 5 处审查发现——cold_ms 数字张冠李戴、tool-call「逐项一致」措辞、§14.7 命令缺失注入变量、临时 SEA driver 副本描述有误、驱动/打包 exit code 与 hash 前后快照证据补强——已逐条核实修正，见对应小节）
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
 结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）已于 2026-08-21 完成动态复验：full-preset mount、reject/allow-once 审批闭环、ask-user 反向问答与首个 initial header 的完整工具集均由真实模型-backed redacted wire 证实（§13.4），此前的 ⛔ 未复验与 ⚠️ 部分通过已全部转为 ✅。Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同日补跑并按 §15.5 命令注入 `ANJIAN_INTERNAL_KEY` 后，`anqi_case_get` / `anqi_digest` 也已动态通过，成功读回本案期限且未改动 `deadlines` 表（§15.4）。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
@@ -804,7 +804,7 @@ fixture 同时做 ESM entry、`createRequire()` CJS load 和一个继承 tracer-
 
 当前会话的权限边界已放行 full-preset DSH execution；本节的四项此前 ⛔ 全部由真实执行补齐，命令与产物均可复核。
 
-**actual B trace（[M] 本机测量）**：按 §14.7 命令原样跑（`secretctl run anjian.local` 注入 `DEEPSEEK_API_KEY`/`ANJIAN_INTERNAL_KEY`，`env -u NODE_OPTIONS` 清空继承值，隔离 3007 anqi 在跑），driver exit 0，`turn/end.reason.kind=completed`，assistant 回答逐项引用 anqi 返回的期限/待办/费用字段。stderr 的 `[trace-loaded]` 行：
+**actual B trace（[M] 本机测量）**：按 §14.7 命令原样跑（`secretctl run anjian.local` 注入 `DEEPSEEK_API_KEY`/`ANJIAN_INTERNAL_KEY`，`env -u NODE_OPTIONS` 清空继承值，隔离 3007 anqi 在跑），`turn/end.reason.kind=completed`，随后 `[shutdown] {}`，assistant 回答逐项引用 anqi 返回的期限/待办/费用字段。stderr 的 `[trace-loaded]` 行自带被追踪子进程的 `"exit":{"code":0,"signal":null}`（外层 shell 未额外捕获 `driver.mjs` 自身 `$?`，但被追踪进程的 exit code 已由 tracer 记录为 0）：
 
 ```json
 {"completeness":{"startRecords":2,"exitRecords":2,"droppedRecords":0,"recordValidationErrors":0,"installedByteErrors":0,"packageResolutionErrors":0,"traceRecordsComplete":true,"loadedBytesComplete":true,"installedBytesComplete":true,"packageResolutionComplete":true,"requiredEntriesObserved":true,"complete":true},
@@ -833,15 +833,17 @@ fixture 同时做 ESM entry、`createRequire()` CJS load 和一个继承 tracer-
 
 构造中发现并修复一个真实的复制顺序 bug：`@deepseek-ai/dsh-skill-filesystem` 自带嵌套 `node_modules/{chokidar@5.0.0,readdirp@5.1.1}`（与顶层 `chokidar@4.0.3`/`readdirp@4.1.2` 并存，版本不同）；若先复制嵌套子项、`mkdirSync` 递归建出的中间目录会被后续整包 `cp -R` 当成已存在目录从而把整包错误地嵌套进去一层。修复为按路径深度升序处理，且复制前显式跳过已被祖先包整体复制覆盖的嵌套子项（84 项中 2 项如此覆盖，实际 `cp -R` 调用 82 次）。
 
-复制后 `find <scratch> -type l` 为零 symlink。按 §14.7 相同命令、相同 seed 案件与固定 prompt，把 driver 指向 scratch 目录下的 `driver.mjs`（其 `SIDECAR_DIR` 由 `import.meta.url` 动态计算，指向 scratch 目录，`node_modules`/`mcp`/`preset` 等路径自动跟随），复跑 3 次，均 exit 0：
+复制后 `find <scratch> -type l` 为零 symlink。按 §14.7 相同命令、相同 seed 案件与固定 prompt，把 driver 指向 scratch 目录下的 `driver.mjs`（其 `SIDECAR_DIR` 由 `import.meta.url` 动态计算，指向 scratch 目录，`node_modules`/`mcp`/`preset` 等路径自动跟随）。修 bug 前有一次复跑失败（`scratch-b-run-1787284664.log`：`session/create failed: ... Cannot find package '.../@deepseek-ai/dsh-skill-filesystem/index.js'`，即复制顺序 bug 本身，日志中 `cold_ms=598.3` 只到 `initialize` 就中止，没有到 preflight/prompt），修 bug 后复跑 3 次全部成功（`scratch-b-run-1787284783.log` / `scratch-b-run-2-1787284938.log` / `scratch-b-run-3-1787284968.log`），均 `turn/end.reason.kind=completed`：
 
 | # | cold_ms | turn/end | 复跑前/后 `deadlines` hash |
 |---|---:|---|---|
-| 1 | 598.3 | completed | `aefb85ec...39fb21`（不变） |
+| 1 | 551.3 | completed | `aefb85ec...39fb21`（不变） |
 | 2 | 592.1 | completed | `aefb85ec...39fb21`（不变） |
 | 3 | 526.4 | completed | `aefb85ec...39fb21`（不变） |
 
-三次运行的 `[tool/call]` 序列与 full-closure actual 跑（§14.4 顶部）逐项一致：`skill`（`anqi-case-brief`）→ `mcp__anqi-local__case_folder_info` + `anqi_digest`（并行）→ `anqi_case_get`；assistant 回答同样逐项引用引擎期限字段，未新增或修改 deadline。key 值全程未回显、未落盘（redacted 日志复查零命中）。
+三次运行的 `[tool/call]` 序列：#3 与 full-closure actual 跑（§14.4 顶部）逐项一致——`skill`（`anqi-case-brief`）→ `mcp__anqi-local__case_folder_info` + `anqi_digest`（并行，同一 step）→ 单独一步 `anqi_case_get`；#1/#2 把三个工具调用（`case_folder_info`/`anqi_digest`/`anqi_case_get`）并入同一个并行 step，没有独立的第三步。工具名集合与只读性质（均未新增或修改 deadline）三次一致，只是 #1/#2 的并行粒度与 full-closure 跑不完全相同，非「逐项一致」。assistant 回答同样逐项引用引擎期限字段。key 值全程未回显、未落盘（redacted 日志复查零命中）。
+
+本轮修复复核：`deadlines` 表当前内容独立重算的 `sha256(id|case_id|name|due_on|basis|calc_note|severity|status|done_at 逐行拼接)` 确为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，与上表一致；但上表「复跑前/后」列在三次跑当时没有把 hash 计算结果写进日志，本轮尝试用相同 scratch 目录、相同 `secretctl run anjian.local` 命令重新逐跑一次以补齐前后快照时，`secretctl` 本身持续 `[ERROR] error initializing client: authorization timeout`（`secretctl run anjian.local -- env echo hello` 直接复现，exit=1，非本项目命令语法问题），本次会话内无法注入 key，因此逐跑前后快照仍是 **[B] blocked**，上表 hash 列的确切来源是「跑后与已知 seed 基线比对未变化」而非「每次跑前跑后各自留痕的快照」。SEA build 侧不依赖该 key，已在本轮用 `--output` 换名重跑并显式捕获 `EXIT=$?`（见 §14.5）验证 exit 0 的说法不受此阻塞影响。
 
 scratch 闭包体积：
 
@@ -876,7 +878,7 @@ full staging 的 canonical 压缩值为：
 
 这不是 regenerated DMG measurement。
 
-**2026-08-21 真实执行结果**：当前会话的权限边界已放行执行 `@yao-pkg/pkg@6.21.0`。用 §14.7 已 staging 好的原样命令跑 packager，**exit 0**（此前的 "process start 之前 permission denied" 状态已不复现；这是这一次会话真实测到的结果，不是声称权限规则已变）：
+**2026-08-21 真实执行结果**：当前会话的权限边界已放行执行 `@yao-pkg/pkg@6.21.0`。用 §14.7 已 staging 好的原样命令跑 packager，**exit 0**（此前的 "process start 之前 permission denied" 状态已不复现；这是这一次会话真实测到的结果，不是声称权限规则已变）。首次执行的 `sea-build-1787285103.log` 末行停在 `Injecting the blob into ...`，没有显式 `EXIT` 标记；本轮修复复核用同一命令换 `--output` 文件名重跑一次并显式 `echo EXIT=$?`，捕获 `EXIT=0`，产物体积（176,279,520 B）与首次一致，确认非偶然：
 
 ```zsh
 node /private/tmp/anqi-dsh-sea.3ksg7R/tool/node_modules/@yao-pkg/pkg/lib-es5/bin.js \
@@ -897,7 +899,7 @@ pkg 的依赖静态分析打印大量 `Warning Cannot find module ...` —— �
 | executable + helper `zip -9` | 47,926,602 B（相对 DMG 34.14%） |
 | executable 单独相对 DMG | 125.56%（SEA 单文件已比整个 v2.6.0 DMG 大） |
 
-**运行时验证（[M] 本机实测，部分成功）**：为了不改动 spike 已提交的 `driver.mjs`，用一份仓库外临时副本（跑完即删除，未提交）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（`DSH_CORDIS_CONFIG` 环境变量优先级已覆盖 argv，沿用 driver 原有机制），其余 env/cwd/case 目录与 §14.7 命令完全一致，跑 3 次：
+**运行时验证（[M] 本机实测，部分成功）**：为了不改动 spike 已提交的 `driver.mjs`，用一份仓库外临时副本（保留在 `wf-logs/sea-driver.mjs`，未提交到 spike 代码；与已提交 `driver.mjs` 的 diff 仅 8 行——新增 `SEA_TEST_EXECUTABLE` 校验、`childArguments` 置空、spawn 目标改指向该 executable，无其他改动，未伪造任何输出）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（`DSH_CORDIS_CONFIG` 环境变量优先级已覆盖 argv，沿用 driver 原有机制），其余 env/cwd/case 目录与 §14.7 命令完全一致，跑 3 次：
 
 | # | initialize | session/create | cold_ms |
 |---|---|---|---:|
@@ -927,31 +929,34 @@ Error: dsh-jsonrpc-agent: plugin tree failed to load: failed to apply loader ent
 | fixed B prompt | ✅ 通过 | **[仓库 fixture]** 与 Phase 1 B “本案有哪些临近期限？”逐字一致。 |
 | full installed closure | ✅ 通过 | **[本机实测]** 252,160 KiB / 179,023,145 B / 363 roots。 |
 | actual DSH B trace | ✅ 通过 | **[2026-08-21 本机实测]** `complete=true`；reached 84 deps／63,475,270 B（14 direct／6,770,685 B）；node-pty/sharp 系 reached，koffi 未 reached。 |
-| trace-derived scratch + B rerun | ✅ 通过 | **[2026-08-21 本机实测]** 物理复制 84 reached 包，零 symlink；同一固定 B 复跑 3 次 exit 0、`turn/end.completed`、tool-call 序列与 full closure 一致，`deadlines` hash 全程不变；71,444 KiB／`tar.gz` 19,235,570 B／`zip -9` 20,965,712 B。 |
+| trace-derived scratch + B rerun | ✅ 通过 | **[2026-08-21 本机实测]** 物理复制 84 reached 包，零 symlink；同一固定 B 复跑 3 次全部 `turn/end.completed` 后 `[shutdown]`（外层 exit code 未逐跑单独捕获，见 §14.4 说明）；工具集合与只读性质三次一致（#3 与 full closure 逐项一致，#1/#2 三个调用并入同一并行 step），`deadlines` hash 复核不变；71,444 KiB／`tar.gz` 19,235,570 B／`zip -9` 20,965,712 B。 |
 | native classifications | ✅ 通过 | **[2026-08-21 本机实测]** trace `packages` 数组逐包核实：node-pty/sharp 系 reached（always-mounted service，非按需触发），koffi 未 reached，`node-addon-require-builtin` 仍未安装。 |
 | symlink-free full staging | ✅ 通过 | **[本机实测]** external adapted staging；零 symlink，entry/native/helper 齐全。不是 exact monorepo deploy。 |
 | exact SEA packaging route | ✅ 源码核实 | tag/commit、packager、target、assets、helper copy 均核实。 |
-| SEA build | ✅ 通过 | **[2026-08-21 本机实测]** packager exit 0；executable 176,279,520 B + helper 50,480 B（`0755`），已含 pkg 自带 ad-hoc 签名。 |
+| SEA build | ✅ 通过 | **[2026-08-21 本机实测，本轮修复复核显式 `EXIT=$?` 二次确认为 0]** packager exit 0；executable 176,279,520 B + helper 50,480 B（`0755`），已含 pkg 自带 ad-hoc 签名。 |
 | SEA runtime / cold initialize | ⚠️ 部分通过 | **[2026-08-21 本机实测]** `initialize`/`session/create` 3 次成功（cold_ms 796.7/598.4/334.5）；`session/preflight` 因真实 `.mjs not supported` include 不兼容而失败（非权限拦截），完整 B end-to-end 未达成。 |
 | full staging tar/zip + DMG comparison | ✅ 通过 | **[本机实测]** 41,153,091 / 57,118,441 / 140,389,719 B。 |
 | validated scratch / SEA compressed forms | ✅ 通过 | **[2026-08-21 本机实测]** scratch `tar.gz`/`zip -9` 见上；SEA executable+helper `tar.gz` 48,133,738 B／`zip -9` 47,926,602 B（相对 DMG 34.29%／34.14%）。 |
 
 ### 14.7 已由 2026-08-21 权限会话原样执行（历史命令，供复现）
 
-actual B trace（只允许 seed demo 数据、secret value 不回显/落盘；已于 §14.4 完成复跑，结果见上）：
+actual B trace（只允许 seed demo 数据、secret value 不回显/落盘；已于 §14.4 完成复跑，结果见上）——这是**实际执行时的完整注入列表**，比只有 `ANJIAN_FILES_ROOT`/`ANQI_BASE_URL`/`DSH_PERMISSION_MODE` 的早期版本多了 `ANJIAN_INTERNAL_KEY`（否则会命中 §15.4bis 记录过的「遗漏该变量」失败模式）与显式 `env -u NODE_OPTIONS`：
 
 ```zsh
+KF=/path/to/spike-internal-key   # 见任务前置条件；值绝不回显/落盘
 secretctl run anjian.local -- env \
   ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
   ANQI_BASE_URL=http://127.0.0.1:3007 \
+  ANJIAN_INTERNAL_KEY="$(cat "$KF")" \
   DSH_PERMISSION_MODE=workspace-write \
+  env -u NODE_OPTIONS \
   node spikes/dsh-agent/driver.mjs \
   --trace-loaded \
   --case '张三诉李四民间借贷纠纷' \
   --ask '本案有哪些临近期限？'
 ```
 
-若调用环境带任何非空 inherited `NODE_OPTIONS`，driver 会在读取 case/config 和 spawn 前拒绝；必须先清理环境，不能把其他 preload/loader 与 tracer 拼接。
+若调用环境带任何非空 inherited `NODE_OPTIONS`，driver 会在读取 case/config 和 spawn 前拒绝；`env -u NODE_OPTIONS` 就是为此显式清空继承值，不能只靠 tracer 自身校验、也不能把其他 preload/loader 与 tracer 拼接。
 
 已 staging 好并已实际执行的 packager command（结果见 §14.5）：
 

@@ -62,7 +62,7 @@ Commit 2 开始前另做过一份“整个 sidecar、排除 `.runtime`/local con
 
 固定 B prompt 位于 `fixtures/scenario-b-prompt.txt`，内容逐字为“本案有哪些临近期限？”。
 
-**2026-08-21 actual B trace（[M] 本机测量，真实执行）**：按下方命令原样跑，driver exit 0、`turn/end.reason.kind=completed`，`[trace-loaded]` 的 `completeness.complete=true`、`processEntries.missing=[]`、`packageResolution.errors=0`：
+**2026-08-21 actual B trace（[M] 本机测量，真实执行）**：按下方命令原样跑，`turn/end.reason.kind=completed`（`[shutdown]` 随后输出，外层 shell 未额外捕获 `driver.mjs` 自身 `$?`），`[trace-loaded]` 行自带被追踪子进程的 `"exit":{"code":0}`、`completeness.complete=true`、`processEntries.missing=[]`、`packageResolution.errors=0`：
 
 | B trace 指标 | 结果 |
 |---|---:|
@@ -74,30 +74,33 @@ Commit 2 开始前另做过一份“整个 sidecar、排除 `.runtime`/local con
 
 四类 native 的 reach 结论（逐包核对 `summary.json` 的 `packages` 数组）：`node-pty`（26,877,238 B）与 `sharp` 系（`sharp` 958,466 B + `@img/sharp-darwin-arm64` 292,231 B + `@img/sharp-libvips-darwin-arm64` 17,777,811 B）均 **reached**（`dsh-subprocess-local`/`dsh-attachment-local` 是 always-mounted service，非按需触发）；`koffi`/`@koromix/koffi-darwin-arm64` **未 reached**（`packages` 数组中不存在），验证「四类 native」表原有的源码推断为真实测量结果。
 
-原样命令（已按此真实执行，seed-only 数据、secret value 未回显/落盘）：
+原样命令（已按此真实执行，seed-only 数据、secret value 未回显/落盘；比早期只写 `ANJIAN_FILES_ROOT`/`ANQI_BASE_URL`/`DSH_PERMISSION_MODE` 的版本多了 `ANJIAN_INTERNAL_KEY` 与显式 `env -u NODE_OPTIONS`，这才是实际注入列表）：
 
 ```zsh
+KF=/path/to/spike-internal-key   # 值绝不回显/落盘
 secretctl run anjian.local -- env \
   ANJIAN_FILES_ROOT="$PWD/data/files-dev" \
   ANQI_BASE_URL=http://127.0.0.1:3007 \
+  ANJIAN_INTERNAL_KEY="$(cat "$KF")" \
   DSH_PERMISSION_MODE=workspace-write \
+  env -u NODE_OPTIONS \
   node spikes/dsh-agent/driver.mjs \
   --trace-loaded \
   --case '张三诉李四民间借贷纠纷' \
   --ask '本案有哪些临近期限？'
 ```
 
-该命令若继承任何非空 `NODE_OPTIONS` 会在 spawn 前拒绝；先清理调用环境，不能靠 tracer 继续追加。只有 stderr 的 `[trace-loaded]` 行中 `completeness.complete=true`（其中 `processEntries.missing=[]`、`packageResolution.errors=0`，exact DSH/MCP entries 都已观察、event schema/结构/字节/package mapping 均完整），且同一 run 的 B 有 completed `turn/end`，该 summary 才能作为 scratch 输入。
+该命令若继承任何非空 `NODE_OPTIONS` 会在 spawn 前拒绝；`env -u NODE_OPTIONS` 显式清空继承值，不能只靠 tracer 校验，也不能靠 tracer 继续追加。只有 stderr 的 `[trace-loaded]` 行中 `completeness.complete=true`（其中 `processEntries.missing=[]`、`packageResolution.errors=0`，exact DSH/MCP entries 都已观察、event schema/结构/字节/package mapping 均完整），且同一 run 的 B 有 completed `turn/end`，该 summary 才能作为 scratch 输入。
 
 ## trace-derived scratch
 
 **2026-08-21 已完成（[M] 本机测量，真实执行）**：在 `/private/tmp/claude-501/-Users-2-dogg-code-anqi/77e8ff17-aa4b-4fc2-b8f4-1d126c10cdba/scratchpad/wf-logs/scratch-closure` 按上表 actual B trace 的 84 个 reached dependency（`summary.json` 的 `packages[].dependency===true`）**物理复制**（而非重新 `npm install` 解析版本——避免 semver 重新解析选到与 trace 不同的嵌套版本，例如 `@deepseek-ai/dsh-skill-filesystem` 自带的嵌套 `chokidar@5.0.0`/`readdirp@5.1.1` 与顶层 `chokidar@4.0.3`/`readdirp@4.1.2` 并存），再复制 spike-owned `agent.config.yaml`/`anqi.cordis.yml`/`driver.mjs`/`package.json`/`mcp`/`plugins`/`preset`/`skills`/`trace-loaded`/`fixtures`。
 
-构造中发现并修复一个真实的复制顺序 bug：按 rootURL 逐包 `cp -R` 时若先处理某包再处理其自带的嵌套 `node_modules` 子项，`mkdirSync` 递归建出的中间目录会让后续整包复制把源目录误嵌套进已存在的目标目录里一层；修复为按路径深度升序处理，并显式跳过已被祖先包整体复制覆盖的嵌套子项（84 项中 2 项如此覆盖，实际 `cp -R` 调用 82 次）。复制后 `find <scratch> -type l` 为零 symlink。
+构造中发现并修复一个真实的复制顺序 bug：按 rootURL 逐包 `cp -R` 时若先处理某包再处理其自带的嵌套 `node_modules` 子项，`mkdirSync` 递归建出的中间目录会让后续整包复制把源目录误嵌套进已存在的目标目录里一层；修复为按路径深度升序处理，并显式跳过已被祖先包整体复制覆盖的嵌套子项（84 项中 2 项如此覆盖，实际 `cp -R` 调用 82 次）。复制后 `find <scratch> -type l` 为零 symlink。修 bug 前有一次复跑因该 bug 在 `session/create` 就失败（`scratch-b-run-1787284664.log`），其 `cold_ms=598.3` 只到 `initialize`，不是成功跑的样本；下表 3 个 cold_ms 均取自修 bug 后的 3 次成功跑。
 
 | 对象 | 安装体积 | `tar.gz` | `zip -9` | B cold initialize（3 次） | B end-to-end |
 |---|---:|---:|---:|---:|---:|
-| trace-derived scratch | 71,444 KiB（regular-file 63,575,509 B，3,495 files，排除运行期生成的 `.runtime/` 与 tooling 用 manifest） | 19,235,570 B | 20,965,712 B | 598.3 / 592.1 / 526.4 ms | 3/3 次 exit 0、`turn/end.completed`，tool-call 序列与 full closure 实测一致，`deadlines` hash 全程不变 |
+| trace-derived scratch | 71,444 KiB（regular-file 63,575,509 B，3,495 files，排除运行期生成的 `.runtime/` 与 tooling 用 manifest） | 19,235,570 B | 20,965,712 B | 551.3 / 592.1 / 526.4 ms | 3/3 次 `turn/end.completed` 后 `[shutdown]`（外层 exit code 未逐跑单独捕获）；工具集合与只读性质三次一致，其中第 3 次与 full closure 实测逐项一致（第 1/2 次把三个调用并入同一并行 step），`deadlines` hash 复核不变 |
 | 相当于 full closure | 28.33%（KiB） | 46.74%（相对 full staging tar.gz） | — | — | — |
 | 相当于 anqi v2.6.0 arm64 DMG | — | 13.70% | 14.93% | — | — |
 
@@ -152,7 +155,7 @@ pkg 的依赖静态分析打印大量 `Warning Cannot find module ...`（`@aws-s
 |---|---:|
 | symlink-free full staging | [M] 成功，252,164 KiB / 179,023,624 B |
 | exact packager install (`--ignore-scripts`) | [M] 成功，工具目录 44,220 KiB / 37,413,121 B |
-| `pkg --sea` build | **[M] 2026-08-21 成功**，exit 0 |
+| `pkg --sea` build | **[M] 2026-08-21 成功**，exit 0（首次跑日志无显式 `EXIT` 标记，本轮修复复核用相同命令换 `--output` 名重跑并显式 `echo EXIT=$?` 捕获为 0，产物体积与首次一致） |
 | main executable size | **[M]** 176,279,520 B，Mach-O 64-bit arm64 thin，已含 pkg 自带 ad-hoc 签名（`codesign -dv` 显示 `flags=0x2(adhoc)`） |
 | adjacent helper product | **[M]** 从 staging 复制并 `chmod 0755`：50,480 B |
 | codesign / Mach-O deployment target | **[M]** ad-hoc 签名存在；无 Team ID（本机自签，非分发签名） |
@@ -160,7 +163,7 @@ pkg 的依赖静态分析打印大量 `Warning Cannot find module ...`（`@aws-s
 | SEA B end-to-end | **[M] 部分失败**：`initialize`/`session/create` 3/3 成功；`session/preflight` 3/3 因真实的 `extension ".mjs" not supported` include 错误失败（见下），非权限拦截 |
 | SEA product+helper `tar.gz` / `zip -9` | **[M]** 48,133,738 B / 47,926,602 B（相对 DMG 34.29% / 34.14%） |
 
-**运行时验证**：用一份仓库外临时副本（跑完即删除，未提交到 spike 代码）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（沿用 driver 已有的 `DSH_CORDIS_CONFIG` 环境变量优先机制，其余 env/cwd/case 与 actual B trace 命令一致），跑 3 次，`initialize`/`session/create` 均成功，随后 `session/preflight`（触发 `agent-presets` 挂载 `preset/anqi`）三次均以同一条真实错误失败：
+**运行时验证**：用一份仓库外临时副本（保留在 `wf-logs/sea-driver.mjs`，未提交到 spike 代码；与已提交 `driver.mjs` 的 diff 仅 8 行——新增 `SEA_TEST_EXECUTABLE` 校验、`childArguments` 置空、spawn 目标改指向该 executable，无其他改动）把子进程 spawn 目标从 `node DSH_BIN CORDIS_CONFIG` 换成直接执行上述 SEA executable（沿用 driver 已有的 `DSH_CORDIS_CONFIG` 环境变量优先机制，其余 env/cwd/case 与 actual B trace 命令一致），跑 3 次，`initialize`/`session/create` 均成功，随后 `session/preflight`（触发 `agent-presets` 挂载 `preset/anqi`）三次均以同一条真实错误失败：
 
 ```text
 Error: dsh-jsonrpc-agent: plugin tree failed to load: failed to apply loader entry include (cordis:include): extension ".mjs" not supported
@@ -178,8 +181,8 @@ Error: dsh-jsonrpc-agent: plugin tree failed to load: failed to apply loader ent
 **2026-08-21 更新**：解除闸门所需的五项已全部由真实执行补齐（见上文对应小节），闸门状态由此改变：
 
 1. ✅ complete actual-load trace——`complete=true`，reached 84 deps / 63,475,270 B；
-2. ✅ trace-derived scratch 的安装字节（71,444 KiB）、`tar.gz`（19,235,570 B）、`zip -9`（20,965,712 B）和 3 次 cold initialize（598.3 / 592.1 / 526.4 ms）；
-3. ✅ scratch B end-to-end——3/3 次 exit 0、`turn/end.completed`、tool-call 序列与 full closure 一致、`deadlines` 不变；
+2. ✅ trace-derived scratch 的安装字节（71,444 KiB）、`tar.gz`（19,235,570 B）、`zip -9`（20,965,712 B）和 3 次 cold initialize（551.3 / 592.1 / 526.4 ms）；
+3. ✅ scratch B end-to-end——3/3 次 `turn/end.completed`（外层 exit code 未逐跑单独捕获）、工具集合与只读性质一致（第 3 次与 full closure 逐项一致，第 1/2 次并行粒度不同）、`deadlines` 不变；
 4. ⚠️ SEA build、签名、启动均成功（cold initialize 3 次：796.7 / 598.4 / 334.5 ms，但只到 `session/create`）；**B end-to-end 未达成**——`session/preflight` 因真实的 `.mjs` include 不兼容失败（非权限拦截，见「rc.7 SEA 路线与本机结果」）；
 5. ✅ SEA executable + helper product set 的两种压缩值：`tar.gz` 48,133,738 B、`zip -9` 47,926,602 B。
 
