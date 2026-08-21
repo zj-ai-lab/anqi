@@ -1,10 +1,10 @@
 # Spike A：anqi 内置 DSH sidecar 可行性报告
 
 日期：2026-08-19
-最后更新：2026-08-21（Commit 3 model-backed readiness redacted run）
+最后更新：2026-08-21（Commit 3 model-backed readiness redacted run；同日补跑 anqi domain tools read deadlines，注入 `ANJIAN_INTERNAL_KEY` 后动态通过）
 分支：`spike/dsh-agent`
 DSH：`0.1.0-rc.7`
-结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）、Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同次复跑的 `anqi_case_get` / `anqi_digest` 因 `ANJIAN_INTERNAL_KEY` 未注入而失败。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
+结论状态：**Spike A 通路成立并已实跑（§12）；Phase 2 Commit 1 的扩展 JSON-RPC response loop / real preset mount（§13）、Commit 2 的 CJS+ESM actual-load tracer / full staging / exact rc.7 SEA attempt（§14）以及 Commit 3 的 anqi-owned skill isolation / exact-agent preflight / first-request gates（§15）已落地。Commit 3 的 model-backed readiness 已于 2026-08-21 动态通过：唯一 `anqi-case-brief`、首个 `reason=initial` header、精确 MCP 工具和同 turn 实际 MCP call 均有 redacted wire evidence；同日补跑并按 §15.5 命令注入 `ANJIAN_INTERNAL_KEY` 后，`anqi_case_get` / `anqi_digest` 也已动态通过，成功读回本案期限且未改动 `deadlines` 表（§15.4）。actual B trace、trace-derived scratch、SEA build/runtime 仍被阻塞，不能把 fixture、源码分类或 full closure 写成动态通过。仍不建议合入生产。**
 
 ## 1. 结论
 
@@ -13,7 +13,7 @@ DSH rc.7 可以作为 anqi 的进程外 sidecar：anqi 可用一个 Node supervi
 本次尚不能给出“可上线”的结论，原因有四项：
 
 1. Phase 1 已用去标识 seed demo 实跑 B/C/E/F；Phase 2 的 real-preset interactive response loop 与 Commit 3 readiness gate 已完成源码和 no-secret/static 验证，Commit 3 readiness 又在 2026-08-21 获得了真实模型-backed wire 证据。
-2. 首个 `request/header` 早于 MCP ready、默认 skills root 暴露用户技能的 Phase 1 问题，已由 Commit 3 的 exact-agent preflight、materialized anqi-owned skill root、首 header 门禁和同 turn MCP call 动态复验覆盖；本次复跑的 anqi domain data read 另受 `ANJIAN_INTERNAL_KEY` 注入缺失阻塞。
+2. 首个 `request/header` 早于 MCP ready、默认 skills root 暴露用户技能的 Phase 1 问题，已由 Commit 3 的 exact-agent preflight、materialized anqi-owned skill root、首 header 门禁和同 turn MCP call 动态复验覆盖；anqi domain data read 此前受 `ANJIAN_INTERNAL_KEY` 注入缺失阻塞，已于 2026-08-21 补跑注入后动态通过（§15.4）。
 3. 未裁剪安装闭包为 252,160 KiB / 179,023,145 regular-file bytes。actual B loaded trace 与 trace-derived scratch B 复跑均未获执行，fixture 不能替代它们。
 4. symlink-free full staging 与压缩测量已完成；exact `@yao-pkg/pkg@6.21.0 --sea` 启动在执行外部 package code 前被权限层拒绝，因此没有 SEA executable、签名或 runtime 数字。
 
@@ -897,9 +897,9 @@ driver 同时复核 preflight 返回的 exact skill/tool 条件；turn 完成时
 | actual MCP tool call in same turn | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** 同一 session/turn 出现 `tool/call.data.name === "mcp__anqi-local__case_folder_info"`，随后收到成功 `tool/result`，driver 正常完成 turn 并 shutdown。 |
 | only anqi skill discoverable / no user skill | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** `session/preflight` 返回 `complete:true` 且 names 精确为 `['anqi-case-brief']`；scoped tool list 也按预期返回。 |
 | first initial header with MCP tool | ✅ 通过 | **[2026-08-21 模型-backed redacted wire]** 同一 session 首个 `request/header` 的 `reason` 为 `initial`，`header.tools` 含精确 MCP 名称；不是后续 `reason: change` header。 |
-| anqi domain tools read deadlines | ⛔ blocked | **[2026-08-21 redacted wire]** `anqi_case_get` 与 `anqi_digest` 均返回 `Error: ANJIAN_INTERNAL_KEY is not set`；未自行计算或编造期限。 |
+| anqi domain tools read deadlines | ✅ 通过 | **[2026-08-21 模型-backed redacted wire，注入 `ANJIAN_INTERNAL_KEY` 后复跑]** 同一 session/turn 内 `anqi_case_get`、`anqi_digest` 均成功返回，读回本案（张三诉李四民间借贷纠纷）`deadlines[0]`（上诉期（判决），due_on 2026-08-21，民诉法 §171，critical/pending）与 digest `red[0]`（同一期限，days_left 0）；最终回答逐项引用上述 anqi 返回字段，未自行计算或编造期限；跑前/跑后 `deadlines` 表行数与内容 hash 均为 3 行 / `aefb85ec...39fb21` 完全一致。 |
 
-上述三项 Commit 3 readiness 已由真实模型-backed run 通过；期限读取项仍因 anqi 内部认证变量未注入而 blocked。actual B trace、trace-derived scratch 与 SEA runtime 的 blocked 状态不变。
+上述四项 Commit 3 readiness 均已由真实模型-backed run 通过，含此前 blocked 的期限读取项。actual B trace、trace-derived scratch 与 SEA runtime 的 blocked 状态不变。
 
 ### 15.4 2026-08-21 动态 readiness run
 
@@ -913,7 +913,28 @@ driver 同时复核 preflight 返回的 exact skill/tool 条件；turn 完成时
 - `anqi_case_get` 与 `anqi_digest` 各自失败并返回 `ANJIAN_INTERNAL_KEY is not set`；
 - turn 正常结束，随后 `shutdown` 成功；driver 未计算、写入或修改 deadline/event。
 
-### 15.5 待 anqi 内部 key 注入后原样复跑
+### 15.4bis 2026-08-21 补跑：注入 `ANJIAN_INTERNAL_KEY` 后的 domain-tools readiness
+
+按 §15.5 命令原样复跑，唯一差异是把 `ANJIAN_INTERNAL_KEY="$(cat "$KF")"` 一并加入 `secretctl run anjian.local -- env ...` 的注入列表（此前一次遗漏了该变量，只注入了 `ANJIAN_FILES_ROOT`/`ANQI_BASE_URL`/`DSH_PERMISSION_MODE`），server 端同样以 `ANJIAN_INTERNAL_KEY="$(cat "$KF")"` 启动隔离 3007 实例。只使用 Phase 1 seed demo 案件（张三诉李四民间借贷纠纷）。key 值全程未回显、未落盘、未进本报告；redacted 日志复查确认零次出现。
+
+复跑前记录 `deadlines` 基线：3 行，`sha256(id|case_id|name|due_on|basis|calc_note|severity|status|done_at 逐行拼接)` = `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`。
+
+redacted wire 结果：
+
+- `initialize` 成功，`cold_ms=891.4`，`serverInfo.name=deepseek-harness-sdk-runtime`；
+- `session/create` 返回唯一 `sessionId`（`anqi-f82ce22c-...`）；
+- `session/preflight` 返回 `ready:true`；`tools.visibleNames` 含精确 `mcp__anqi-local__case_folder_info`；`skills.complete:true` 且 `skills.names` 精确为 `['anqi-case-brief']`；
+- 首个 `[request/header]` 的 `reason` 为 `initial`，`header.tools` 中含精确 `mcp__anqi-local__case_folder_info`（连同 `anqi_case_get`/`anqi_digest`/`anqi_inbox_propose` 等 anqi 工具）；
+- 同一 `turn:1/step:1` 内先后出现 `[tool/call]`/`[tool/result]`，实际调用 `mcp__anqi-local__case_folder_info`，返回精确 seed 案件夹 `cwd`（`.../data/files-dev/张三诉李四民间借贷纠纷`）；
+- 同一 turn 的 `step:2` 内 `anqi_case_get`（`name: 张三诉李四民间借贷纠纷`）与 `anqi_digest` 均成功返回：`anqi_case_get.deadlines[0]` = 上诉期（判决）/due_on 2026-08-21/民诉法 §171/critical/pending；`anqi_digest.red[0]` = 同一期限，`days_left:0`；两者与 §15.4 之前记录的 seed 期限一致；
+- 最终 assistant 回答逐项引用上述 anqi 返回字段（期限名称、到期日、依据、severity、days_left），并明确区分“任务/费用/分账”与“期限”，未自行推算或编造任何期限；回答同时提示上诉期与相关未关闭任务，但未创建 event/deadline，也未直接创建 task（仅建议律师自行操作或走 `anqi_inbox_propose`）；
+- `[turn/end]` 的 `reason.kind` 为 `completed`；`session.status` 转 `idle`；`[shutdown]` 成功，driver 进程 exit 0；
+- 复跑后复查 `deadlines`：仍为 3 行，hash 仍为 `aefb85ec4d2c041dcfeeace81342c0c82ee9bf7c159982fbd2ec60b50139fb21`，与跑前基线完全一致，确认 driver 未写入/修改任何 deadline；
+- 结束后 `kill` 3007 监听进程，`lsof -iTCP:3007 -sTCP:LISTEN` 确认端口已释放。
+
+因此 §15.3「anqi domain tools read deadlines」项由 ⛔ blocked 转为 ✅ 通过（模型-backed redacted wire）。
+
+### 15.5 待 anqi 内部 key 注入后原样复跑（历史记录，已于 15.4bis 完成复跑）
 
 只使用 Phase 1 seed demo 案件，key 仍只由 `secretctl` 注入，任何 key 值不回显、不落盘、不写报告：
 
