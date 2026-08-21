@@ -9,6 +9,7 @@
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const crypto = require('node:crypto');
 const { fork } = require('node:child_process');
 const http = require('node:http');
 const { initAutoUpdater } = require('./updater');
@@ -63,6 +64,14 @@ function pickFreePort() {
 // server.js 监听 PORT，stdout 会打印 "anjian listening on :<port>"。
 async function startBackend(config) {
   const port = await pickFreePort();
+  // AI 助理 sidecar（agent_enabled=true 时）的 DSH 子进程要靠 X-Anjian-Key
+  // 回调 /internal/agent-proposals；DESIGN.md 原先「Electron 显式回环并带账
+  // 号/hash，可不启用 internal 面」的前提是没有任何东西需要走 /internal——
+  // sidecar 落地后这个前提不再成立，桌面版必须也配一份 ANJIAN_INTERNAL_KEY，
+  // 否则 supervisor.start() 会在 internal_key_missing 上直接短路，AI 助理在
+  // 桌面版永远起不来。这里每次启动随机生成一份，只活在这一次后端子进程的
+  // env 里，不写 config.json/磁盘、不持久化——重启即换新值，不需要用户感知。
+  const internalKey = crypto.randomBytes(32).toString('hex');
   const env = {
     ...process.env,
     NODE_ENV: 'production',
@@ -72,6 +81,7 @@ async function startBackend(config) {
     ANJIAN_FILES_ROOT: path.join(config.dataDir, '案件夹'),
     ANJIAN_USER: config.user,
     ANJIAN_PASS_HASH: config.passHash,
+    ANJIAN_INTERNAL_KEY: internalKey,
     ...(config.deepseekKey ? { DEEPSEEK_API_KEY: config.deepseekKey } : {}),
   };
 

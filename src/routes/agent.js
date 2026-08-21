@@ -23,8 +23,8 @@
 //     question 的 answer 都经过严格校验，非法/过期/已消费/跨 session/worker
 //     已退一律拒绝并审计（不含敏感值）。
 //   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
-//     （src/routes/records.js 或 today 页既有接口），本文件不新开任何模型可
-//     达的 accept API。
+//     （src/routes/views.js 的 /api/inbox/:id/accept|decline），本文件不新开
+//     任何模型可达的 accept API。
 import { Router } from 'express';
 import { db, audit } from '../db.js';
 import { loadAgentConfig } from '../agent/config.js';
@@ -57,13 +57,6 @@ function mustCaseId(req, res) {
   }
   return caseId;
 }
-
-// prompt 路由的同步门禁用——与 supervisor.js 内部的 LIVE_STATUSES 同一组值
-// （'starting' 也算活着：supervisor.prompt() 内部会等待 readyPromise 落定,
-// 不需要这里排除）。故意不从 supervisor.js 导出该常量再复用:那是模块私有
-// 状态机的实现细节,这里只是复刻"活着"这三个字面量做一次尽力而为的前置
-// 校验,真正的权威判断永远在 supervisor.prompt() 内部。
-const LIVE_BADGES = new Set(['starting', 'ready', 'running']);
 
 // 把浏览器提交的问答答案,严格转换成 DSH user-question 协议要求的
 // { answers: [{ id, selected, custom }] } 形状(参照参考实现 driver.mjs 的
@@ -113,7 +106,9 @@ export function createAgentRouter(supervisor) {
     if (!Number.isInteger(caseId) || caseId <= 0) return res.status(400).json({ error: 'case_id 非法' });
     const caseRow = db.prepare('SELECT id FROM cases WHERE id = ?').get(caseId);
     if (!caseRow) return res.status(404).json({ error: '案件不存在' });
-    const worker = supervisor.status(caseId);
+    // 下发安全投影(publicStatus),不带 sessionId/cwd/pid——见 supervisor.js
+    // publicStatus() 的注释。
+    const worker = supervisor.publicStatus(caseId);
     res.json({ status: worker.status, enabled: true, error: null, configured, worker });
   });
 
@@ -147,8 +142,11 @@ export function createAgentRouter(supervisor) {
     if (text.length > MAX_PROMPT_CHARS) {
       return res.status(400).json({ error: `text 过长（上限 ${MAX_PROMPT_CHARS} 字符）` });
     }
+    // 权威判断留在 supervisor.isLive()——不在这里复刻它的状态机字面量集合
+    // （见 src/agent/supervisor.js isLive() 的注释）;badge 只是取来拼错误
+    // 消息用的展示字段。
     const badge = supervisor.status(caseId).status;
-    if (!LIVE_BADGES.has(badge)) {
+    if (!supervisor.isLive(caseId)) {
       return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: 'worker_not_running', status: badge });
     }
     audit(req.actor, 'agent-prompt', 'agent-worker', caseId, `chars=${text.length}`);
@@ -191,8 +189,8 @@ export function createAgentRouter(supervisor) {
     // 首帧补一份即时状态快照:onEvent() 的监听器可能在 worker 已经经历过若干
     // 次状态跃迁之后才挂上(例如 worker 早已 ready,'worker/ready' 广播已经
     // 错过),不补发这一帧,前端在连接建立瞬间只能拿到"未知",要等下一次真正
-    // 的事件才恢复准确状态。
-    send('status', supervisor.status(caseId));
+    // 的事件才恢复准确状态。下发安全投影,不带 sessionId/cwd/pid。
+    send('status', supervisor.publicStatus(caseId));
 
     const unsubscribe = supervisor.onEvent(caseId, (event) => send(event.type, event));
 

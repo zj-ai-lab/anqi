@@ -41,6 +41,19 @@ class FakeSupervisor {
     this.listeners = new Map(); // caseId -> Set<fn>
   }
   status() { return this.statusResult; }
+  // 真实 supervisor 的安全投影(见 src/agent/supervisor.js publicStatus())：
+  // 只吐 status/caseId/caseName/dshVersion/startedAt/provider/model/error/
+  // exitInfo，不带 sessionId/cwd/pid——这里照抄同一份字段列表，好让测试断言
+  // 真的能验证路由层用的是投影后的方法而不是原始 status()。
+  publicStatus() {
+    const full = this.statusResult;
+    if (!full) return null;
+    const { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo } = full;
+    return { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo };
+  }
+  isLive() {
+    return ['starting', 'ready', 'running'].includes((this.statusResult || {}).status);
+  }
   async start() {
     if (this.startThrows) throw this.startThrows;
     return this.startResult;
@@ -131,13 +144,20 @@ try {
     assert.equal(badId.status, 400);
   }
 
-  // ---- GET status?case_id=真实案件 → 透传 supervisor.status() ----
-  supervisor.statusResult = { status: 'running', caseId, sessionId: 'anqi-sess-1', pid: 4242 };
+  // ---- GET status?case_id=真实案件 → 透传 supervisor.publicStatus() 投影,
+  // 不泄漏内部 sessionId/cwd/pid ----
+  supervisor.statusResult = {
+    status: 'running', caseId, caseName: '张三诉李四合同纠纷（agent http 测试）',
+    sessionId: 'anqi-sess-1', pid: 4242, cwd: '/secret/host/path/案件夹/张三诉李四',
+  };
   {
     const { status, data } = await call('GET', `/api/agent/status?case_id=${caseId}`);
     assert.equal(status, 200);
     assert.equal(data.status, 'running');
-    assert.equal(data.worker.sessionId, 'anqi-sess-1');
+    assert.equal(data.worker.caseName, '张三诉李四合同纠纷（agent http 测试）');
+    assert.equal(data.worker.sessionId, undefined, '下行状态投影不应包含内部 sessionId');
+    assert.equal(data.worker.pid, undefined, '下行状态投影不应包含宿主 pid');
+    assert.equal(data.worker.cwd, undefined, '下行状态投影不应包含案件夹绝对路径');
   }
 
   // ---- POST start：不存在的案件 → 404 ----
@@ -279,7 +299,7 @@ try {
   }
 
   // ---- GET events：建立、首帧状态快照、事件转发、断开后反订阅 ----
-  supervisor.statusResult = { status: 'ready', caseId };
+  supervisor.statusResult = { status: 'ready', caseId, sessionId: 'anqi-sess-should-not-leak' };
   {
     const controller = new AbortController();
     const response = await fetch(base + `/api/cases/${caseId}/agent/events`, { signal: controller.signal });
@@ -301,6 +321,7 @@ try {
 
     await readUntil('event: status');
     assert.ok(buffer.includes('"status":"ready"'), '首帧应带上当前状态快照');
+    assert.ok(!buffer.includes('anqi-sess-should-not-leak'), 'SSE 首帧不应该泄漏内部 sessionId');
 
     assert.equal(supervisor.listeners.get(caseId)?.size, 1, '连接建立后应该恰好挂一个监听器');
     supervisor.emit(caseId, { type: 'turn/start', caseId, data: { turnId: 7 } });

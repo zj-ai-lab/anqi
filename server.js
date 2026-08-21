@@ -63,7 +63,16 @@ if (startupConfig.unsafeNoAuth) {
   console.warn('⚠ ANJIAN_UNSAFE_NO_AUTH=1：当前实例无鉴权，仅允许本机回环开发/测试，严禁承载真实数据');
 }
 const httpServer = app.listen(port, host, () => {
-  console.log(`anjian listening on :${port}`);
+  // 构造 AgentSupervisor 时它对 internalBaseURL 的默认值只能是一个兜底猜测
+  // （env 未设时硬编码 3007），与这里真正监听的端口（PORT 环境变量、或
+  // Electron 传入的随机空闲端口）大概率不一致——DSH 子进程的每一次 anqi
+  // MCP 工具调用都以这个 base URL 为准，猜错端口等于子进程的每一次内部调用
+  // 都 ECONNREFUSED。这里用 httpServer.address().port 拿到刚绑定成功的真实
+  // 端口去纠正它；此刻服务器才刚开始 accept 连接，不存在"纠正前已经有请求
+  // 进来"的竞态。
+  const actualPort = httpServer.address().port;
+  agentSupervisor.setInternalBaseURL(`http://127.0.0.1:${actualPort}`);
+  console.log(`anjian listening on :${actualPort}`);
   if (startLegalRagBridge()) console.log('anjian LegalRAG bridge started');
 });
 
@@ -77,15 +86,36 @@ const httpServer = app.listen(port, host, () => {
 // 没有任何 worker 时 stopAll() 近乎立即 resolve，不拖慢正常退出。
 // 只装一次：signal handler 本身不是幂等的（重复 exit 竞态），用 once 保证
 // 第二个信号如果在关闭窗口内又打进来，也不会重入整套关闭逻辑。
+// stopAll() 内部单个 worker 最坏情况是 30s shutdown RPC 往返 + 10s 强杀等待
+// ≈ 40s；这段时间里 httpServer.close() 完全没被调用、端口一直占着——之前的
+// 实现是 5 秒兜底在 stopAll 落定之后才起算，等于兜底形同虚设（Docker 默认
+// 10s SIGTERM 宽限期会在中途被 SIGKILL，Electron before-quit 后主进程已退
+// 出、后端还可能再跑 40 秒）。这里给 stopAll 套一个总时限的 Promise.race：
+// 跑满时不再等，直接 forceKillAll() 兜底强杀所有仍存活的子进程，再继续走
+// httpServer.close()，让"兜底"真正在总时间预算内起作用。
+const STOP_ALL_TIMEOUT_MS = 8000;
 let shuttingDown = false;
 async function gracefulShutdown(signal) {
   if (shuttingDown) return;
   shuttingDown = true;
   console.log(`anjian received ${signal}, stopping agent workers...`);
+  let timedOut = false;
+  let timer;
+  const timeoutGuard = new Promise((resolve) => {
+    timer = setTimeout(() => { timedOut = true; resolve(); }, STOP_ALL_TIMEOUT_MS);
+    timer.unref?.();
+  });
   try {
-    await agentSupervisor.stopAll(`server shutdown (${signal})`);
+    await Promise.race([
+      agentSupervisor.stopAll(`server shutdown (${signal})`).then(() => clearTimeout(timer)),
+      timeoutGuard,
+    ]);
   } catch (error) {
     console.error('agent supervisor stopAll failed during shutdown:', error.message);
+  }
+  if (timedOut) {
+    console.warn(`agent supervisor stopAll exceeded ${STOP_ALL_TIMEOUT_MS}ms, force-killing remaining workers`);
+    agentSupervisor.forceKillAll();
   }
   httpServer.close(() => process.exit(0));
   // httpServer.close() 等待现有连接排空；给一个兜底上限，避免一个挂住的

@@ -199,7 +199,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'disabled', 'enabled 非 true 时必须返回 disabled');
   assert.equal(supervisor.workers.has(caseId), false, 'disabled 短路不应该创建 worker 记录');
-  console.log('  [1/11] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
+  console.log('  [1/13] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
 }
 
 // ---- 场景 2：enabled=true 但案件夹越出 ANJIAN_FILES_ROOT（不存在/未对应）----
@@ -223,7 +223,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'case_folder_missing');
   assert.equal(supervisor.workers.has(caseId) === false || supervisor.workers.get(caseId)?.status === 'error', true);
-  console.log('  [2/11] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [2/13] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // ---- 场景 3：案件夹是 symlink（越权手法之一）----
@@ -247,7 +247,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'cwd_invalid');
-  console.log('  [3/11] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [3/13] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // 场景 4-11 共用：起一个用 FakeChild 顶替真实 DSH 子进程的 worker。
@@ -318,7 +318,7 @@ async function startFakeWorker(opts) {
   assert.equal(becameNotLive, true, '超时后 worker 必须离开 ready/running（被终止）');
   const wasKilledOrShutdown = await waitUntil(() => child.killed || child.exitCode !== null);
   assert.equal(wasKilledOrShutdown, true, '超时后必须真正终止子进程（kill 或 shutdown→exit），不能只是 status 回 ready');
-  console.log('  [4/11] turn 超时：ok（真正终止了 worker，不是只改 status）');
+  console.log('  [4/13] turn 超时：ok（真正终止了 worker，不是只改 status）');
 }
 
 // ---- 场景 5：首个 turn 的 MCP 门禁失败不能被同一 worker 的下一个 turn 绕过 ----
@@ -342,7 +342,7 @@ async function startFakeWorker(opts) {
   // firstTurnChecked=true"的免检资格——再 prompt 只会因为 worker 不在跑而被拒。
   assert.equal(worker.firstTurnChecked, false, 'firstTurnChecked 不应该在失败时被置 true');
   await assert.rejects(supervisor.prompt(caseId, '第二个 turn 想蹭免检'), /worker is not running/);
-  console.log('  [5/11] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
+  console.log('  [5/13] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
 }
 
 // ---- 场景 6：跨 session 的反向请求必须原地拒绝，不进 pendingInteractions ----
@@ -376,7 +376,7 @@ async function startFakeWorker(opts) {
   const reply = framesFromSupervisor.find((f) => f.id === 9001);
   assert.ok(reply, '必须已经原地回了这条跨 session 请求的响应');
   assert.equal(reply.result?.outcome, 'unavailable', '跨 session 的 approval 必须回 unavailable，而不是悬在待办表里');
-  console.log('  [6/11] 跨 session 反向请求：ok（原地拒绝，未入表）');
+  console.log('  [6/13] 跨 session 反向请求：ok（原地拒绝，未入表）');
 }
 
 // ---- 场景 7：listPendingInteractions() 必须脱敏，不能原样吐出 toolName ----
@@ -407,7 +407,7 @@ async function startFakeWorker(opts) {
   assert.equal(pending[0].toolName.includes(FAKE_KEY), false, 'listPendingInteractions 不能原样吐出 key 值');
   assert.equal(pending[0].toolName.includes('[REDACTED]'), true, 'toolName 必须被 redact 过');
   await supervisor.stop(caseId, 'test cleanup');
-  console.log('  [7/11] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
+  console.log('  [7/13] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
 }
 
 // ---- 场景 8：session/preflight 的返回值必须被宿主逐字段核验 ----
@@ -432,7 +432,7 @@ async function startFakeWorker(opts) {
   assert.match(status.error || '', /startup_failed/, 'error 字段必须体现是启动序列失败');
   const childKilled = await waitUntil(() => worker.child.killed || worker.child.exitCode !== null);
   assert.equal(childKilled, true, 'preflight 门禁失败后必须终止子进程，不能泄漏');
-  console.log('  [8/11] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
+  console.log('  [8/13] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
 }
 
 // ---- 场景 9：turn 失败必须立即离开 LIVE 状态，不给已排队的下一个 turn 留 ----
@@ -489,7 +489,7 @@ async function startFakeWorker(opts) {
   const outcome3 = await turn3Settled;
   assert.equal(outcome3.ok, false, 'turn3 不能被静默 resolve——worker 必须已经离开 LIVE 状态');
   assert.equal(promptCount, 2, 'turn3 不应该真的发出 session/prompt（worker 应在排队时已判定不再存活）');
-  console.log('  [9/11] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
+  console.log('  [9/13] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
 }
 
 // ---- 场景 10：turn 失败瞬间必须清空 pendingInteractions，approval 不能在 ----
@@ -537,7 +537,7 @@ async function startFakeWorker(opts) {
   const result = supervisor.resolveApproval(caseId, interactionId, 'allowed-once');
   assert.equal(result.ok, false, 'turn 判失败后必须立即 fail-closed，approval 不能再被放行');
   assert.deepEqual(supervisor.listPendingInteractions(caseId), [], 'pendingInteractions 必须已经清空');
-  console.log('  [10/11] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
+  console.log('  [10/13] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
 }
 
 // ---- 场景 11：supervisor 必须真的接线 session-registry 的 bind/unbind ----
@@ -554,7 +554,123 @@ async function startFakeWorker(opts) {
   assert.equal(caseIdForSession(worker.sessionId), caseId, 'start() 之后必须能通过 session-registry 反查到绑定的 caseId');
   await supervisor.stop(caseId, 'test cleanup: 场景 11 收尾');
   assert.equal(caseIdForSession(worker.sessionId), null, 'worker 终态收尾之后 session-registry 里的绑定必须被注销');
-  console.log('  [11/11] supervisor 接线 session-registry：ok（start 绑定、终态收尾注销）');
+  console.log('  [11/13] supervisor 接线 session-registry：ok（start 绑定、终态收尾注销）');
+}
+
+// ---- 场景 12：onEvent() 与 worker 生命周期解耦（登记在 supervisor 层，不
+// 挂在某一次 Worker 实例上）----
+// 审查发现：onEvent() 之前的实现是 `const worker = this.workers.get(caseId);
+// if (!worker) return () => {};`——没有 worker 时什么都不注册、返回一个假的
+// 退订函数；worker 每次 start() 都是全新实例、监听器集合全新为空。结果是
+// (a) 浏览器按自然顺序"先连 events 再点启动"时，onEvent() 在 worker 尚未
+// 创建的瞬间是静默空操作，之后即便 worker 创建出来也不会补挂；(b) 即使先
+// start 再连，一旦 worker 崩溃/被 stop 后重新 start，旧监听器就被孤儿化，
+// SSE 连接永久收不到任何后续事件。这里验证两点都已修复：先于 start() 调用
+// onEvent()，之后仍能收到 start() 过程中广播的 worker/ready；worker 被
+// stop() 后重新 start() 出一个全新实例，同一个订阅依旧能收到新实例广播的
+// 事件。
+{
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+
+  const caseName = '自检案-onEvent生命周期';
+  const caseId = insertCase(caseName);
+  fs.mkdirSync(path.join(filesRoot, caseName));
+
+  const supervisor = new AgentSupervisor({
+    filesRoot,
+    spawnFn: () => makeFakeChild(undefined, {
+      'session/create': (frame, c) => {
+        c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: frame.params.sessionId } });
+      },
+    }),
+  });
+
+  const events = [];
+  const unsubscribe = supervisor.onEvent(caseId, (event) => events.push(event));
+
+  const status1 = await supervisor.start(caseId);
+  assert.equal(status1.status, 'ready', 'worker 应该成功进入 ready');
+  assert.ok(
+    events.some((e) => e.type === 'worker/ready'),
+    '提前订阅必须能收到 start() 过程中广播的 worker/ready（修复前 onEvent() 在 worker 尚未创建时是静默空操作）'
+  );
+
+  const workerBefore = supervisor.workers.get(caseId);
+  await supervisor.stop(caseId, 'test: 场景 12 触发重启');
+  events.length = 0; // 只关注重启之后的新事件
+
+  const status2 = await supervisor.start(caseId);
+  assert.equal(status2.status, 'ready', '重启后 worker 应该再次成功进入 ready');
+  const workerAfter = supervisor.workers.get(caseId);
+  assert.notEqual(workerAfter, workerBefore, '重启之后必须是一个全新的 Worker 实例');
+  assert.ok(
+    events.some((e) => e.type === 'worker/ready'),
+    '同一个订阅在 worker 重建之后仍必须能收到新实例广播的事件（修复前旧订阅在这里被孤儿化）'
+  );
+
+  unsubscribe();
+  await supervisor.stop(caseId, 'test cleanup: 场景 12 收尾');
+  console.log('  [12/13] onEvent() 与 worker 生命周期解耦：ok（提前订阅 + 跨重启订阅均生效）');
+}
+
+// ---- 场景 13：setInternalBaseURL() 生效于新 spawn；forceKillAll() 兜底强杀 ----
+// 审查发现：AgentSupervisor 构造时对 internalBaseURL 只能给一个兜底猜测
+// （env 未设时硬编码 3007），与 server.js 实际监听端口大概率不一致，会导致
+// DSH 子进程的每一次 anqi MCP 工具调用都 ECONNREFUSED；server.js 现在会在
+// httpServer.listen() 回调里调用 setInternalBaseURL() 用真实端口纠正它。
+// 这里验证：(a) setInternalBaseURL() 之后新 start() 出的 worker，其 spawn
+// env 里的 ANQI_BASE_URL 确实是纠正后的新值，不是构造时的默认值；
+// (b) forceKillAll()（gracefulShutdown 优雅关闭总时限跑满时的兜底路径）能
+// 对仍存活的子进程真正发送 SIGKILL，不是空转。
+{
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+
+  const caseName = '自检案-internalBaseURL与强杀';
+  const caseId = insertCase(caseName);
+  fs.mkdirSync(path.join(filesRoot, caseName));
+
+  let capturedEnv = null;
+  const supervisor = new AgentSupervisor({
+    filesRoot,
+    internalBaseURL: 'http://127.0.0.1:9999', // 构造时的默认值——刻意设成一个错误端口
+    spawnFn: (execPath, args, opts) => {
+      capturedEnv = opts.env;
+      return makeFakeChild(undefined, {
+        'session/create': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: frame.params.sessionId } });
+        },
+      });
+    },
+  });
+
+  supervisor.setInternalBaseURL('http://127.0.0.1:12345');
+  const status = await supervisor.start(caseId);
+  assert.equal(status.status, 'ready');
+  assert.equal(
+    capturedEnv.ANQI_BASE_URL, 'http://127.0.0.1:12345',
+    'setInternalBaseURL() 之后的新 start() 必须把纠正后的值传给子进程，而不是构造时的默认值'
+  );
+
+  const worker = supervisor.workers.get(caseId);
+  const child = worker.child;
+  assert.equal(child.exitCode, null, '强杀前子进程应仍存活');
+  supervisor.forceKillAll();
+  const killed = await waitUntil(() => child.exitCode !== null);
+  assert.equal(killed, true, 'forceKillAll() 之后子进程必须真的退出');
+  assert.equal(child.lastKillSignal, 'SIGKILL', 'forceKillAll() 必须发送 SIGKILL，不是走 graceful shutdown 往返');
+  console.log('  [13/13] setInternalBaseURL()/forceKillAll()：ok（新 spawn 用纠正后的 base URL；兜底强杀真的杀）');
 }
 
 clearAgentSettings();

@@ -289,7 +289,14 @@ function nowIso() {
 // 一个案件 worker 的完整生命周期：spawn → initialize → session/create →
 // session/preflight → 一串串行 turn → stop/crash。
 class Worker {
-  constructor(caseId, caseName, sessionId) {
+  // dispatch: (event) => void——由 supervisor 传入、绑定了 caseId 的广播函数。
+  // Worker 自己不持有订阅者集合：onEvent() 的监听器登记在 supervisor 层
+  // （caseId 维度，见 AgentSupervisor.listeners），不挂在某一次 Worker 实例
+  // 上——worker 重启（崩溃/被 stop 后重新 start）是全新的 Worker 实例，若监听
+  // 器挂在实例上就会被孤儿化，SSE 连接从此永久收不到任何后续事件；且如果
+  // onEvent() 在 worker 尚未创建时调用（浏览器先连 events、再点启动的自然顺
+  // 序），挂在实例上的写法会直接返回一个假的空订阅，整条下行通路形同虚设。
+  constructor(caseId, caseName, sessionId, dispatch) {
     this.caseId = caseId;
     this.caseName = caseName;
     this.cwd = null;
@@ -303,7 +310,7 @@ class Worker {
     this.error = null;
     this.exitInfo = null;
     this.skillsRootTmp = null;
-    this.listeners = new Set();
+    this.dispatch = dispatch;
     this.pendingRpc = new Map(); // outgoing request id -> {resolve,reject,method}
     this.pendingInteractions = new Map(); // interactionId -> record
     this.nextRpcId = 1;
@@ -318,9 +325,7 @@ class Worker {
 
   emit(type, data) {
     const event = { type, caseId: this.caseId, sessionId: this.sessionId, at: nowIso(), data };
-    for (const listener of this.listeners) {
-      try { listener(event); } catch { /* 订阅者自己的错误不影响 worker */ }
-    }
+    this.dispatch(event);
   }
 }
 
@@ -350,6 +355,7 @@ export class AgentSupervisor {
     this.resolveCaseDirectoryFn = resolveCaseDirectoryFn;
     this.actor = actor;
     this.workers = new Map(); // caseId -> Worker
+    this.listeners = new Map(); // caseId -> Set<listener>，与 worker 生命周期解耦（见 Worker 类注释）
   }
 
   // ---- 对外只读状态 ----
@@ -372,11 +378,60 @@ export class AgentSupervisor {
     };
   }
 
-  onEvent(caseId, listener) {
+  // 对外（HTTP/SSE）安全的状态投影：status() 本身仍保留 sessionId/cwd/pid
+  // 供 supervisor 内部与反查逻辑使用，但案件 drawer UI（设计稿 §5：状态徽标/
+  // 有限 assistant 文本/工具摘要/可展开错误/proposal 卡片）并不需要内部会话
+  // 绑定标识或宿主机绝对路径——这两处一旦通过 HTTP/SSE 下发就没有必要地扩
+  // 大了暴露面（虽然 session→case 的权限判断由服务端反查覆盖，不是靠隐藏
+  // sessionId 兜底，但没有理由顺手带出去）。
+  publicStatus(caseId) {
+    const full = this.status(caseId);
+    return {
+      status: full.status,
+      caseId: full.caseId,
+      caseName: full.caseName,
+      dshVersion: full.dshVersion,
+      startedAt: full.startedAt,
+      provider: full.provider,
+      model: full.model,
+      error: full.error,
+      exitInfo: full.exitInfo,
+    };
+  }
+
+  // 供路由层复用的权威"活着"判断——不要在 supervisor 之外复刻 LIVE_STATUSES
+  // 字面量集合：那样一旦这里新增/调整存活态，路由层的前置门禁就可能与真正
+  // 的判断分叉（能启动但发不出 prompt，或反之）。
+  isLive(caseId) {
     const worker = this.workers.get(caseId);
-    if (!worker) return () => {};
-    worker.listeners.add(listener);
-    return () => worker.listeners.delete(listener);
+    return !!worker && LIVE_STATUSES.has(worker.status);
+  }
+
+  onEvent(caseId, listener) {
+    let set = this.listeners.get(caseId);
+    if (!set) {
+      set = new Set();
+      this.listeners.set(caseId, set);
+    }
+    set.add(listener);
+    return () => {
+      const current = this.listeners.get(caseId);
+      if (!current) return;
+      current.delete(listener);
+      if (current.size === 0) this.listeners.delete(caseId);
+    };
+  }
+
+  // Worker.emit() 最终都经这里广播——监听器登记在 supervisor 层，不挂在某一
+  // 次 Worker 实例上，因此：(a) onEvent() 可以在 worker 尚未创建时提前订阅，
+  // 不会静默丢事件；(b) worker 崩溃/被 stop 后重新 start() 出一个全新实例，
+  // 已建立的订阅依然能收到新实例广播的事件，不会被孤儿化。
+  _dispatch(caseId, event) {
+    const set = this.listeners.get(caseId);
+    if (!set) return;
+    for (const listener of set) {
+      try { listener(event); } catch { /* 订阅者自己的错误不影响广播 */ }
+    }
   }
 
   listPendingInteractions(caseId) {
@@ -454,7 +509,7 @@ export class AgentSupervisor {
     // case_id。在 spawn 之前登记，保证子进程第一次能发起 HTTP 请求时绑定
     // 已经存在，不留任何"session 已注入子进程但服务端还查不到"的窗口。
     bindSession(sessionId, caseId);
-    const worker = new Worker(caseId, caseRow.name, sessionId);
+    const worker = new Worker(caseId, caseRow.name, sessionId, (event) => this._dispatch(caseId, event));
     worker.provider = config.provider;
     worker.model = config.model;
     worker.cwd = dirContext.caseRoot;
@@ -737,6 +792,29 @@ export class AgentSupervisor {
 
   async stopAll(reason = 'server shutdown') {
     await Promise.allSettled([...this.workers.keys()].map((caseId) => this.stop(caseId, reason)));
+  }
+
+  // 优雅关闭总时限跑满时的兜底：不再等待逐个 stop() 的完整流程（最坏
+  // 30s shutdown RPC 往返 + 10s 强杀等待），直接对所有仍存活的子进程发
+  // SIGKILL——server.js 的 gracefulShutdown() 给 stopAll() 套了一个总时限的
+  // Promise.race，跑满之后必须还有这一步真正兜底，否则 httpServer 关闭/
+  // 进程退出之后这些 worker 会变成脱离 supervisor 掌控的孤儿进程。
+  forceKillAll() {
+    for (const worker of this.workers.values()) {
+      if (worker.child && worker.child.exitCode === null) {
+        try { worker.child.kill('SIGKILL'); } catch { /* 已退出或不可 kill，忽略 */ }
+      }
+    }
+  }
+
+  // server.js 在 httpServer.listen() 的回调里、确认实际监听端口后调用这个
+  // setter，把构造时的默认值（一个可能与真实端口不符的兜底猜测，例如裸进程
+  // 模式下 PORT 未设时的 3000 vs 这里硬编码的 3007；Electron 每次随机挑一个
+  // 空闲端口，构造时更是无从得知）纠正成真实值——DSH 子进程的每一次
+  // anqi MCP 工具调用（case_folder_info/case_get/inbox_propose…）都以这个
+  // base URL 为准，猜错端口等价于子进程的每一次内部调用都 ECONNREFUSED。
+  setInternalBaseURL(url) {
+    this.internalBaseURL = url;
   }
 
   // ---- 内部：wire 协议 ----
