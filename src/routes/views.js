@@ -9,6 +9,7 @@ import { eventTypes, stageTemplates, procedures } from '../lib/vocab.js';
 import { deriveForEvent, rulesSummary } from '../lib/engine.js';
 import { llmReady } from '../lib/llm.js';
 import { releaseDueSnoozes } from '../lib/recommendations.js';
+import { agentReady } from '../agent/config.js';
 
 const r = Router();
 
@@ -42,6 +43,11 @@ r.get('/counts', (req, res) => {
     // 快录条搭这趟顺风车做特性探测：没配 key 就不渲染「整理」按钮，
     // 免得页面上摆一个点了必失败的控件（零额外请求——nav.js 本来就要拉 counts）
     llm: llmReady(),
+    // AI 助理 sidecar 同一种特性探测模式：agent_enabled 且 apiKeyEnv 指向的
+    // 环境变量确实有值才算"可用"，前端下阶段据此决定是否渲染案件 assistant
+    // drawer 入口；这里只回答布尔值，不返回 provider/model/apiKeyEnv 等任何
+    // 配置细节（那些细节走 GET /api/agent/status，且同样不含 key 值）。
+    agent: agentReady(),
   });
 });
 

@@ -1,0 +1,256 @@
+// DSH sidecar 的 HTTP/SSE 面（设计稿 §4）：案件 assistant drawer 需要的全部
+// 读/写通路都在这里；本文件自己不管理 worker 生命周期，全部转交
+// AgentSupervisor（src/agent/supervisor.js）。
+//
+// 挂载方式是工厂函数 createAgentRouter(supervisor)，不是像其它路由那样直接
+// `export default Router()`——server.js 需要持有同一个 supervisor 实例才能在
+// 进程退出时调用 stopAll()（本文件与 server.js 共用它，而不是各自 new 一个）。
+//
+// 红线落地对照（设计稿 §4 + 任务书）：
+//   - GET  /api/agent/status                       —— 只读；enabled=false 时
+//     直接返回 status:'disabled'，不触碰任何 worker/credential。
+//   - POST /api/cases/:id/agent/start               —— 转发 supervisor.start()；
+//     disabled/error 两种失败态映射成明确的 4xx/5xx，不吞成 200。
+//   - POST /api/cases/:id/agent/prompt              —— 不等待整轮完成（见下方
+//     该路由内的注释），只做同步可见的门禁校验；真正的进度/结果只经 SSE 下行。
+//   - POST /api/cases/:id/agent/cancel              —— 转发 supervisor.cancelTurn()。
+//   - GET  /api/cases/:id/agent/events              —— authenticated SSE；订阅
+//     绑定在服务端已知的 caseId 上，不接受、不使用客户端传来的任何 session id
+//     做过滤依据（设计稿 §4「不把浏览器传来的任意 session ID 当作权限依据」）。
+//   - POST /api/agent/interactions/:id/answer        —— one-shot；interactionId
+//     是唯一入参，caseId/worker 完全由服务端反查（findInteractionOwner），
+//     不信任、也不需要客户端提交 case_id/session_id；approval 的 outcome 与
+//     question 的 answer 都经过严格校验，非法/过期/已消费/跨 session/worker
+//     已退一律拒绝并审计（不含敏感值）。
+//   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
+//     （src/routes/records.js 或 today 页既有接口），本文件不新开任何模型可
+//     达的 accept API。
+import { Router } from 'express';
+import { db, audit } from '../db.js';
+import { loadAgentConfig } from '../agent/config.js';
+
+// 一次 prompt 的文本上限：不是纯粹的展示限制,也是成本/滥用防线——案件事实
+// 本身已经通过 anqi-owned MCP 工具传给模型,用户手打的这一句话没有理由超过
+// 几千字符。与 src/lib/llm.js 的 MAX_TEXT（500，快录条一句话）不是同一个
+// 场景,这里是多轮对话式 prompt,给更宽松但仍然有界的上限。
+const MAX_PROMPT_CHARS = 8000;
+// user-question 每题答案上限,防止把整篇案卷粘贴回答案里绕开"只读工具返回
+// 事实"的边界。
+const MAX_ANSWER_CHARS = 2000;
+
+const SSE_HEARTBEAT_MS = 25000; // 与 files.js 的 SSE 心跳惯例一致,穿透反代空闲超时
+
+// 案件 id 校验 + 存在性检查。转换成真正的 Number 而不是原样透传字符串——
+// AgentSupervisor 下游的 session-registry.bindSession() 对 caseId 做
+// Number.isInteger() 硬校验,传字符串会在 supervisor.start() 内部抛出未预期
+// 异常,而不是这里可控的 400。
+function mustCaseId(req, res) {
+  const caseId = Number(req.params.id);
+  if (!Number.isInteger(caseId) || caseId <= 0) {
+    res.status(400).json({ error: 'case id 非法' });
+    return null;
+  }
+  const row = db.prepare('SELECT id FROM cases WHERE id = ?').get(caseId);
+  if (!row) {
+    res.status(404).json({ error: '案件不存在' });
+    return null;
+  }
+  return caseId;
+}
+
+// prompt 路由的同步门禁用——与 supervisor.js 内部的 LIVE_STATUSES 同一组值
+// （'starting' 也算活着：supervisor.prompt() 内部会等待 readyPromise 落定,
+// 不需要这里排除）。故意不从 supervisor.js 导出该常量再复用:那是模块私有
+// 状态机的实现细节,这里只是复刻"活着"这三个字面量做一次尽力而为的前置
+// 校验,真正的权威判断永远在 supervisor.prompt() 内部。
+const LIVE_BADGES = new Set(['starting', 'ready', 'running']);
+
+// 把浏览器提交的问答答案,严格转换成 DSH user-question 协议要求的
+// { answers: [{ id, selected, custom }] } 形状(参照参考实现 driver.mjs 的
+// questionResult())。校验规则:
+//   - 数组长度必须与待答问题数一致,一一对应,不接受少答/多答;
+//   - 每个 id 必须命中且只命中一道待答问题(不允许重复 id、不允许编造 id);
+//   - 每个答案必须是非空字符串,裁剪后不超过 MAX_ANSWER_CHARS。
+// 任何一项不满足都返回 null,调用方一律按 400 处理,不做部分采纳。
+function buildQuestionAnswer(pendingQuestions, rawAnswers) {
+  if (!Array.isArray(rawAnswers) || rawAnswers.length !== pendingQuestions.length) return null;
+  const knownIds = new Set(pendingQuestions.map((q) => q.id));
+  const seen = new Set();
+  const answers = [];
+  for (const item of rawAnswers) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
+    const id = item.id;
+    if (typeof id !== 'string' || !knownIds.has(id) || seen.has(id)) return null;
+    seen.add(id);
+    const text = item.text;
+    if (typeof text !== 'string') return null;
+    const trimmed = text.trim();
+    if (!trimmed || trimmed.length > MAX_ANSWER_CHARS) return null;
+    answers.push({ id, selected: [], custom: trimmed });
+  }
+  if (seen.size !== pendingQuestions.length) return null;
+  return { answers };
+}
+
+export function createAgentRouter(supervisor) {
+  const r = Router();
+
+  // 只读:配置层可用性 + (可选)某案件当前 worker 状态。不带 case_id 时只反映
+  // 设置白名单是否合法/启用,完全不触碰 supervisor.workers——这就是冒烟脚本
+  // 验证"enabled=false 时 status 返回 disabled"的那条路径,disabled 判定
+  // 发生在任何数据库案件查询之前。
+  r.get('/agent/status', (req, res) => {
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      return res.json({ status: 'disabled', enabled: false, error: config.error || null, configured: null, worker: null });
+    }
+    const configured = { provider: config.provider, model: config.model };
+    const caseIdRaw = req.query.case_id;
+    if (caseIdRaw === undefined || caseIdRaw === '') {
+      return res.json({ status: 'stopped', enabled: true, error: null, configured, worker: null });
+    }
+    const caseId = Number(caseIdRaw);
+    if (!Number.isInteger(caseId) || caseId <= 0) return res.status(400).json({ error: 'case_id 非法' });
+    const caseRow = db.prepare('SELECT id FROM cases WHERE id = ?').get(caseId);
+    if (!caseRow) return res.status(404).json({ error: '案件不存在' });
+    const worker = supervisor.status(caseId);
+    res.json({ status: worker.status, enabled: true, error: null, configured, worker });
+  });
+
+  r.post('/cases/:id/agent/start', async (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    let result;
+    try {
+      result = await supervisor.start(caseId);
+    } catch {
+      // supervisor.start() 已经把几乎所有已知失败路径转成 resolved 值
+      // （disabled/error 状态对象）;这里的 catch 只兜底真正意外抛出的异常,
+      // 不把内部错误细节(可能含路径/堆栈)吐回客户端。
+      return res.status(500).json({ error: 'AI 助理启动失败', code: 'internal_error' });
+    }
+    if (result.status === 'disabled') {
+      return res.status(409).json({ error: result.error || 'AI 助理未启用', code: 'agent_disabled', status: result.status });
+    }
+    if (result.status === 'error') {
+      return res.status(502).json({ error: result.error || 'AI 助理启动失败', code: 'agent_start_failed', status: result.status });
+    }
+    res.json(result);
+  });
+
+  r.post('/cases/:id/agent/prompt', (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    const raw = req.body?.text;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (!text) return res.status(400).json({ error: 'text 不能为空' });
+    if (text.length > MAX_PROMPT_CHARS) {
+      return res.status(400).json({ error: `text 过长（上限 ${MAX_PROMPT_CHARS} 字符）` });
+    }
+    const badge = supervisor.status(caseId).status;
+    if (!LIVE_BADGES.has(badge)) {
+      return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: 'worker_not_running', status: badge });
+    }
+    audit(req.actor, 'agent-prompt', 'agent-worker', caseId, `chars=${text.length}`);
+    // 不 await 整轮完成:一次 turn 可能耗时到 supervisor 的 turnTimeoutMs
+    // （默认 10 分钟）,HTTP 请求/反向代理/浏览器都不适合被这么长的调用阻塞。
+    // 真正的进度与最终结果只经由 SSE 的 turn/start ... turn/end 事件下行
+    // （GET .../agent/events）;这里做的只是上面这行同步的、尽力而为的门禁
+    // 校验——如果 worker 恰好在这一行判断之后、supervisor.prompt() 真正执行
+        // 之前退出,turn 会在 supervisor 内部落一个 fail 态,只是不会有对应的
+    // turn/start 事件,调用方应以 SSE/status 而非这个 202 作为权威依据。
+    supervisor.prompt(caseId, text).catch(() => { /* 失败结果经 turn/end 广播,这里只防 unhandledRejection */ });
+    res.status(202).json({ accepted: true });
+  });
+
+  r.post('/cases/:id/agent/cancel', (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    const cancelled = supervisor.cancelTurn(caseId, `cancelled by ${req.actor}`);
+    audit(req.actor, 'agent-cancel', 'agent-worker', caseId, cancelled ? 'ok' : 'no_active_turn');
+    res.json({ cancelled });
+  });
+
+  // authenticated SSE。服务端按 case 过滤:supervisor.onEvent(caseId, ...)
+  // 只转发这一个 case 的 worker 广播的事件,不接受、也不需要客户端提交任何
+  // session id 做筛选依据——设计稿 §4 的「不把浏览器传来的任意 session ID
+  // 当作权限依据」在这里的落地就是压根不读这样一个参数。
+  r.get('/cases/:id/agent/events', (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+
+    // 首帧补一份即时状态快照:onEvent() 的监听器可能在 worker 已经经历过若干
+    // 次状态跃迁之后才挂上(例如 worker 早已 ready,'worker/ready' 广播已经
+    // 错过),不补发这一帧,前端在连接建立瞬间只能拿到"未知",要等下一次真正
+    // 的事件才恢复准确状态。
+    send('status', supervisor.status(caseId));
+
+    const unsubscribe = supervisor.onEvent(caseId, (event) => send(event.type, event));
+
+    const hb = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
+
+    req.on('close', () => {
+      clearInterval(hb);
+      unsubscribe();
+      res.end();
+    });
+  });
+
+  // one-shot、fail-closed 的 approval/question 回答面。interactionId 是唯一
+  // 入参:caseId/worker/该交互的类型与待答问题,全部由服务端反查得到,不接受
+  // 任何客户端提交的 case_id/session_id/cwd(设计稿 §4)。
+  r.post('/agent/interactions/:id/answer', (req, res) => {
+    const interactionId = String(req.params.id || '');
+    const owner = supervisor.findInteractionOwner(interactionId);
+    if (!owner) {
+      audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, 'not_found_or_expired');
+      return res.status(404).json({ error: '该交互不存在或已过期', code: 'interaction_not_found' });
+    }
+    const { caseId, record } = owner;
+    const body = req.body || {};
+
+    if (record.type === 'approval') {
+      // outcome 的合法取值(allowed-once/rejected)由 supervisor.resolveApproval()
+      // 内部的 APPROVAL_EXTERNAL_OUTCOMES 白名单校验——"受限 outcome"这条红线
+      // 的权威判断留在 supervisor 一处,这里不重复维护第二份白名单。
+      const outcome = body.outcome;
+      const result = supervisor.resolveApproval(caseId, interactionId, outcome);
+      if (!result.ok) {
+        audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} approval:${result.reason}`);
+        return res.status(result.reason === 'invalid_outcome' ? 400 : 409).json({ error: '提交审批结果失败', code: result.reason });
+      }
+      audit(req.actor, 'agent-interaction-answer', 'agent-interaction', null, `case=${caseId} approval:${outcome}`);
+      return res.json({ ok: true });
+    }
+
+    if (record.type === 'question') {
+      const built = buildQuestionAnswer(record.questions, body.answers);
+      if (!built) {
+        audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} question:invalid_answer`);
+        return res.status(400).json({ error: '答案格式不合法', code: 'invalid_answer' });
+      }
+      const result = supervisor.resolveQuestion(caseId, interactionId, built);
+      if (!result.ok) {
+        audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} question:${result.reason}`);
+        return res.status(409).json({ error: '提交答案失败', code: result.reason });
+      }
+      audit(req.actor, 'agent-interaction-answer', 'agent-interaction', null, `case=${caseId} question`);
+      return res.json({ ok: true });
+    }
+
+    return res.status(500).json({ error: '未知的交互类型' });
+  });
+
+  return r;
+}
+
+export default createAgentRouter;

@@ -655,6 +655,23 @@ export class AgentSupervisor {
     return true;
   }
 
+  // 只读反查：interactionId（supervisor 生成的随机 UUID，one-shot，只在其
+  // 所属 worker 的 pendingInteractions 表里存在）属于哪个 case/worker。
+  // 设计稿 §4「服务端从已存的 session binding 取得 case/agent，不信任客户端
+  // 提交的 case/cwd」在 HTTP 层的落地——answer 路由只收到不透明的
+  // interactionId，绝不接受调用方自报的 case_id；这里扫描全部存活 worker
+  // （数量=案件数，读操作，代价可忽略）来确定归属，找不到就是找不到，不
+  // 兜底猜测。
+  findInteractionOwner(interactionId) {
+    if (typeof interactionId !== 'string' || !interactionId) return null;
+    for (const worker of this.workers.values()) {
+      if (worker.pendingInteractions.has(interactionId)) {
+        return { caseId: worker.caseId, worker, record: worker.pendingInteractions.get(interactionId) };
+      }
+    }
+    return null;
+  }
+
   // ---- approval / user-question：one-shot、fail-closed ----
   // 两个方法都先查 worker 是否仍处于 LIVE_STATUSES：worker 一旦终态化
   // （stopped/crashed/error/disabled）就必须拒绝，不能让一条迟到的审批被写进

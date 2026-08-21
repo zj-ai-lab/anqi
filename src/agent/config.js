@@ -20,8 +20,13 @@
 //     保留前缀/名称——见下面 isReservedEnvName 的注释。
 import { db } from '../db.js';
 
-const ALLOWED_PROVIDERS = new Set(['deepseek-official', 'openai-completions']);
-const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+// 以下几个常量/函数均导出：src/routes/settings.js 的 agent_* 白名单 PUT 校验
+// 与这里的 loadAgentConfig() 必须共用同一套规则（provider 枚举、apiKeyEnv
+// 格式与保留名、baseURL 协议/凭据/内网/官方域策略），不允许两处各写一份、
+// 悄悄跑偏——那样迟早出现"设置页存进去的值合法，但 supervisor 启动时又被
+// 拒绝"或反过来"设置页挡不住、只能在 spawn 前才发现"的不一致。
+export const ALLOWED_PROVIDERS = new Set(['deepseek-official', 'openai-completions']);
+export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 // apiKeyEnv 保留名黑名单：这个键只应该指向"模型 provider 自己的 key 变量
 // 名"，绝不能被配成 anqi 自身进程里已经存在的内部/宿主变量名——否则
@@ -36,7 +41,7 @@ const RESERVED_ENV_NAMES = new Set([
   'PWD', 'NODE_OPTIONS', 'NODE_ENV', 'SystemRoot', 'windir',
 ]);
 
-function isReservedEnvName(name) {
+export function isReservedEnvName(name) {
   const upper = name.toUpperCase();
   if (RESERVED_ENV_NAMES.has(upper)) return true;
   return RESERVED_ENV_PREFIXES.some((prefix) => upper.startsWith(prefix));
@@ -97,6 +102,35 @@ function isPrivateOrLoopbackHost(hostname) {
   return false;
 }
 
+// baseURL 的完整校验（协议、credential-free、内网/回环拦截、deepseek-official
+// 官方域钉死）。loadAgentConfig() 与设置路由（src/routes/settings.js 的
+// agent_base_url PUT 校验）共用这一份实现——不允许两处独立实现同一条红线、
+// 校验尺度各自漂移。provider 传空字符串/未知值时按"不给 deepseek-official
+// 默认值、也不做官方域强校验"处理，交由调用方的 provider 校验先行判空。
+export function validateBaseURL(baseURLRaw, provider) {
+  let value = String(baseURLRaw ?? '').trim();
+  if (!value && provider === 'deepseek-official') value = 'https://api.deepseek.com';
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return { ok: false, error: 'baseURL 必须是合法的绝对 URL' };
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    return { ok: false, error: 'baseURL 必须使用 http 或 https 协议' };
+  }
+  if (parsed.username || parsed.password) {
+    return { ok: false, error: 'baseURL 不得包含凭据（userinfo）' };
+  }
+  if (isPrivateOrLoopbackHost(parsed.hostname)) {
+    return { ok: false, error: 'baseURL 不得指向内网/回环地址' };
+  }
+  if (provider === 'deepseek-official' && parsed.hostname.toLowerCase() !== DEEPSEEK_OFFICIAL_HOST) {
+    return { ok: false, error: `deepseek-official 的 baseURL 只允许 ${DEEPSEEK_OFFICIAL_HOST}` };
+  }
+  return { ok: true, parsed, normalized: parsed.toString().replace(/\/$/, '') };
+}
+
 // settings 表里的键名。设置路由（下阶段）应该只 PUT/GET 这五个键，其余一律丢弃
 // ——与 src/routes/settings.js 现有的白名单模式保持一致。
 export const AGENT_SETTINGS_KEYS = Object.freeze({
@@ -144,26 +178,9 @@ export function loadAgentConfig() {
     return { enabled: false, error: 'apiKeyEnv 不得使用 anqi 自身的保留变量名/前缀' };
   }
 
-  let baseURLRaw = readSetting(AGENT_SETTINGS_KEYS.baseURL).trim();
-  if (!baseURLRaw && provider === 'deepseek-official') baseURLRaw = 'https://api.deepseek.com';
-  let parsed;
-  try {
-    parsed = new URL(baseURLRaw);
-  } catch {
-    return { enabled: false, error: 'baseURL 必须是合法的绝对 URL' };
-  }
-  if (!['http:', 'https:'].includes(parsed.protocol)) {
-    return { enabled: false, error: 'baseURL 必须使用 http 或 https 协议' };
-  }
-  if (parsed.username || parsed.password) {
-    return { enabled: false, error: 'baseURL 不得包含凭据（userinfo）' };
-  }
-  if (isPrivateOrLoopbackHost(parsed.hostname)) {
-    return { enabled: false, error: 'baseURL 不得指向内网/回环地址' };
-  }
-  if (provider === 'deepseek-official' && parsed.hostname.toLowerCase() !== DEEPSEEK_OFFICIAL_HOST) {
-    return { enabled: false, error: `deepseek-official 的 baseURL 只允许 ${DEEPSEEK_OFFICIAL_HOST}` };
-  }
+  const baseURLResult = validateBaseURL(readSetting(AGENT_SETTINGS_KEYS.baseURL), provider);
+  if (!baseURLResult.ok) return { enabled: false, error: baseURLResult.error };
+  const parsed = baseURLResult.parsed;
 
   return {
     enabled: true,
@@ -176,4 +193,15 @@ export function loadAgentConfig() {
     model,
     apiKeyEnv,
   };
+}
+
+// /api/counts 的特性探测用——与 src/lib/llm.js 的 llmReady() 同一种模式：
+// 只回答"当前是否可用"这一个布尔值，供前端决定要不要渲染入口按钮，绝不
+// 把 apiKeyEnv 指向的实际 key 值透出去（这里只做 `!!process.env[name]` 存在性
+// 判断，从不读取、缓存或返回该值本身）。enabled=false 或白名单字段本身非法
+// 时，跟 loadAgentConfig() 一样直接判 false，不单独再报错误详情。
+export function agentReady() {
+  const config = loadAgentConfig();
+  if (!config.enabled) return false;
+  return !!process.env[config.apiKeyEnv];
 }
