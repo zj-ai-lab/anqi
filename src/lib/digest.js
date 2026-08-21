@@ -2,9 +2,18 @@ import { db } from '../db.js';
 import { todayCN, addDays, diffDays } from './dates.js';
 import { releaseDueSnoozes } from './recommendations.js';
 
-// 看板/digest 单一构建器：/api/digest 与 /internal/digest 共用，
-// 分桶口径与 litigation-brief 一致：🔴≤3日(含逾期) / 🟠4–7日 / 🟡8–30日+无在追期限 / 📅7日内开庭。
-export function buildDigest() {
+// 看板/digest 单一构建器：/api/digest 与 /internal/digest 共用（这两条路都不传
+// caseId，行为与此前完全一致），分桶口径与 litigation-brief 一致：🔴≤3日(含逾期)
+// / 🟠4–7日 / 🟡8–30日+无在追期限 / 📅7日内开庭。
+//
+// caseId（可选）：/internal/agent-digest 专用——DSH agent worker 是单案 worker，
+// 绝不该看到其它案件的名字/期限/待办（设计稿 §2/§4 的 session 绑定同一条精神）。
+// 这里不重写每条 SQL 各自加 WHERE（那样任何一条漏加都是一次静默的越权读），而是
+// 复用同一份全量查询结果，按 case_id（noDeadlineCases 用它自己的 c.id 别名 id）
+// 在 JS 侧统一过滤一遍——所有分桶字段名对齐同一套 case_id/id 字段，漏改一处会在
+// 探针里直接读到别案名字，比漏加一条 SQL WHERE 更容易在审查里发现。counts 单独
+// 按 caseId 重新聚合，不从全量 counts 派生（那是全所口径，对单案没有意义）。
+export function buildDigest(caseId = null) {
   const today = todayCN();
   const d3 = addDays(today, 3);
   const d7 = addDays(today, 7);
@@ -102,9 +111,18 @@ export function buildDigest() {
   // 不设时间下限：跨月逾期常驻，不会月初「断崖消失」（与 digest 心跳纪律一致）。
   // 投影收窄：digest 会透到 /internal（LLM 读取面），只出方向+姓名+金额+月份+案件名——
   // note 等自由文本不出此面，也不 JOIN contacts 颗粒字段。
+  // s.case_id 必须留在这份收窄投影里：它是 buildDigest(caseId) 单案投影唯一的过滤
+  // 依据（见文件头注释）。此前这里是整个 digest 里唯一一处逐列点名、又恰好漏掉
+  // case_id 的分桶（其余分桶都走 d.*/e.*/t.*/f.*，case_id 自带），结果是单案投影里
+  // row.case_id 恒为 undefined、整桶被过滤成空：方向上是 fail-closed（不会漏出别案
+  // 的分成），但绑定案自己的待分成也永远到不了 agent，而且这种「静默变空」不会被
+  // 「响应里不得出现他案名字」那一类断言发现——所以 tools/test-agent-session-read-http.js
+  // 里对每个分桶都同时断言「自己案的行在」与「他案的行不在」。case_id 是整数主键，
+  // 不含当事人颗粒信息，同一行已经出的 case_name 比它更具指向性，加它不放宽本投影
+  // 的对外口径。
   const monthKey = today.slice(0, 7);
   const sharesPending = db.prepare(
-    `SELECT s.id, s.direction, s.counterpart, s.amount, s.due_month, s.external_case,
+    `SELECT s.id, s.case_id, s.direction, s.counterpart, s.amount, s.due_month, s.external_case,
             c.name AS case_name
      FROM fee_shares s LEFT JOIN cases c ON c.id = s.case_id
      WHERE s.is_void = 0 AND s.cancelled_at = ''
@@ -119,7 +137,7 @@ export function buildDigest() {
     unpaid_fees: db.prepare("SELECT COALESCE(SUM(amount),0) s FROM fee_items WHERE status = 'unpaid' AND amount IS NOT NULL").get().s,
   };
 
-  return {
+  const full = {
     date: today,
     counts,
     red: overdueAndRed,          // 🔴 逾期 + ≤3 日
@@ -132,5 +150,31 @@ export function buildDigest() {
     all_tasks: allOpenTasks,     // ✅ 全部未结待办（兜底，含无日期「未排期」项）
     fees_due: feesDue,           // 💰 待收款（有到期日、30 日内或逾期）
     shares_pending: sharesPending, // 🤝 待分成（本月+逾期）
+  };
+  if (caseId == null) return full;
+
+  // 单案投影：所有分桶按 case_id 过滤；noDeadlineCases 的行本身就是 case 行，
+  // 用它自己的 id 字段比对。counts 按同一个 caseId 重新聚合，不派生自全量口径。
+  const byCaseId = (rows) => rows.filter((row) => row.case_id === caseId);
+  return {
+    date: full.date,
+    counts: {
+      active_cases: db.prepare("SELECT COUNT(*) c FROM cases WHERE status='active' AND id=?").get(caseId).c,
+      inbox_pending: db.prepare("SELECT COUNT(*) c FROM inbox WHERE status='pending' AND case_id=?").get(caseId).c,
+      open_tasks: db.prepare("SELECT COUNT(*) c FROM tasks WHERE status='open' AND case_id=?").get(caseId).c,
+      unpaid_fees: db.prepare(
+        "SELECT COALESCE(SUM(amount),0) s FROM fee_items WHERE status='unpaid' AND amount IS NOT NULL AND case_id=?"
+      ).get(caseId).s,
+    },
+    red: byCaseId(full.red),
+    week: byCaseId(full.week),
+    watch: byCaseId(full.watch),
+    no_deadline_cases: full.no_deadline_cases.filter((row) => row.id === caseId),
+    hearings: byCaseId(full.hearings),
+    today_tasks: byCaseId(full.today_tasks),
+    week_tasks: byCaseId(full.week_tasks),
+    all_tasks: byCaseId(full.all_tasks),
+    fees_due: byCaseId(full.fees_due),
+    shares_pending: byCaseId(full.shares_pending),
   };
 }

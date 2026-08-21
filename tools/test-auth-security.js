@@ -128,6 +128,34 @@ auth.internalAuth({ get(name) {
 } }, responseDouble(), () => { internalAllowed = true; });
 assert.equal(internalAllowed, true, '正确 internal key 应放行');
 
+// ---- R3：ANJIAN_INTERNAL_KEY_SOURCE=electron-auto 时，同一份 key 只能打开
+//      agent 系列端点，其余 /internal/* 一律 403（electron/main.js 每次启动
+//      自动生成的 key 不是用户显式选择开放整套 /internal 自动化面）----
+process.env.ANJIAN_INTERNAL_KEY_SOURCE = 'electron-auto';
+const electronAutoRequest = (reqPath) => ({
+  path: reqPath,
+  get(name) { return name === 'X-Anjian-Key' ? 'separate-test-key' : undefined; },
+});
+
+for (const allowedPath of ['/agent-proposals', '/agent-case-view', '/agent-digest']) {
+  let allowed = false;
+  auth.internalAuth(electronAutoRequest(allowedPath), responseDouble(), () => { allowed = true; });
+  assert.equal(allowed, true, `electron-auto key 应放行 agent 端点 ${allowedPath}`);
+}
+
+for (const blockedPath of ['/digest', '/cases', '/cases/byname/张三诉李四', '/inbox']) {
+  const blockedResponse = responseDouble();
+  auth.internalAuth(electronAutoRequest(blockedPath), blockedResponse, () => assert.fail(`electron-auto key 不应放行 ${blockedPath}`));
+  assert.equal(blockedResponse.statusCode, 403);
+  assert.equal(blockedResponse.body.code, 'electron_auto_key_scoped');
+}
+
+delete process.env.ANJIAN_INTERNAL_KEY_SOURCE;
+// 显式配置的 key（无来源标记）行为不受影响：非 agent 端点应恢复放行。
+let plainKeyStillAllowed = false;
+auth.internalAuth(electronAutoRequest('/digest'), responseDouble(), () => { plainKeyStillAllowed = true; });
+assert.equal(plainKeyStillAllowed, true, '未标记来源的显式 internal key 不应被这条 electron-auto 收窄规则误伤');
+
 delete process.env.ANJIAN_INTERNAL_KEY;
 process.env.ANJIAN_UNSAFE_NO_AUTH = '1';
 let unsafeInternalAllowed = false;

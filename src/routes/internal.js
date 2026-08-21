@@ -14,12 +14,13 @@ r.get('/cases', (req, res) => {
   res.json(db.prepare("SELECT id, name, procedure, stage, status, case_no FROM cases ORDER BY (status='active') DESC, name").all());
 });
 
-r.get('/cases/byname/:name', (req, res) => {
-  releaseDueSnoozes();
-  const c = db.prepare('SELECT * FROM cases WHERE name = ?').get(req.params.name);
-  if (!c) return res.status(404).json({ error: '案件不存在' });
-  // ⚠️ 铁律 9 防回归：本响应面向 LLM，永不加入 contacts（电话/身份证）等当事人颗粒字段。
-  res.json({
+// /cases/byname/:name 与 /agent-case-view 共用同一份案件全景查询——两条路由的
+// 区别只在"案件怎么来"（前者信任 name 参数、面向外部自动化；后者按 session
+// 反查、面向 DSH agent worker），返回形状必须逐字段一致，不允许两处各写一份、
+// 悄悄跑偏。⚠️ 铁律 9 防回归：本响应面向 LLM，永不加入 contacts（电话/身份证）
+// 等当事人颗粒字段。
+function buildCaseView(c) {
+  return {
     case: c,
     events: db.prepare('SELECT * FROM events WHERE case_id = ? ORDER BY occurred_on DESC').all(c.id),
     deadlines: db.prepare('SELECT * FROM deadlines WHERE case_id = ? ORDER BY due_on').all(c.id),
@@ -35,7 +36,53 @@ r.get('/cases/byname/:name', (req, res) => {
     ).all(c.id).map((row) => {
       try { return { ...row, payload: JSON.parse(row.payload) }; } catch { return row; }
     }),
-  });
+  };
+}
+
+// header 优先、query 兜底：DSH 插件用 header 传（不落 URL/访问日志的 query
+// string），黑盒探针/手工调试用 query 也能测。两者都缺时返回空串，由调用方
+// 统一判 400——不在这里就下判断，保持与 /agent-proposals 对 session_id 的校验
+// 尺度一致（都在路由体里判断、都走同一套错误码）。
+function sessionIdFromRequest(req) {
+  const header = req.get('X-Anjian-Session-Id');
+  if (typeof header === 'string' && header.trim()) return header.trim();
+  const query = req.query?.session_id;
+  if (typeof query === 'string' && query.trim()) return query.trim();
+  return '';
+}
+
+r.get('/cases/byname/:name', (req, res) => {
+  releaseDueSnoozes();
+  const c = db.prepare('SELECT * FROM cases WHERE name = ?').get(req.params.name);
+  if (!c) return res.status(404).json({ error: '案件不存在' });
+  res.json(buildCaseView(c));
+});
+
+// DSH agent 专用只读面：session_id 由 supervisor 固定注入 worker env，服务端按
+// session-registry 反查绑定 case——与 /agent-proposals 同一条信任规则（body/
+// header 里的 session_id 只是"查哪个 session"的钥匙，caseId 绝不来自请求方
+// 自报的任何字段）。取代插件此前直接打 /internal/cases/byname/:name 的自由
+// name 参数：DSH worker 天生单案，不该、也不需要能读到任意案件名下的数据。
+r.get('/agent-case-view', (req, res) => {
+  const sessionId = sessionIdFromRequest(req);
+  if (!sessionId) return res.status(400).json({ error: '缺少 session_id', code: 'session_id_invalid' });
+  const caseId = caseIdForSession(sessionId);
+  if (!caseId) return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝读取', code: 'session_not_bound' });
+  releaseDueSnoozes();
+  const c = db.prepare('SELECT * FROM cases WHERE id = ?').get(caseId);
+  if (!c) return res.status(404).json({ error: '案件不存在' });
+  res.json(buildCaseView(c));
+});
+
+// DSH agent 专用 digest：同样按 session 反查绑定 case，buildDigest(caseId) 只
+// 返回该案的分桶行，不像 /internal/digest 那样是全所口径——agent worker 不该
+// 看到别的案件名字出现在 red/week/watch/hearings/……任何一个桶里。
+r.get('/agent-digest', (req, res) => {
+  const sessionId = sessionIdFromRequest(req);
+  if (!sessionId) return res.status(400).json({ error: '缺少 session_id', code: 'session_id_invalid' });
+  const caseId = caseIdForSession(sessionId);
+  if (!caseId) return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝读取', code: 'session_not_bound' });
+  res.json(buildDigest(caseId));
 });
 
 r.post('/inbox', (req, res) => {

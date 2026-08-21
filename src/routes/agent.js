@@ -182,6 +182,14 @@ export function createAgentRouter(supervisor) {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
 
+    // config.enabled=false 时与 GET /api/agent/status 用同一个判定短路：连接
+    // 仍然建立（前端不需要区分"没配置"和"网络失败"两种连不上），但首帧直接
+    // 下发 status:'disabled'，不触碰 supervisor.publicStatus()/worker 状态——
+    // enabled=false 时本来就不可能有存活 worker,但语义上仍应该和 REST 的
+    // /api/agent/status 一致,不能让 SSE 这条平行路径在同一份配置下给出不同
+    // 判断(例如误报 'stopped' 而不是 'disabled')。
+    const config = loadAgentConfig();
+
     res.writeHead(200, {
       'Content-Type': 'text/event-stream; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -191,6 +199,13 @@ export function createAgentRouter(supervisor) {
 
     const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
 
+    if (!config.enabled) {
+      send('status', { status: 'disabled', caseId, error: config.error || null });
+      const hb = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
+      req.on('close', () => { clearInterval(hb); res.end(); });
+      return;
+    }
+
     // 首帧补一份即时状态快照:onEvent() 的监听器可能在 worker 已经经历过若干
     // 次状态跃迁之后才挂上(例如 worker 早已 ready,'worker/ready' 广播已经
     // 错过),不补发这一帧,前端在连接建立瞬间只能拿到"未知",要等下一次真正
@@ -198,15 +213,19 @@ export function createAgentRouter(supervisor) {
     send('status', supervisor.publicStatus(caseId));
 
     // 转发的每一帧也要走同一条脱敏尺度:Worker.emit() 组装的内部事件形状是
-    // { type, caseId, sessionId, at, data }——sessionId 是 supervisor 侧
-    // session→case 登记表的键(见 src/agent/session-registry.js),属于上面
+    // { type, caseId, sessionId, at, origin, data }——sessionId 是 supervisor
+    // 侧 session→case 登记表的键(见 src/agent/session-registry.js),属于上面
     // publicStatus() 刻意不下发的那一类内部标识,不能因为它换了一条通路
     // (事件而不是状态快照)就原样广播出去。data 已经在 supervisor 侧逐叶子
-    // 做过 secret redaction + 长度截断,这里只做字段投影,不重复过滤。
+    // 做过 secret redaction + 长度截断,这里只做字段投影,不重复过滤。origin
+    // ('supervisor'/'wire')随字段透出,供前端/探针区分事件来源可信度——
+    // wire 侧 type 撞名时已经在 supervisor 侧被重写成 wire/<type>(见
+    // supervisor.js 的 namespaceWireEventType()),这里只是把标记透传出去。
     const unsubscribe = supervisor.onEvent(caseId, (event) => send(event.type, {
       type: event.type,
       caseId: event.caseId,
       at: event.at,
+      origin: event.origin,
       data: event.data,
     }));
 

@@ -1,30 +1,42 @@
 // anqi 领域工具（preset-owned，只在 dsh-agent 会话 scope 里可见）。
 //
-// 移植自 anqi-spike-dsh 的 plugins/dsh-anqi/index.js，三个工具名和白名单字段
-// 保持不变：anqi_case_get / anqi_digest 原样（contacts 永不出现在返回里，见
-// CASE_FIELDS 等白名单常量——铁律 9 防回归）。唯一改造的是 anqi_inbox_propose：
+// 移植自 anqi-spike-dsh 的 plugins/dsh-anqi/index.js，白名单字段常量
+// （CASE_FIELDS 等，contacts 永不出现在返回里——铁律 9 防回归）保持不变；三个
+// 工具的入口全部改成 session 绑定端点，不再有任何自由参数能选择读哪个案件：
 //
-//   - 打的入口从 /internal/inbox 换成 /internal/agent-proposals（设计稿 §2：
-//     agent 提案是任意条数的具体待办，不是 /internal/inbox 服务的「每案一条
-//     下一步」周期检视——两者共用一个入口会把提案错误地去重成同一条，参见
-//     spike REPORT.md §12.5 第 1 点的真实复现）。
-//   - 不再从模型参数里读 case_name：案件绑定必须由 supervisor 产生、不能从
-//     模型正文推断（设计稿 §2「case_id：由 supervisor 的固定案件绑定产生，
-//     不从模型正文推断」）。本 worker 天生就是单案 worker（cwd 已经固定在
-//     该案件夹），所以工具本身不需要案件参数；真正的 case 绑定由服务端在
-//     /internal/agent-proposals 里按 supervisor 已登记的 session_id 反查得到
-//     ——同一条原则见设计稿 §4「服务端从已存的 session binding 取得
-//     case/agent，不信任客户端提交的 case/cwd」，approval 和 proposal 走的是
-//     同一条信任规则。
-//   - proposal_id 由本工具在每次 execute() 里生成一次（crypto.randomUUID()），
-//     它是幂等主键：同一次工具调用内的 HTTP 重试复用同一个 proposal_id，不同
-//     的工具调用即使 title 相同也各自成一条独立建议（设计稿 §2）。
+//   - anqi_case_get：不再接受模型可控的 `name` 参数，改打 /internal/
+//     agent-case-view（无参数，服务端按 session_id 反查绑定 case）。此前的
+//     形状（`name` 命中任意案件名）等于让模型可以读到当前案件之外任何一个
+//     案件的全景——一个单案 worker 完全不需要这项能力，反而是越权读的现成
+//     入口。
+//   - anqi_digest：不再打全所口径的 /internal/digest（会把别的案件名字混
+//     进 red/week/watch/hearings 等分桶），改打 /internal/agent-digest——
+//     服务端按 session_id 反查绑定 case 后，只返回该案自己的分桶行。
+//   - anqi_inbox_propose：入口是 /internal/agent-proposals（与 /internal/inbox
+//     分开，不复用其语义、不混入 case.next_action——agent 提案是任意条数的
+//     具体待办，不是 /internal/inbox 服务的「每案一条下一步」周期检视，两者
+//     共用一个入口会把提案错误地去重成同一条，参见 spike REPORT.md §12.5
+//     第 1 点的真实复现）。
+//
+// 三个工具共同的信任规则（设计稿 §2「case_id：由 supervisor 的固定案件绑定
+// 产生，不从模型正文推断」/ §4「服务端从已存的 session binding 取得
+// case/agent，不信任客户端提交的 case/cwd」）：案件绑定只能来自 supervisor
+// 固定注入的 session_id，本插件从不在任何工具参数里暴露"选案件"的能力；真正
+// 的 case 绑定由服务端在 /internal/agent-case-view、/internal/agent-digest、
+// /internal/agent-proposals 三处一致地按 session_id 反查得到。
+//
+//   - anqi_inbox_propose 的 proposal_id 由本工具在每次 execute() 里生成一次
+//     （crypto.randomUUID()），它是幂等主键：同一次工具调用内的 HTTP 重试复用
+//     同一个 proposal_id，不同的工具调用即使 title 相同也各自成一条独立建议
+//     （设计稿 §2）。
 //   - source_ref 只携带可审计的 session/call 关联 id，不携带完整案卷正文或
 //     任何密钥。
 //
-// /internal/agent-proposals 已在 src/routes/internal.js 落地，请求形状（session_id
-// /proposal_id/source_ref/payload 四个字段名）必须与那里的白名单逐字一致——两边
-// 一旦漂移，模型每次调 anqi_inbox_propose 都会拿到 400。
+// 三个端点均已在 src/routes/internal.js 落地：agent-case-view/agent-digest
+// 只认 header（`X-Anjian-Session-Id`，本插件的写法）或 query 里的 session_id，
+// agent-proposals 的请求形状（session_id/proposal_id/source_ref/payload 四个
+// 字段名）必须与那里的白名单逐字一致——两边一旦漂移，模型每次调工具都会拿到
+// 400/403。
 import { randomUUID } from 'node:crypto';
 import { isIP } from 'node:net';
 import { defineTool } from '@deepseek-ai/dsh-tools';
@@ -150,7 +162,7 @@ export function apply(ctx, config = {}) {
   // 这两个只读工具在还没接好 supervisor session 注入的过渡期里也被拖累失败。
   const agentSessionIdEnv = String(config.sessionIdEnv || 'ANQI_AGENT_SESSION_ID');
 
-  async function request(pathname, { method = 'GET', body, signal } = {}) {
+  async function request(pathname, { method = 'GET', body, signal, headers: extraHeaders } = {}) {
     const internalKey = process.env[internalKeyEnv];
     if (!internalKey) throw new Error(`${internalKeyEnv} is not set`);
 
@@ -160,6 +172,7 @@ export function apply(ctx, config = {}) {
       headers: {
         'X-Anjian-Key': internalKey,
         'X-Anjian-Actor': 'dsh-agent',
+        ...(extraHeaders || {}),
         ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
@@ -180,14 +193,8 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(defineTool({
     name: 'anqi_case_get',
-    description: 'Read the whitelisted case facts, events, deterministic deadlines, tasks, worklog, and recent recommendations for one exact anqi case name. No contacts are returned.',
-    parameters: {
-      name: {
-        type: 'string',
-        required: true,
-        description: 'Exact anqi case name.',
-      },
-    },
+    description: 'Read the whitelisted case facts, events, deterministic deadlines, tasks, worklog, and recent recommendations for the one anqi case this session is bound to. No contacts are returned, and no other case can be selected or read.',
+    parameters: {},
     output: {
       schema: {
         type: 'object',
@@ -204,12 +211,15 @@ export function apply(ctx, config = {}) {
       },
       render: renderJson,
     },
-    async execute(args, exec) {
+    async execute(_args, exec) {
       exec.signal.throwIfAborted();
-      const caseName = String(args.name || '').trim();
-      if (!caseName) throw new Error('case name is required');
-      const value = await request(`/internal/cases/byname/${encodeURIComponent(caseName)}`, {
+      // 案件绑定不读模型参数：见文件头注释——session_id 由 supervisor 固定
+      // 注入，服务端按自己登记的 session→case 绑定反查 case_id，本工具没有
+      // 任何参数能选择读哪个案件。
+      const sessionId = requiredEnv(agentSessionIdEnv);
+      const value = await request('/internal/agent-case-view', {
         signal: exec.signal,
+        headers: { 'X-Anjian-Session-Id': sessionId },
       });
       return sanitizeCasePayload(value);
     },
@@ -217,7 +227,7 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(defineTool({
     name: 'anqi_digest',
-    description: 'Read the whitelisted anqi digest, including near deadlines, hearings, open tasks, fees due, and summary counts.',
+    description: 'Read the whitelisted anqi digest scoped to the one case this session is bound to, including near deadlines, hearings, open tasks, fees due, and summary counts. Other cases never appear in the result.',
     parameters: {},
     output: {
       schema: {
@@ -242,7 +252,12 @@ export function apply(ctx, config = {}) {
     },
     async execute(_args, exec) {
       exec.signal.throwIfAborted();
-      return sanitizeDigest(await request('/internal/digest', { signal: exec.signal }));
+      const sessionId = requiredEnv(agentSessionIdEnv);
+      const value = await request('/internal/agent-digest', {
+        signal: exec.signal,
+        headers: { 'X-Anjian-Session-Id': sessionId },
+      });
+      return sanitizeDigest(value);
     },
   }));
 

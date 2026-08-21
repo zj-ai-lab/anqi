@@ -437,6 +437,27 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// 事件命名空间隔离（R-M2）：supervisor 自己产生的生命周期事件（worker/ready、
+// turn/start、turn/end、interaction/pending、interaction/expired、worker/exit、
+// stderr、protocol-error、notification）与子进程 wire 侧上报的 session.event
+// 事件共用同一条 emit() → SSE 广播通路，但 `type` 字段的可信度完全不同：前者
+// 的 type 是宿主代码里的字面量，后者的 type 是子进程 wire 消息里的自由字符串
+// （只做过 sanitizeEventType 的控制字符清洗与长度截断，没有做过"不得和宿主保
+// 留名重名"的检查）。一个被攻破/行为异常的子进程完全可以在 session.event 里
+// 塞一条 `type:'interaction/pending'`，靠这个撞名让前端把它误当成宿主发出的
+// 真实审批待办卡片——即便 data 字段本身已经过 redact，`type` 撞名本身就是一
+// 次可以骗过前端渲染逻辑的伪造。这里给两条来源分别打上 origin 标记，并且只
+// 有 wire 侧的 type 在撞上 supervisor 保留名时才会被强制加前缀重写成
+// `wire/<type>`（supervisor 侧永远是这些字面量本身，不需要、也不会被重写）。
+const SUPERVISOR_RESERVED_EVENT_TYPES = new Set([
+  'worker/ready', 'turn/start', 'turn/end', 'stderr', 'protocol-error',
+  'notification', 'interaction/pending', 'interaction/expired', 'worker/exit',
+]);
+
+function namespaceWireEventType(type) {
+  return SUPERVISOR_RESERVED_EVENT_TYPES.has(type) ? `wire/${type}` : type;
+}
+
 // 一个案件 worker 的完整生命周期：spawn → initialize → session/create →
 // session/preflight → 一串串行 turn → stop/crash。
 class Worker {
@@ -474,8 +495,14 @@ class Worker {
     this._finalized = false;
   }
 
-  emit(type, data) {
-    const event = { type, caseId: this.caseId, sessionId: this.sessionId, at: nowIso(), data };
+  // origin 区分事件的可信来源：'supervisor'（宿主代码自己 emit 的生命周期
+  // 事件，type 是字面量，可信）与 'wire'（转发自子进程 session.event 的
+  // type，只是清洗过控制字符/长度，不代表内容可信——见上方
+  // SUPERVISOR_RESERVED_EVENT_TYPES 的注释）。调用方不传时默认 'supervisor'，
+  // 因为绝大多数 emit() 调用点都是宿主自己的生命周期事件；唯一的 wire 转发点
+  // （_handleNotification 里的 session.event 分支）显式传 'wire'。
+  emit(type, data, origin = 'supervisor') {
+    const event = { type, caseId: this.caseId, sessionId: this.sessionId, at: nowIso(), origin, data };
     this.dispatch(event);
   }
 }
@@ -484,7 +511,15 @@ export class AgentSupervisor {
   constructor({
     filesRoot = process.env.ANJIAN_FILES_ROOT,
     internalKeyEnv = process.env.ANQI_INTERNAL_KEY_ENV || 'ANJIAN_INTERNAL_KEY',
-    internalBaseURL = process.env.ANQI_AGENT_BASE_URL || 'http://127.0.0.1:3007',
+    // 纯粹的构造期兜底猜测：server.js 在 httpServer.listen() 的回调里、确认
+    // 实际监听 host/port 之后，会立刻调用 setInternalBaseURL() 用真实值纠正
+    // 这里的默认值（见该文件 gracefulShutdown 上方注释与 setInternalBaseURL()
+    // 的说明）——真正生效的值从不是这个默认值。此前这里读一个
+    // ANQI_AGENT_BASE_URL 环境变量当默认值，但仓库里没有任何地方（Dockerfile/
+    // electron/main.js/文档）设置过这个变量，且即使设置了也会在 listen 回调
+    // 里被无条件覆盖，是一条从未生效过的死配置通路——这里直接去掉，只保留字面
+    // 量默认值，避免误导（以为设置这个环境变量能改变实际使用的 base URL）。
+    internalBaseURL = 'http://127.0.0.1:3007',
     sessionRoot = DEFAULT_SESSION_ROOT,
     turnTimeoutMs = DEFAULT_TURN_TIMEOUT_MS,
     preflightTimeoutMs = DEFAULT_PREFLIGHT_TIMEOUT_MS,
@@ -1179,7 +1214,13 @@ export class AgentSupervisor {
     // 必须先过 redact() 才能广播出去。注意下面 request/header / tool/call /
     // turn/end 的判断仍然用原始 event.type（未 redact），因为那是内部状态机
     // 比对，不是对外可见字段——两者互不影响。
-    worker.emit(sanitizeEventType(worker.redact(String(event.type || 'session.event'))), this._redactEventData(worker, event.data));
+    //
+    // namespaceWireEventType()：清洗后的 type 若撞上 SUPERVISOR_RESERVED_EVENT_
+    // TYPES 里任何一个宿主生命周期事件名，强制重写成 wire/<type>——子进程发一条
+    // event.type='interaction/pending' 不能靠撞名冒充宿主真正的审批待办事件（见
+    // 该常量顶部注释）。origin 显式传 'wire'，与 emit() 默认的 'supervisor' 区分。
+    const wireType = namespaceWireEventType(sanitizeEventType(worker.redact(String(event.type || 'session.event'))));
+    worker.emit(wireType, this._redactEventData(worker, event.data), 'wire');
 
     if (event.type === 'request/header') {
       // 只在这个 worker 生命周期里第一次看到 request/header 时才记录——rc.7

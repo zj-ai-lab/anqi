@@ -82,6 +82,13 @@ async function startBackend(config) {
     ANJIAN_USER: config.user,
     ANJIAN_PASS_HASH: config.passHash,
     ANJIAN_INTERNAL_KEY: internalKey,
+    // 标记这份 key 是本进程自动生成、不是用户显式配置——src/middleware/auth.js
+    // 的 internalAuth() 看到这个标记时，把这份随机 key 能打开的 /internal 面收窄
+    // 到 AI 助理自己需要的几个端点（agent-proposals/agent-case-view/agent-digest），
+    // 不因为桌面版每次启动都要有这份 key 才能跑 AI 助理，就顺带打开整套面向外部
+    // 自动化的 /internal 读面（/internal/cases、/internal/digest 等，可枚举/读出
+    // 任意案件）——那不是用户做出的选择。
+    ANJIAN_INTERNAL_KEY_SOURCE: 'electron-auto',
     ...(config.deepseekKey ? { DEEPSEEK_API_KEY: config.deepseekKey } : {}),
   };
 

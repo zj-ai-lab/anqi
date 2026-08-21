@@ -419,7 +419,12 @@ export function enqueueAgentProposal({ caseId, proposalId, payload, sourceRef, b
     }
     cleanRef[key] = String(sourceRef[key]).slice(0, 200);
   }
-  cleanRef.session_id = boundSessionId;
+  // 与上面循环里其它 allowedRef 字段同一口径限长——boundSessionId 目前恒为
+  // supervisor 铸造的 `anqi-${randomUUID()}`，长度天然在界内，但这里不应该
+  // 靠"当前唯一调用方恰好生成短字符串"这个隐含假设兜底：session-registry 的
+  // 权威来源今后若变化（例如换一种 sessionId 生成方式），这行不应该悄悄变成
+  // 一条无界写库路径。
+  cleanRef.session_id = String(boundSessionId).slice(0, 200);
   const sourceRefText = JSON.stringify(cleanRef).slice(0, 1000);
 
   const intentKey = 'v1:agent-proposal';

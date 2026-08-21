@@ -177,6 +177,24 @@ export function pageAuth(req, res, next) {
   res.status(401).json({ error: 'unauthorized' });
 }
 
+// electron/main.js 每次桌面版启动都随机生成一份 ANJIAN_INTERNAL_KEY 并注入子进程
+// env（见该文件注释）——这不是用户显式选择开放 /internal 全面自动化，只是为了
+// 让 DSH sidecar 子进程能回调它自己需要的那几个只读/提案端点。同一份 key 如果
+// 像"用户自己配置的 ANJIAN_INTERNAL_KEY"一样放行整个 /internal/*（含
+// /internal/cases、/internal/cases/byname/:name、/internal/digest 这类面向外部
+// 自动化、可以枚举/读出任意案件的面），就等于桌面版每次启动都悄悄打开了一整套
+// 自动化读面，而用户从未做出这个决定。electron/main.js 注入时同时设一个来源标
+// 记 ANJIAN_INTERNAL_KEY_SOURCE=electron-auto；这里看到该标记时，把放行范围收
+// 窄到 agent 系列端点（这几个端点自己在 session 未绑定/agent 未启用时已经
+// 403/404，不会因为放行就等于开了口子）。用户如果自己显式配置了
+// ANJIAN_INTERNAL_KEY（不带这个来源标记），行为完全不变，仍然放行整个 /internal
+// 面——这是显式选择，不是本函数替用户做决定。
+const ELECTRON_AUTO_KEY_ALLOWED_PATHS = new Set([
+  '/agent-proposals',
+  '/agent-case-view',
+  '/agent-digest',
+]);
+
 export function internalAuth(req, res, next) {
   if (unsafeNoAuthAllowed()) {
     req.actor = req.get('X-Anjian-Actor') || 'internal';
@@ -188,6 +206,12 @@ export function internalAuth(req, res, next) {
   }
   if (!secretMatches(req.get('X-Anjian-Key'), key)) {
     return res.status(401).json({ error: 'unauthorized' });
+  }
+  if (process.env.ANJIAN_INTERNAL_KEY_SOURCE === 'electron-auto' && !ELECTRON_AUTO_KEY_ALLOWED_PATHS.has(req.path)) {
+    return res.status(403).json({
+      error: '桌面版自动生成的 internal key 仅开放 AI 助理读写面；如需完整 /internal 自动化面，请显式配置 ANJIAN_INTERNAL_KEY',
+      code: 'electron_auto_key_scoped',
+    });
   }
   req.actor = req.get('X-Anjian-Actor') || 'internal';
   next();

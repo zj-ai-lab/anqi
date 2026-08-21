@@ -1,4 +1,5 @@
 import express from 'express';
+import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import './src/db.js';
@@ -62,16 +63,31 @@ const host = startupConfig.host;
 if (startupConfig.unsafeNoAuth) {
   console.warn('⚠ ANJIAN_UNSAFE_NO_AUTH=1：当前实例无鉴权，仅允许本机回环开发/测试，严禁承载真实数据');
 }
+// DSH 子进程回调用的 host：startupConfig.host 是这个进程实际监听的地址，但
+// 通配地址（0.0.0.0 / ::，"监听所有本机接口"）本身不是一个可连接的目标——
+// 子进程必须改连回环地址，回环在通配监听下必然也在接受连接。host 是具体地址
+// （无论回环还是某个 LAN/公网 IP）时，直接用它：如果监听地址是一个具体的非
+// 回环地址，操作系统不保证同时也在监听 127.0.0.1，硬编码回环在这种部署形态
+// 下会让子进程的每一次内部调用都 ECONNREFUSED（此前的实现无条件写死
+// 127.0.0.1，只是恰好大多数部署都用通配或回环监听才没暴露）。IPv6 字面量需要
+// 方括号包裹才是合法的 URL host。
+function internalCallbackHost(bindHost) {
+  const value = String(bindHost || '').trim();
+  if (!value || value === '0.0.0.0' || value === '::' || value === '::0') return '127.0.0.1';
+  return net.isIP(value) === 6 ? `[${value}]` : value;
+}
+
 const httpServer = app.listen(port, host, () => {
   // 构造 AgentSupervisor 时它对 internalBaseURL 的默认值只能是一个兜底猜测
-  // （env 未设时硬编码 3007），与这里真正监听的端口（PORT 环境变量、或
-  // Electron 传入的随机空闲端口）大概率不一致——DSH 子进程的每一次 anqi
-  // MCP 工具调用都以这个 base URL 为准，猜错端口等于子进程的每一次内部调用
-  // 都 ECONNREFUSED。这里用 httpServer.address().port 拿到刚绑定成功的真实
-  // 端口去纠正它；此刻服务器才刚开始 accept 连接，不存在"纠正前已经有请求
-  // 进来"的竞态。
+  // （字面量硬编码 127.0.0.1:3007），与这里真正监听的端口（PORT 环境变量、或
+  // Electron 传入的随机空闲端口）、以及真正监听的 host（见 internalCallbackHost()
+  // 注释）大概率不一致——DSH 子进程的每一次 anqi MCP 工具调用都以这个 base URL
+  // 为准，猜错端口/host 等于子进程的每一次内部调用都 ECONNREFUSED。这里用
+  // httpServer.address().port 拿到刚绑定成功的真实端口、用 startupConfig.host
+  // 换算出真正可回连的 host 去纠正它；此刻服务器才刚开始 accept 连接，不存在
+  // "纠正前已经有请求进来"的竞态。
   const actualPort = httpServer.address().port;
-  agentSupervisor.setInternalBaseURL(`http://127.0.0.1:${actualPort}`);
+  agentSupervisor.setInternalBaseURL(`http://${internalCallbackHost(startupConfig.host)}:${actualPort}`);
   console.log(`anjian listening on :${actualPort}`);
   if (startLegalRagBridge()) console.log('anjian LegalRAG bridge started');
 });

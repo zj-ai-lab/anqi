@@ -39,6 +39,10 @@ class FakeSupervisor {
     this.lastQuestion = null;
     this.interactionOwner = null;
     this.listeners = new Map(); // caseId -> Set<fn>
+    // enabled=false 短路的证据字段：SSE 那条路在 config.enabled 为假时必须
+    // 完全不触碰 worker 状态，这个计数器让"没调用过 publicStatus()"成为一条
+    // 可断言的事实，而不是靠"没看到 ready 帧"间接推断。
+    this.publicStatusCalls = 0;
   }
   status() { return this.statusResult; }
   // 真实 supervisor 的安全投影(见 src/agent/supervisor.js publicStatus())：
@@ -46,6 +50,7 @@ class FakeSupervisor {
   // exitInfo，不带 sessionId/cwd/pid——这里照抄同一份字段列表，好让测试断言
   // 真的能验证路由层用的是投影后的方法而不是原始 status()。
   publicStatus() {
+    this.publicStatusCalls += 1;
     const full = this.statusResult;
     if (!full) return null;
     const { status, caseId, caseName, dshVersion, startedAt, provider, model, error, exitInfo } = full;
@@ -340,11 +345,16 @@ try {
     // 只有首帧状态快照脱敏、后续每一帧都把内部 session 标识原样广播出去。
     supervisor.emit(caseId, {
       type: 'turn/start', caseId, sessionId: 'anqi-sess-event-should-not-leak',
-      at: new Date().toISOString(), data: { turnId: 7 },
+      at: new Date().toISOString(), origin: 'wire', data: { turnId: 7 },
     });
     await readUntil('event: turn/start');
     assert.ok(buffer.includes('"turnId":7'));
     assert.ok(!buffer.includes('anqi-sess-event-should-not-leak'), 'SSE 转发帧不应该泄漏内部 sessionId');
+    // origin 必须随字段透传：它是前端区分"宿主生命周期事件"与"子进程 wire
+    // 上报事件"的唯一依据（wire 侧撞上宿主保留名时已在 supervisor 侧重写成
+    // wire/<type>，见 tools/test-agent-supervisor.js 场景 23）。路由层的字段
+    // 投影是显式白名单，漏列 origin 就等于把这条来源标记在 SSE 这一跳丢掉。
+    assert.ok(buffer.includes('"origin":"wire"'), 'SSE 转发帧必须透传 origin，前端才能区分事件来源可信度');
 
     controller.abort();
     // req.close 的反订阅是异步收尾，轮询等一下再断言，避免测试本身产生竞态。
@@ -354,7 +364,46 @@ try {
     assert.equal(supervisor.listeners.get(caseId)?.size ?? 0, 0, '连接断开后必须反订阅，不能悬挂监听器');
   }
 
-  console.log('agent HTTP 路由测试全部通过：状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅');
+  // ---- GET events：agent_enabled=false 时必须与 REST /api/agent/status 同一
+  //      判定短路——首帧 status:'disabled'，且全程不触碰 worker 状态 ----
+  // 「enabled=false 在 credential/MCP/spawn 之前全短路」是红线。SSE 是与 REST
+  // /api/agent/status 平行的第二条状态通路，如果它在同一份配置下自己去问
+  // supervisor 要状态，前端拿到的会是 'stopped'（"开着但没在跑"）而不是
+  // 'disabled'（"根本没启用"）——两条路径对同一份配置给出不同判断，用户看到
+  // 的开关状态就取决于哪条通路先到。这里同时断言两件事：下发的是 disabled，
+  // 以及路由层压根没调用 publicStatus()、没挂监听器（真的短路了，不是先问了
+  // worker 再把结果改写成 disabled）。
+  {
+    upsertSetting(AGENT_SETTINGS_KEYS.enabled, 'false');
+    supervisor.publicStatusCalls = 0;
+    supervisor.statusResult = { status: 'ready', caseId, sessionId: 'anqi-sess-should-not-leak' };
+
+    const controller = new AbortController();
+    const response = await fetch(base + `/api/cases/${caseId}/agent/events`, { signal: controller.signal });
+    // 连接仍然建立：前端不需要区分"没配置"和"网络失败"两种连不上。
+    assert.equal(response.status, 200, 'enabled=false 时 SSE 连接仍应建立，只是首帧告知 disabled');
+    assert.ok((response.headers.get('content-type') || '').includes('text/event-stream'));
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    for (let i = 0; i < 50 && !buffer.includes('event: status'); i += 1) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+    }
+    assert.ok(buffer.includes('event: status'), 'enabled=false 时也必须下发首帧 status');
+    assert.ok(buffer.includes('"status":"disabled"'), 'enabled=false 的首帧必须是 disabled，不能是 worker 侧的 stopped/ready');
+    assert.ok(!buffer.includes('"status":"ready"'), 'enabled=false 时不得下发 worker 的真实状态');
+    assert.ok(!buffer.includes('anqi-sess-should-not-leak'), 'disabled 首帧同样不得泄漏内部 sessionId');
+    assert.equal(supervisor.publicStatusCalls, 0, 'enabled=false 必须在问 worker 状态之前就短路，不能先调 publicStatus() 再改写结果');
+    assert.equal(supervisor.listeners.get(caseId)?.size ?? 0, 0, 'enabled=false 时不应该给 supervisor 挂事件监听器');
+
+    controller.abort();
+    upsertSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  }
+
+  console.log('agent HTTP 路由测试全部通过：状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅/enabled=false 短路');
 } finally {
   server.close();
   fs.rmSync(scratch, { recursive: true, force: true });
