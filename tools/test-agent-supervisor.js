@@ -910,6 +910,48 @@ async function startFakeWorker(opts) {
   await supervisor.stop(caseId, 'test cleanup: 场景 16d 收尾');
 }
 
+// ---- 场景 16e：redactDeep 的空容器叶子必须计入字节预算 ----
+// 修复前：数组/对象分支只在"处理子元素/子 key"时才扣预算，容器自身的
+// "[]"/"{}" 结构字节从不计费——一个空数组叶子 keep=Math.min(0,200)=0、
+// for 循环不执行、kept(0) 不小于 value.length(0) 也不触发 `[truncated
+// N items]` 标记，整条分支零消耗返回 []。这跟 16d 修复的"占位符零成本"是
+// 同一类旁路的另一种形状：喂一个"每层 200 分支、深度 3、叶子是空数组"的
+// 结构（200^3 = 8,000,000 个空数组叶子），逐层广度都不超过
+// MAX_EVENT_ARRAY_ITEMS（200），所以条目数上限这道闸门单独也拦不住——真正
+// 需要拦住它的是字节预算，而空容器叶子零计费意味着字节预算永远不会触发，
+// 8,000,000 个空数组会被原样保留、序列化体积可达预算的数十倍。
+//
+// 构造上刻意让 level1/level2 节点复用同一份对象引用（结构性共享）——
+// JSON.stringify 按引用图递归写出文本、不做去重，所以 redactDeep 遍历到的
+// "有效形状"（每层 200 分支、深度 3）跟真的展开 8,000,000 个独立空数组完全
+// 等价，只是构造这份输入本身不需要真的分配 800 万个对象、测试跑起来更快。
+{
+  const { supervisor, caseId, worker } = await startFakeWorker({});
+  const branchWidth = 200; // 恰好等于 MAX_EVENT_ARRAY_ITEMS，条目数上限单独拦不住
+  const emptyLeaf = [];
+  const level2 = Array.from({ length: branchWidth }, () => emptyLeaf);
+  const level1 = Array.from({ length: branchWidth }, () => level2);
+  const deepEmptyTree = Array.from({ length: branchWidth }, () => level1);
+  const totalLeaves = branchWidth ** 3; // 8,000,000
+  const wouldBeBytes = totalLeaves * 2; // 每个空数组叶子序列化后至少 "[]" 2 字节
+  const redacted = worker.redact.deep(deepEmptyTree);
+  const redactedBytes = Buffer.byteLength(JSON.stringify(redacted), 'utf8');
+  const budgetBytes = 256 * 1024;
+  assert.ok(
+    redactedBytes < wouldBeBytes / 10,
+    `空容器叶子必须被计入字节预算：折叠后（${redactedBytes} 字节）必须远小于放任 ${totalLeaves} 个空数组原样保留时的体量（${wouldBeBytes} 字节），否则说明空容器仍是零成本旁路`,
+  );
+  assert.ok(
+    redactedBytes < budgetBytes * 2,
+    `折叠输出（${redactedBytes} 字节）必须被限制在预算量级附近（< ${budgetBytes * 2} 字节），跟 16d 的量级口径一致`,
+  );
+  const serialized = JSON.stringify(redacted);
+  const truncatedMarkerCount = (serialized.match(/\[truncated \d+ items\]/g) || []).length;
+  assert.ok(truncatedMarkerCount > 0, '预算必须至少在某一层数组触发一次 "[truncated N items]" 截断标记，证明是字节预算（而非条目数上限）拦下了这棵树——条目数上限本身在这个形状里从未超限');
+  console.log(`  [16e/23] redactDeep 空容器叶子计入字节预算：ok（8,000,000 个空数组叶子被拦到 ${redactedBytes} 字节，截断标记 ${truncatedMarkerCount} 处）`);
+  await supervisor.stop(caseId, 'test cleanup: 场景 16e 收尾');
+}
+
 // ---- 场景 17：'stopping' 态必须阻止同一案件重复 spawn ----
 // 修复前：LIVE_STATUSES 不含 'stopping'，turn 失败后 worker 进入 'stopping'
 // 到真正终态化之间有一段窗口（最坏 30s shutdown 往返 + 10s 强杀等待）；这段

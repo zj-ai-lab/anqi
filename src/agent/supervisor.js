@@ -177,12 +177,14 @@ const MAX_EVENT_FIELD_CHARS = 4000;
 // 没有类似数组的条目数上限，key 数量可以无限堆）。任何一道触顶，超出部分直
 // 接折叠成一条 "[truncated N items/keys]" 标记，不再逐项处理。
 //
-// 注意：MAX_EVENT_TOTAL_BYTES 是"叶子内容字节"预算，不是序列化后 JSON 文本
-// 的精确字节数——逗号/引号/冒号/括号这些结构性开销不计入。对宽而浅的短数字
-// 叶子（如 6~7 位数字组成的大数组），这个常数因子的膨胀在实测中大约是 2 倍
-// （tools/test-agent-supervisor.js 场景 16b 的注释里有实测数字）。这里把它当
-// 成一个近似的成本刹车、不是"单条事件序列化后 ≤ 256KB"的精确硬上限，调用方
-// 不应依赖后者。
+// 注意：MAX_EVENT_TOTAL_BYTES 是"叶子内容字节 + 容器自身的方括号/花括号"
+// 预算，不是序列化后 JSON 文本的精确字节数——数组/对象内部逐元素之间的逗号、
+// 对象 key 两侧的引号与冒号这些分隔符开销仍不计入（每个容器只按自身一对
+// "[]"/"{}" 记 2 字节，元素越多不代表分隔符开销线性计入预算）。对宽而浅的
+// 短数字叶子（如 6~7 位数字组成的大数组），实测折叠后的序列化体积大约落在
+// 预算的 1.1~1.3 倍之间（tools/test-agent-supervisor.js 场景 16b/16d 实测），
+// 不存在一个能覆盖所有输入形状的固定倍数。这里把它当成一个近似的成本刹车、
+// 不是"单条事件序列化后 ≤ 256KB"的精确硬上限，调用方不应依赖后者。
 const MAX_EVENT_TOTAL_BYTES = 256 * 1024;
 const MAX_EVENT_ARRAY_ITEMS = 200;
 const MAX_EVENT_OBJECT_KEYS = 200;
@@ -337,8 +339,12 @@ function byteLength(str) {
 // 的所有叶子共用，不是每个叶子各自开一份）：
 //   - budget.remaining：整个结构累计消耗的字节数，字符串叶子、对象 key 名、
 //     数字/布尔/null 叶子都按各自序列化后的字节数扣减（不止字符串叶子——
-//     否则一个几十万条数字叶子的宽对象可以完全绕开预算），触顶后后续叶子
-//     一律折叠成占位符，不再继续递归展开；
+//     否则一个几十万条数字叶子的宽对象可以完全绕开预算），容器本身（数组/
+//     对象）进入时也先扣自身 "[]"/"{}" 的 2 字节结构开销，空容器不例外——
+//     否则一个"每层 200 分支、深度 3、叶子是空容器"的结构，几百万个空数组/
+//     空对象叶子全部零消耗，同样能完全绕开预算（tools/test-agent-
+//     supervisor.js 场景 16e 复现）。触顶后后续叶子一律折叠成占位符，不再
+//     继续递归展开；
 //   - MAX_EVENT_ARRAY_ITEMS：单个数组保留的元素个数上限，超出的元素不逐个
 //     处理，整体折叠成一条 `[truncated N items]` 标记；
 //   - MAX_EVENT_OBJECT_KEYS：单个对象保留的 key 个数上限，超出的 key 不逐
@@ -365,6 +371,16 @@ function redactDeep(value, secretValues, budget, depth = 0) {
     return redacted;
   }
   if (Array.isArray(value)) {
+    // 容器自身的结构字节（"[" + "]"）必须先扣一次，空数组也不例外——之前
+    // 空数组叶子（value.length === 0）走到这里 keep=0、循环不执行、
+    // kept(0) 不小于 value.length(0) 不触发截断标记，整条分支零消耗返回
+    // []，跟原语叶子一样可以被当成"零成本占位符"批量堆叠：一个"每层 200
+    // 分支、深度 3、叶子是空容器"的结构，8,000,000 个空数组叶子全部零计
+    // 费，字节预算从未触发，序列化后的真实输出体积可以达到预算的数十倍
+    // （tools/test-agent-supervisor.js 场景 16e 复现）。这里按 JSON 文本
+    // 里 "[]" 的固定 2 字节记账，无论数组是否为空、无论内容占多少字节都
+    // 会先扣这 2 个字节，堵住"空容器免费"这条路。
+    budget.remaining -= 2;
     const keep = Math.min(value.length, MAX_EVENT_ARRAY_ITEMS);
     const out = [];
     let kept = 0;
@@ -380,6 +396,9 @@ function redactDeep(value, secretValues, budget, depth = 0) {
     return out;
   }
   if (value && typeof value === 'object') {
+    // 同上：对象自身的结构字节（"{" + "}"）先扣 2 字节，空对象（{}）同样
+    // 不再零成本——"空对象叶子"与"空数组叶子"是同一类旁路，堵法一致。
+    budget.remaining -= 2;
     // 对象的 key 名本身来自子进程、同样可能被用来夹带 secret 值——之前这里
     // 只对 value 递归脱敏，key 原样透传（`out[key] = ...`），等于给
     // redactDeep 留了一条不脱敏的旁路：子进程把 apiKeyValue 塞进任意键名就
