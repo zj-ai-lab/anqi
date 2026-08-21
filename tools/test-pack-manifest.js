@@ -14,19 +14,32 @@
 // "按顺序逐条 pattern 累积 include/exclude"语义重放 package.json 的
 // build.files，断言这些文件全部仍在打包范围内。
 //
-// R2（AI 助理 beta）追加一条独立核验：runtime/assets 这两棵子树虽然被
-// build.files 排除出 app 本体（不进 asar/不进 Contents/Resources/app），但
-// 并非"不参与打包"——build.extraResources 把它们整棵复制到
-// Contents/Resources/agent-runtime/{runtime,assets}/，src/agent/supervisor.js
+// R2（AI 助理 beta）追加两条独立核验：
+//
+// ① runtime/assets 这两棵子树虽然被 build.files 排除出 app 本体（不进 asar/
+// 不进 Contents/Resources/app），但并非"不参与打包"——build.extraResources 把
+// src/agent 整棵复制到 Contents/Resources/agent-runtime/，src/agent/supervisor.js
 // 的 resolveAgentSubdir() 打包模式下正是按这个固定的 "agent-runtime/<name>"
-// 相对路径去 process.resourcesPath 下找。这两处（electron-builder 配置 与
+// 相对路径去 process.resourcesPath 下找。这两处（electron-builder 配置与
 // supervisor.js 的路径解析）各自独立手写，一旦有人改了任意一侧的目录名/层级
 // 而没同步改另一侧，打包版会静默回退到"打包目录不存在→当成 dev 环境→用
 // __dirname 相对路径"分支——不存在文件也不报错，只是 AI 助理在打包版里永远
 // 走不到 spawn（cordis 配置/技能目录缺失），且没有任何一步会失败到能在
-// `npm run check` 里现身。下面这段就是把 extraResources 的 from/to 与
-// supervisor.js 约定的 "agent-runtime/runtime"、"agent-runtime/assets" 做一次
-// 机械比对，防止两侧悄悄跑偏。
+// `npm run check` 里现身。
+//
+// ② electron-builder 的 extraResources 复制对 node_modules 有一条硬编码特例
+// （app-builder-lib 的 util/filter.js createFilter()）：条目相对 from 的路径一旦
+// 字面恰好等于 "node_modules"（即 node_modules 直接是 from 的顶层子目录），
+// 会被无条件返回 false、整棵子树连同内容一起跳过——这是给"files"主拷贝步骤
+// 预留的特例（假设 node_modules 由专门的依赖解析逻辑处理），extraResources 走
+// 的是同一份通用 copyDir/walk，完全没有绕过这条规则的办法。这里曾经真的把
+// from 直接设成 "src/agent/runtime"（node_modules 是它的直接子目录），实测
+// 结果是 dist 产物的 agent-runtime/runtime/ 只剩 package.json/package-lock.json，
+// 247MB 的 node_modules 整棵消失、没有任何报错或警告——只有真正跑一次
+// electron-builder 打包才会现形，日常 `npm run check` 全绿。现在 extraResources
+// 改成 from 指向 src/agent（node_modules 相对它是 "runtime/node_modules"，不再
+// 字面等于 "node_modules"），下面对每个 extraResources 条目机械核验它的 from
+// 目录下不存在字面顶层子目录 "node_modules"，防止未来又被改回这个坑。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -41,17 +54,26 @@ const buildFiles = pkg.build?.files;
 assert.ok(Array.isArray(buildFiles) && buildFiles.length > 0, 'package.json 的 build.files 必须是非空数组');
 
 // extraResources 与 supervisor.js 的 resolveAgentSubdir() 之间的机械核验（见上方
-// R2 注释）：runtime、assets 各自必须存在一条 from/to 精确匹配的条目，"to" 必须
-// 落在 supervisor.js 约定的 "agent-runtime/<name>" 相对路径下——这是唯一一处
-// 两边共享的约定，任何一侧改名都会在这里现形，而不是留到打包产物里静默失效。
+// R2 ① 注释）：必须存在一条 from:"src/agent" to:"agent-runtime" 的条目——
+// supervisor.js 按 "agent-runtime/runtime"、"agent-runtime/assets" 去
+// process.resourcesPath 下找，这里的 "to" 必须与之精确对应；这是唯一一处两边
+// 共享的约定，任何一侧改名都会在这里现形，而不是留到打包产物里静默失效。
 const extraResources = pkg.build?.extraResources;
 assert.ok(Array.isArray(extraResources) && extraResources.length > 0, 'package.json 的 build.extraResources 必须是非空数组（runtime/assets 随包分发）');
-for (const name of ['runtime', 'assets']) {
-  const expectedFrom = `src/agent/${name}`;
-  const expectedTo = `agent-runtime/${name}`;
-  const entry = extraResources.find((e) => e && e.from === expectedFrom);
-  assert.ok(entry, `build.extraResources 缺少 from:"${expectedFrom}" 条目——src/agent/supervisor.js 的 resolveAgentSubdir('${name}') 打包模式下会找不到对应文件`);
-  assert.equal(entry.to, expectedTo, `build.extraResources 里 from:"${expectedFrom}" 的 to 必须是 "${expectedTo}"（与 supervisor.js 的 process.resourcesPath 拼接约定一致），实际是 "${entry.to}"`);
+const agentEntry = extraResources.find((e) => e && e.from === 'src/agent');
+assert.ok(agentEntry, 'build.extraResources 缺少 from:"src/agent" 条目——src/agent/supervisor.js 的 resolveAgentSubdir() 打包模式下会找不到 runtime/assets');
+assert.equal(agentEntry.to, 'agent-runtime', `build.extraResources 里 from:"src/agent" 的 to 必须是 "agent-runtime"（与 supervisor.js 的 process.resourcesPath 拼接约定一致），实际是 "${agentEntry.to}"`);
+
+// R2 ② 注释所述的 node_modules 硬编码坑：对每个 extraResources 条目，"from" 目录
+// 下不得存在字面顶层子目录 "node_modules"——存在就意味着 electron-builder 会把它
+// 整棵静默跳过（见上方大段注释的实测复现）。
+for (const entry of extraResources) {
+  if (!entry || typeof entry.from !== 'string') continue;
+  const directNodeModules = path.join(REPO_ROOT, entry.from, 'node_modules');
+  assert.ok(
+    !fs.existsSync(directNodeModules),
+    `build.extraResources 条目 from:"${entry.from}" 的直接子目录下存在字面名为 "node_modules" 的目录——electron-builder 的 extraResources 复制会把它整棵静默跳过（app-builder-lib 的 createFilter()：相对路径恰好等于 "node_modules" 时无条件返回 false，不报错也不警告）。请把 "from" 指向更高一级目录，让 node_modules 变成 "xxx/node_modules" 这样的相对路径（不再字面等于 "node_modules"），再用 filter 精确圈定要复制的子树。`
+  );
 }
 
 // 只认这几种可静态识别、不跨越表达式的 import 写法——这份代码库统一走这几种

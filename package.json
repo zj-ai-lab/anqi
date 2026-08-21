@@ -49,19 +49,12 @@
     ],
     "extraResources": [
       {
-        "from": "src/agent/runtime",
-        "to": "agent-runtime/runtime",
+        "from": "src/agent",
+        "to": "agent-runtime",
         "filter": [
-          "**/*"
-        ]
-      },
-      {
-        "from": "src/agent/assets",
-        "to": "agent-runtime/assets",
-        "filter": [
-          "**/*",
-          "!node_modules",
-          "!node_modules/**"
+          "runtime{,/**/*}",
+          "assets{,/**/*}",
+          "!assets/node_modules{,/**/*}"
         ]
       }
     ],

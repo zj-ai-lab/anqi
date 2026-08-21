@@ -18,6 +18,16 @@ const { initAutoUpdater } = require('./updater');
 // 打包发版后走正规签名 + sandbox；dev 只是绕过本机权限限制。
 if (!app.isPackaged) app.commandLine.appendSwitch('no-sandbox');
 
+// 仅测试用 userData 隔离开关：打包冒烟需要验证「默认 disabled / 引导流程 / 首启」
+// 等行为，但绝不能碰开发者本机真实的 userData/config.json 与其指向的真实数据目录
+// （里面可能是真实案件夹）。ANJIAN_TEST_USERDATA 未设置时行为与此前完全一致
+// （app.getPath('userData') 走 Electron 默认规则）；只有显式设置这个环境变量、
+// 指向一个调用方自建的临时目录时，才会覆盖 userData 路径——必须在 app 触碰任何
+// 路径之前调用 app.setPath('userData', ...)，所以紧跟在文件顶部。
+if (process.env.ANJIAN_TEST_USERDATA) {
+  app.setPath('userData', process.env.ANJIAN_TEST_USERDATA);
+}
+
 const IS_DEV = !app.isPackaged;
 // 打包后 server.js 在 app.asar.unpacked 里（better-sqlite3 是原生模块，不能进 asar）
 const APP_ROOT = IS_DEV
