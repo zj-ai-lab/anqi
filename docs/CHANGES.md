@@ -87,6 +87,19 @@
 - `tools/test-agent-settings.js`/`tools/test-agent-http.js` 同步更新：`agent_api_key_env` 留空的新允许行为、`agent_api_key` 的加密落库/掩码回显/清空、`/agent/status` 新增 `apiKey` 字段的形状。
 - `tools/check.sh` 增至 43 步（详见 [agent-gates.md](agent-gates.md)）。
 
+### 复审修复（本轮，红线/SSRF/工程卫生）
+
+上面这批功能落地后经过一轮对抗复审，发现并修复了以下问题（均已合入本条目描述的同一个 beta.2 工作树，未单独发版）：
+
+- **`POST /api/agent/models` 堵住 key 外带通道**：该端点刻意不经过 `agent_enabled` 门（配置期"保存前先测 key"的正当设计），但此前 `apiKey` 省略时会无条件回落到 env/本机存储的 key，再把它当 Bearer 发给请求体里调用方指定的任意 `baseURL`——绕过了 `GET /api/settings` 只回末 4 位掩码这层保护。修复：新增 `baseURLsShareOrigin()`，只有 `deepseek-official`（baseURL 已被钉死成官方域）或 `openai-completions` 且这次 `baseURL` 与已保存的 `agent_base_url` 同源时才允许回落，否则要求请求体显式带 `apiKey`。
+- **`fetchProviderModels()` 不再跟随 3xx 重定向**：`baseURL` 只在第一跳做过 SSRF 校验，默认 `redirect:'follow'` 会让一个已通过校验的公网地址用 302 把请求带进内网。改为 `redirect:'manual'`，3xx 显式拒绝为 `upstream_redirect_blocked`。
+- **`validateBaseURL()` 黑名单补漏**：新增拦截云元数据主机名（`metadata.google.internal`/`metadata.goog`/`*.internal`）、IPv4-compatible IPv6（`::a.b.c.d` 归一化后的纯十六进制形式，与已处理的 IPv4-mapped `::ffff:a.b.c.d` 不同）、`0.0.0.0/8`、RFC 2544 基准测试段 `198.18.0.0/15`。
+- **公网地址强制 https**：内网/回环地址已被整体拒绝，能通过该校验的 host 按定义就是公网地址，此前仍接受 `http:`，key 会明文过网；现与 android-v1.1.0 同一条规则对齐。
+- **`resolveAgentApiKey()` 自身复检 `apiKeyEnv` 格式/保留名**：此前只有 `loadAgentConfig()` 校验过 `isReservedEnvName()`，另外两处裸读 settings 表的消费者（`agent.js`/`settings.js`）会绕过这层校验；现在下沉进 `resolveAgentApiKey()` 本身，所有调用方自动继承。
+- **`agent_api_key` 落库前 trim**，纯空白输入显式拒绝（此前会静默存成"已配置"，但 supervisor 实际会拿一把空白 key 去启动 worker）。
+- **`secret.key` 首次生成的 TOCTOU 竞态**：并发首次生成时改用"写临时文件 + `linkSync` 原子提交"，不再可能被后写者覆盖或被并发读者读到半写状态。
+- **`secret.key` 纳入 `tools/backup.cjs` 备份**：此前该脚本只备份 `anjian.db`，现在同步备份 `secret.key`（若存在）；`SELF-HOSTING.md` 补充 `ANJIAN_SECRET`/`secret.key` 的配置参考与备份说明（此前完全没有文档提及这两者）。
+
 ### 已知边界（非本轮范围）
 
 - 前端设置页 UI（供应商下拉、key 输入框、"拉取模型列表"按钮、高级选项折叠）尚未实现，本轮只完成服务端接口；`PROVIDER_CANONICAL_KEY_ENV` 目前只覆盖已有的两个 provider 枚举值，新增 provider 时需要同步补充。

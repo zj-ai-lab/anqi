@@ -206,6 +206,7 @@ Android 壳不预置任何服务器。首次启动时输入你自己部署的案
 | `ANJIAN_STATIC_TOKEN` | CLI/agent 兼容 token；非必要不要启用 |
 | `ANJIAN_DEFAULT_ACTOR` | 默认审计 actor，未配置时为 `web` |
 | `ANJIAN_FILES_ROOT` | 案件夹根；不配置时文件模块不可用 |
+| `ANJIAN_SECRET` | AI 助理设置页里填的 API key 用它派生静态加密主密钥（须至少 32 字节、不能是单一/少量重复字符）；不配置时自动改用数据目录下的 `secret.key` 文件——两种方式二选一，见下方「AI 助理（可选）」 |
 | `DEEPSEEK_API_KEY` | 可选快录与提取模型 key |
 | `DEEPSEEK_BASE_URL` | 可选 OpenAI 兼容服务地址 |
 | `DEEPSEEK_MODEL` | 可选模型名 |
@@ -218,17 +219,20 @@ Android 壳不预置任何服务器。首次启动时输入你自己部署的案
 案齐的持久数据至少包括：
 
 - `DB_PATH` 指向的 SQLite 数据库；
+- 若启用了 AI 助理的「界面填 key」（未设置 `ANJIAN_SECRET` 时）：`DB_PATH` 同目录下自动生成的 `secret.key`——它是解密 settings 表里加密存储的 API key 的唯一凭据，丢了它，库里那份密文永久解不开（不会报错、不会提示，`GET /api/settings` 只会显示「未配置」）；
 - `ANJIAN_FILES_ROOT` 指向的案件夹；
-- 部署环境文件和必要的集成配置；
+- 部署环境文件和必要的集成配置（含 `ANJIAN_SECRET`，若使用）；
 - macOS 桌面版所选的数据目录与应用配置。
 
-最简单的一致性备份方式是短暂停止应用，再复制 SQLite 文件及案件夹：
+最简单的一致性备份方式是短暂停止应用，再复制整个数据目录（`secret.key` 与 `anjian.db` 同目录，随这一步自动一起备份，不需要单独处理）：
 
 ```sh
 docker stop anqi
 cp -a data "data.backup-$(date +%Y%m%d-%H%M%S)"
 docker start anqi
 ```
+
+若改用 `tools/backup.cjs` 做在线增量备份（SQLite backup API，无需停机）：脚本会把 `secret.key` 与当天的数据库备份一并同步到 `/app/data/backup/secret.key.bak`，不需要额外配置；但若这次部署改用 `ANJIAN_SECRET` 环境变量而不是 `secret.key` 文件，该脚本无法替你备份一个环境变量，必须自行把它存进独立的 secret 管理系统（见下方「AI 助理（可选）」）。
 
 案件夹很大时，应使用支持版本历史、完整性校验和静态加密的备份方案。仅“同步”不等于备份：误删、加密勒索和损坏也可能被同步。
 
@@ -261,9 +265,13 @@ docker start anqi
 
 **默认关闭**。不启用时，AI 助理相关的依赖只以文件形式存在于镜像/安装目录中，不会被加载、不占用内存，也不会发起任何网络请求；对绝大多数只用手动案件管理的部署没有任何影响。
 
-开启方式：在设置页把「AI 助理」开关打开，并按需填写 provider / baseURL / model / apiKeyEnv（apiKeyEnv 只是一个环境变量**名**，真正的 key 值必须由部署者在部署环境里单独设置，不写进设置页、不进数据库）。必需的环境变量：
+开启方式：在设置页把「AI 助理」开关打开，并按需填写 provider / baseURL / model。API key 的值有两种来源，取值时环境变量优先：
 
-- `apiKeyEnv` 所指向的那个变量（默认 provider 是 `deepseek-official` 时，常见做法是把它设成 `DEEPSEEK_API_KEY`，并在部署环境里配置该变量的真实 key）；
+- **环境变量（`apiKeyEnv`，兼容既有部署）**：设置页里只填一个环境变量**名**，真正的 key 值必须由部署者在部署环境里单独设置，不写进设置页、不进数据库。默认 provider 是 `deepseek-official` 时，常见做法是把 `apiKeyEnv` 填成 `DEEPSEEK_API_KEY`，并在部署环境里配置该变量的真实 key。
+- **界面直接填（服务端已支持，配套设置页 UI 见 `docs/CHANGES.md`「已知边界」）**：key 落库前用 AES-256-GCM 静态加密，解密用的主密钥由 `ANJIAN_SECRET` 环境变量派生（若配置），否则自动在数据目录下生成 `secret.key` 文件（首次生成、权限 0600）。**这把主密钥本身就是敏感数据**：`secret.key` 丢失或损坏，或 `ANJIAN_SECRET` 变更，都会让库里已加密存储的 key 永久解不开（不报错，只是「未配置」）——见上方「数据、案件夹与备份」；换主机/换容器卷时，`secret.key` 必须和 `anjian.db` 一起搬过去，`ANJIAN_SECRET` 则必须和其它部署环境变量一起搬过去。
+
+其余必需的环境变量：
+
 - `ANJIAN_INTERNAL_KEY`——AI 助理通过内置的 `case_folder_info` 工具回调案齐自身 `/internal` API 时用于认证，不配置则助理无法启动。
 
 数据去向：AI 助理的会话记录（transcript）落在与 `DB_PATH` 同一持久化范围内——Docker 部署下默认写入 `data/agent-sessions/`（与 `data/` 卷同一挂载点，跟随你的备份策略一起保存）；macOS 桌面版写入应用数据目录下的等价位置。启动助理要求对应案件在 `ANJIAN_FILES_ROOT` 下存在同名文件夹（用于确认案件归属，本 beta 不读该文件夹里的文件正文）。
