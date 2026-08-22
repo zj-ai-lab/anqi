@@ -8,7 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **2.7.0-beta.1** | 2026-08-22 | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
+| **2.7.0-beta.1** | 未发布（工作树 2026-08-22） | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |
 | **2.4.0** | 2026-08-11 | 费用页案卡堆、状态色带与粘性抬头收缩；自托管 Noto Sans/Serif SC 可变字体 |
