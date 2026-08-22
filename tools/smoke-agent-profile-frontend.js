@@ -6,7 +6,12 @@
 //   b) 静态审查 public/js/profile.js：provider 切换联动 baseURL 只读/自动
 //      带出、key 三态展示逻辑（env 禁用/stored 掩码/none 提示）都存在、
 //      POST /agent/models 请求体的取值来源、PUT /settings 时"留空不修改
-//      已保存 key"的分支确实存在（不会把空字符串当成"清空"信号误发）;
+//      已保存 key"的分支确实存在（不会把空字符串当成"清空"信号误发）；
+//      「清除已保存的 key」按钮（2026-08-23 复审新增）确实绑定了点击处理、
+//      确实显式 PUT agent_api_key:''（与后端既有的"空字符串=清空"信号
+//      同源，不是新协议），且只在 source==='stored' 时展示——此前界面只有
+//      "留空提交=不修改"这一条路径，用户没有任何入口能把本机保存的加密
+//      key 真正删掉，只能改库;
 //   c) 起一个真实 server.js（固定端口 3013，ANJIAN_UNSAFE_NO_AUTH=1，临时
 //      库）：验证 /api/settings 的 agent_api_key 明文入参 → 加密落库 →
 //      GET 只回掩码这条链路在真实进程里成立，响应体全文不含明文 key；
@@ -53,6 +58,7 @@ const profileJs = fs.readFileSync(path.join(ROOT, 'public/js/profile.js'), 'utf8
   assert.match(profileHtml, /id="agent-base-url-note"/, '必须有「只读/官方地址」说明段');
   assert.match(profileHtml, /id="agent-api-key"[^>]*type="password"/, 'API Key 必须是密码输入框');
   assert.match(profileHtml, /id="agent-api-key-note"/, '必须有 API Key 状态说明段');
+  assert.match(profileHtml, /id="agent-api-key-clear"/, '必须有「清除已保存的 key」按钮入口（2026-08-23 复审新增：此前界面无法真正删掉已存 key，只能改库）');
   assert.match(profileHtml, /id="agent-model"[^>]*>/, '必须保留手填 Model 输入框（兜底）');
   assert.match(profileHtml, /id="agent-model-select"/, '必须有 Model 下拉（拉取成功后展示）');
   assert.match(profileHtml, /id="agent-model-toggle"/, '必须有「改手动填写」切回入口');
@@ -82,7 +88,10 @@ const profileJs = fs.readFileSync(path.join(ROOT, 'public/js/profile.js'), 'utf8
   assert.match(profileJs, /末四位/, '必须展示已保存 key 的掩码末四位提示');
   assert.match(profileJs, /api\('\/agent\/models', \{ method: 'POST', body \}\)/, '拉取模型必须调用 POST /agent/models');
   assert.match(profileJs, /if \(!agentApiKey\.disabled && keyInput\) body\.agent_api_key = keyInput;/, '保存时必须只在用户真正填了新 key 时才带上 agent_api_key（留空=不修改）');
-  say('profile.js：provider 联动 / key 三态 / 拉取模型请求 / 保存时留空不覆盖，四条逻辑均命中');
+  assert.match(profileJs, /agentApiKeyClear\.addEventListener\('click'/, '「清除已保存的 key」按钮必须绑定点击处理');
+  assert.match(profileJs, /body:\s*\{\s*agent_api_key:\s*''\s*\}/, '清除按钮必须显式 PUT agent_api_key:\'\'（后端既有的清空信号，不是新协议）');
+  assert.match(profileJs, /agentApiKeyClear\.hidden = keySnapshot\.source !== 'stored'/, '清除按钮只应该在 source===\'stored\' 时展示——env 态输入框本身禁用、none 态没有可清除的东西');
+  say('profile.js：provider 联动 / key 三态 / 拉取模型请求 / 保存时留空不覆盖 / 清除已保存 key 按钮，五条逻辑均命中');
 }
 
 // ---- c：起真实 server.js，验证 settings 掩码往返在真实进程里成立 ----

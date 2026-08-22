@@ -121,6 +121,7 @@ if (agentEnabled && agentFields && agentSave) {
   const agentBaseUrlNote = $('agent-base-url-note');
   const agentApiKey = $('agent-api-key');
   const agentApiKeyNote = $('agent-api-key-note');
+  const agentApiKeyClear = $('agent-api-key-clear');
   const agentApiKeyEnv = $('agent-api-key-env');
   const agentAdvanced = $('agent-advanced');
   const agentModel = $('agent-model');
@@ -165,6 +166,12 @@ if (agentEnabled && agentFields && agentSave) {
   // 意义，只保留「界面填写不会覆盖」这句）。
   function applyKeyUI() {
     agentApiKey.value = '';
+    // 「清除已保存的 key」只在 source==='stored' 时展示——这是唯一一种界面
+    // 上能确认"本机数据库里存着一份密文、且它是当前真正生效的值"的状态。
+    // env 态下输入框本身被禁用、界面填的值从不生效，清除操作没有立即可见
+    // 的效果（即使底层可能还有一份被 env 遮住的历史存量密文，那是另一个更
+    // 罕见的边界，这个按钮不覆盖）；none 态没有可清除的东西。
+    agentApiKeyClear.hidden = keySnapshot.source !== 'stored';
     if (keySnapshot.source === 'env') {
       agentApiKey.disabled = true;
       agentApiKey.placeholder = '由环境变量提供';
@@ -179,6 +186,32 @@ if (agentEnabled && agentFields && agentSave) {
       agentApiKeyNote.textContent = '尚未配置。保存在本机数据库并加密；能拿到数据目录的人可以解出来。';
     }
   }
+
+  // 「清除已保存的 key」（2026-08-23 复审新增）：此前界面只有「留空提交表示
+  // 不修改」这一条路径，没有任何入口能把本机保存的加密 key 真正删掉——
+  // 保存分支只在输入框非空时才带上 agent_api_key，永远不会发出触发后端
+  // 「清空」信号的空字符串。这里直接调一次独立的 PUT（不依赖用户先在输入框
+  // 里清空、再点主保存按钮那条容易被忽略的隐式路径），带上空字符串——与
+  // src/routes/settings.js 的 validateAgentFields() 既有的"空字符串=显式
+  // 清空信号"完全同源，不是新协议。
+  agentApiKeyClear.addEventListener('click', async () => {
+    if (!confirm('清除本机保存的 API Key？清除后需要重新填写才能使用（除非改用环境变量）。')) return;
+    agentApiKeyClear.disabled = true;
+    try {
+      const s = await api('/settings', { method: 'PUT', body: { agent_api_key: '' } });
+      keySnapshot = {
+        configured: !!s.agent_api_key_configured,
+        source: s.agent_api_key_source || 'none',
+        masked: s.agent_api_key_masked || null,
+      };
+      applyKeyUI();
+      toast('已清除本机保存的 API Key');
+    } catch (e) {
+      toast('清除失败：' + (e.message || e));
+    } finally {
+      agentApiKeyClear.disabled = false;
+    }
+  });
 
   // 拉取模型成功后把 Model 从手填 input 切到下拉 select（保留手填入口作为
   // 兜底，设计 4）；点「改手动填写」切回去，并把 select 当前选中值带回 input，
