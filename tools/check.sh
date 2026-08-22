@@ -454,10 +454,10 @@ console.log('  ok（未发现 dsh-tool-fs / dsh-tool-fs-search；skill-filesyste
 echo "[43/45] secret-box 静态加密自检（AES-256-GCM 往返 + 错误密钥/畸形密文安全失败 + secret.key 0o600 + ANJIAN_SECRET 熵校验）"
 node tools/test-secret-box.js
 
-echo "[44/45] agent models-client 网络层自检（本地假 /models 服务器：OpenAI 兼容格式解析 + 超时/大小上限/401/404/畸形 JSON/未知形状/3xx 重定向拦截全部映射成安全失败）"
+echo "[44/45] agent models-client 网络层自检（本地假 /models 服务器：OpenAI 兼容格式解析 + 超时/大小上限/401/404/畸形 JSON/未知形状/3xx 重定向拦截全部映射成安全失败 + modelsErrorToHttpStatus() 映射表纯函数回归：上游认证失败不再映射到 401）"
 node tools/test-agent-models-client.js
 
-echo "[45/45] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 字符串校验 + apiKey 取值优先级 请求体>仅 deepseek-official 允许的已保存 + 错误码映射 + 审计/响应体不含明文 key）"
+echo "[45/45] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 字符串校验 + apiKey 取值优先级 请求体>仅 deepseek-official 允许的已保存 + 错误码映射(上游认证失败改回 502,不再误判为 anqi 会话过期) + 审计/响应体不含明文 key + public/js/api.js 401 判断分支静态回归）"
 node tools/test-agent-models-http.js
 
 echo "ALL GREEN ✅"

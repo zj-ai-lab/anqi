@@ -17,8 +17,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
+import { fileURLToPath } from 'node:url';
 import express from 'express';
 
+const ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-models-http-'));
 process.env.DB_PATH = path.join(scratch, 'agent-models-http.db');
 
@@ -212,9 +214,16 @@ try {
   }
 
   // ---- 8) fetchModels 抛出各类错误 → 正确映射 HTTP 状态码,且响应体来自
-  //      error.message/error.code,不是路由层自己拼的文案 ----
+  //      error.message/error.code,不是路由层自己拼的文案。
+  //      【2026-08-23 UX 缺陷修复，编排方人工验收发现】upstream_unauthorized
+  //      的 expectStatus 从 401 改成 502——此前上游供应商认证失败（用户
+  //      设置页填错一个字符的 API Key）也让本端点回 401，而
+  //      public/js/api.js 的全局 fetch 封装把任何 401 一律当成"anqi 会话
+  //      过期"直接跳 /login.html，用户永远看不到下面这句写好的中文提示。
+  //      现在 401 专属 apiAuth 中间件（会话失效），本端点的任何错误分支都
+  //      不再产出 401，见下面循环结束后的核心回归断言。 ----
   const errorCases = [
-    { code: 'upstream_unauthorized', message: 'API Key 无效或无权限，请检查后重试', expectStatus: 401 },
+    { code: 'upstream_unauthorized', message: 'API Key 无效或无权限，请检查后重试', expectStatus: 502 },
     { code: 'upstream_not_found', message: '该地址未提供 /models 接口（404），请检查 baseURL', expectStatus: 404 },
     { code: 'upstream_error', message: '模型服务返回错误（HTTP 500）', expectStatus: 502 },
     { code: 'timeout', message: '连接模型服务超时，请检查网络与 baseURL', expectStatus: 504 },
@@ -227,10 +236,48 @@ try {
     fetchModels.setError(Object.assign(new Error(message), { code }));
     const { status, data } = await postModels({ provider: 'deepseek-official', baseURL: '', apiKey: 'sk-any' });
     assert.equal(status, expectStatus, `code=${code} 应该映射到 HTTP ${expectStatus}`);
+    assert.notEqual(status, 401, `code=${code} 绝不应该让本端点回 401（401 专属 apiAuth 会话失效语义，见 public/js/api.js）`);
     assert.equal(data.code, code);
     assert.equal(data.error, message);
   }
+  // 核心回归（本次修复的原始缺陷）：上游明确的认证类失败必须仍然携带
+  // code:upstream_unauthorized 与原样的中文提示，但 HTTP 状态码本身绝不能
+  // 是 401——否则前端会把它误判成 anqi 自己的会话过期。
+  {
+    fetchModels.setError(Object.assign(new Error('API Key 无效或无权限，请检查后重试'), { code: 'upstream_unauthorized' }));
+    const { status, data } = await postModels({ provider: 'deepseek-official', baseURL: '', apiKey: 'sk-wrong' });
+    assert.notEqual(status, 401, '上游 401/403 绝不能让 POST /api/agent/models 本身也回 401');
+    assert.equal(data.code, 'upstream_unauthorized', '上游认证失败的机器可读 code 必须保留，前端据此展示而不是跳登录页');
+    assert.equal(data.error, 'API Key 无效或无权限，请检查后重试', '中文提示原样保留');
+  }
   fetchModels.setResult({ models: [] });
+
+  // ---- 8.5) 前端纵深防御静态断言（public/js/api.js）——没有可独立测试的
+  //      纯函数（判断逻辑内联在 api() 里），按任务要求改为静态断言：
+  //      a) 401 分支必须先做一次"响应体是否带业务 code 字段"的判断，不能
+  //         无条件跳登录页（回归此前的 bug：`if (res.status === 401) {
+  //         location.href = ...}` 中间没有任何条件分支）；
+  //      b) 判断条件必须锚定 code 字段本身（`body.code` / `.code`），不是
+  //         随便找一个占位判断混过静态检查。 ----
+  {
+    const apiJsPath = path.join(ROOT, 'public/js/api.js');
+    const apiJsSrc = fs.readFileSync(apiJsPath, 'utf8');
+    const authBlockMatch = apiJsSrc.match(/if\s*\(\s*res\.status\s*===\s*401\s*\)\s*\{([\s\S]*?)\n\s*\}\n\s*if\s*\(\s*!res\.ok\s*\)/);
+    assert.ok(authBlockMatch, 'public/js/api.js 必须存在 `if (res.status === 401) { ... }` 分支（紧接着 `if (!res.ok)`）');
+    const authBlockBody = authBlockMatch[1];
+    assert.match(authBlockBody, /body\s*\.\s*code/, '401 分支必须读取响应体的 code 字段做判断依据，而不是无条件处理');
+    // 【回归红线】location.href 跳转必须被包在一个"条件里引用了 code 字段"
+    // 的 if 语句块内部，不能是紧跟在 `if (res.status === 401) {` 之后、无
+    // 任何条件判断就执行的第一行（那正是此前的 bug：`if (res.status===401)
+    // { location.href = '/login.html'; ... }`，中间没有任何分支）。用嵌套
+    // 正则而不是"取分支体第一行"这种位置判断——后者会被这个分支体开头新增
+    // 的解释性注释行悄悄绕过，不是可靠的回归信号。
+    assert.match(
+      authBlockBody,
+      /if\s*\([^)]*code[^)]*\)\s*\{[^}]*location\.href\s*=\s*['"]\/login\.html['"]/,
+      '401 分支的 location.href 跳转必须被包在一个引用了 code 字段的条件判断里，不能是无条件跳转（回归此前的 bug）'
+    );
+  }
 
   // ---- 9) audit_log 里不含任何提交过的明文 apiKey ----
   {
@@ -241,7 +288,7 @@ try {
     }
   }
 
-  console.log('agent models HTTP 路由测试全部通过：provider/baseURL(SSRF) 校验 + apiKey 取值优先级(请求体>env>stored) + 错误码映射 + 审计/响应体不含明文 key');
+  console.log('agent models HTTP 路由测试全部通过：provider/baseURL(SSRF) 校验 + apiKey 取值优先级(请求体>env>stored) + 错误码映射(上游认证失败不再回 401) + 审计/响应体不含明文 key + 前端 401 判断静态回归');
 } finally {
   server.close();
   fs.rmSync(scratch, { recursive: true, force: true });

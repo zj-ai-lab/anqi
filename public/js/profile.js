@@ -338,6 +338,16 @@ if (agentEnabled && agentFields && agentSave) {
       agentModelsStatus.hidden = false;
       agentModelsStatus.classList.add('is-error');
       agentModelsStatus.textContent = e.message || '拉取模型列表失败';
+      // 【2026-08-23 UX 缺陷修复回归，编排方人工验收发现】拉取失败时必须
+      // 自动露出手填入口，不能让用户困在"下拉框还是上一次成功时的旧列表、
+      // 手填框却被折叠"这个状态里——首次拉取就失败时手填框本来就是默认可
+      // 见的（profile.html 里 agent-model-label 默认不带 hidden），这里
+      // 单独处理的是"已经成功过一次、切换 provider/改了 key 后再次拉取却
+      // 失败"这条路径：此时下拉框仍在显示，仅有一枚「改手动填写」按钮可以
+      // 点回手填，不是自动露出。复用既有的 showModelManual()（与用户手动
+      // 点「改手动填写」完全同一套逻辑，同样会把下拉框当前选中值带回手填
+      // 输入框，不丢用户已经选定的模型）。
+      if (!agentModelSelectWrap.hidden) showModelManual();
     } finally {
       // 不是无条件 disabled = false——如果此时仍然满足"该 provider 需要
       // 显式 key 但输入框恰好又是空的"（例如用户在请求进行中把刚才填的

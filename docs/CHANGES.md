@@ -8,7 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **2.7.0-beta.2** | 未发布（工作树 2026-08-23） | AI 助理设置面易用性改造：界面直接填 API key（AES-256-GCM 静态加密存储）、供应商预设自动带出 baseURL、新增 `POST /api/agent/models` 拉取可用模型列表；apiKeyEnv 退居可选高级项，env 优先/本机保存兜底的取值链保证既有 Docker/桌面部署零改动。前端（用户中心 · AI 助理面板）随之重做：供应商切换自动带出/锁定 baseURL、API Key 密码框按「环境变量提供/已保存掩码/未配置」三态展示且留空提交不覆盖已存 key、Model 拉取成功后手填输入框切换为下拉（保留手填兜底）、apiKeyEnv 折进默认收起的「高级选项」 |
+| **2.7.0-beta.2** | 未发布（工作树 2026-08-23） | AI 助理设置面易用性改造：界面直接填 API key（AES-256-GCM 静态加密存储）、供应商预设自动带出 baseURL、新增 `POST /api/agent/models` 拉取可用模型列表；apiKeyEnv 退居可选高级项，env 优先/本机保存兜底的取值链保证既有 Docker/桌面部署零改动。前端（用户中心 · AI 助理面板）随之重做：供应商切换自动带出/锁定 baseURL、API Key 密码框按「环境变量提供/已保存掩码/未配置」三态展示且留空提交不覆盖已存 key、Model 拉取成功后手填输入框切换为下拉（保留手填兜底）、apiKeyEnv 折进默认收起的「高级选项」。**编排方人工验收发现并修复一处 UX 缺陷**：`POST /api/agent/models` 此前把上游供应商认证失败也回 HTTP 401，被前端全局 401 拦截误判成"anqi 会话过期"直接跳登录页——填错一个字符的 key 就被踢出设置页，永远看不到写好的中文提示；现改用 502，并在前端加一层"响应体带业务 code 才不跳转"的纵深防御 |
 | **2.7.0-beta.1** | 未发布（工作树 2026-08-22） | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |
@@ -141,6 +141,18 @@
 **删除范围**：`src/agent/config.js` 的 `resolvePinnedAddress()`（及其 `isPrivateOrLoopbackHost()` 的 `skipRfc2544Bench` 选项）、`src/routes/agent.js` 里对它的调用与依赖注入点、`src/agent/models-client.js` 的 `pinnedAddress`/`pinnedAddresses`/`requestImpl` 参数与多候选故障转移逻辑，以及 `tools/test-agent-config.js` 场景 18、`tools/test-agent-models-client.js` 场景 12–15、`tools/test-agent-models-http.js` 场景 3.5 这些专门覆盖被删代码的测试，一并删除（不留"已废弃但仍存在"的死代码/死测试）。RFC 2544 基准测试段 `198.18.0.0/15` 作为 baseURL **字符串字面量**仍然被 `validateBaseURL()` 无条件拒绝，只是不再对"DNS 解析结果"这一层单独放行——因为这一层本身已经不存在。
 
 **现状（如实描述）**：`POST /api/agent/models` 的 SSRF 防线现在只剩 `validateBaseURL()` 这一层字符串校验（协议白名单/禁 userinfo/禁 query-fragment/公网强制 https/字面量回环-内网-链路本地-CGNAT-metadata 主机名黑名单/deepseek-official 官方域钉死），与 worker 启动路径处于同一水位；一个字符串看起来合法、实际解析到内网/回环的公网注册域名（如 `localtest.me` 一类）现在仍能通过这层校验——这是本轮明确接受的已知取舍，详见 [agent-gates.md](agent-gates.md) 门禁 9。
+
+### 修复：上游认证失败被误判为 anqi 会话过期（本轮，编排方人工验收发现的真实 UX 缺陷）
+
+**缺陷**：`POST /api/agent/models` 在上游（模型供应商）返回 401/403 时，`modelsErrorToHttpStatus()` 此前也让本端点回 HTTP 401（body 是 `{"error":"API Key 无效或无权限，请检查后重试","code":"upstream_unauthorized"}`）；而 `public/js/api.js` 的全局 fetch 封装把**任何** 401 一律当成"anqi 会话过期"直接 `location.href='/login.html'`。后果：公开版用户在设置页把 API key 填错一个字符、点「拉取可用模型」，就被直接踢回登录页，永远看不到上面这句写好的中文提示——正好击中本轮"降低配置门槛"的目标。
+
+**修复（两层，互为兜底）**：
+
+- **后端**：`src/agent/models-client.js` 的 `modelsErrorToHttpStatus()` 把 `upstream_unauthorized`（上游 401/403）的映射从 401 改成 **502**——401 现在专属 `apiAuth` 中间件的会话失效语义，本端点任何分支都不再产出 401。选 502 而非 422：502 Bad Gateway 的标准语义就是"网关/代理从上游收到了错误响应"，与本端点"代用户去问上游 key 是否有效"的角色对应；请求体本身（provider/baseURL/apiKey）对 anqi 而言语法语义均合法，出问题的是下游对凭据的判定，不是 422 通常表达的"anqi 收到的请求本身有误"（这类场景本端点已用 400 覆盖）。同时理顺了该端点全部上游状态码的映射（表见该函数顶部注释）：`upstream_not_found`（404）与 `upstream_error`/`timeout`/`network_error`（429/5xx/超时等）均确认不与 anqi 自身的 404/429 语义碰撞——全站没有任何前端代码对"带业务 `code` 的 404"做特殊分支，anqi 自己的 429 只出现在登录频率限制（`src/middleware/auth.js`）且从不与本端点共享同一次响应。
+- **前端纵深**：`public/js/api.js` 的全局 401 处理加一层判断——只有响应体不含非空字符串 `code` 字段（即 `apiAuth` 中间件返回的真会话失效，其 401 body 恒为 `{error:'unauthorized'}`，从不带 `code`）才跳登录页；带业务 `code` 的错误交给调用方按普通错误展示。不依赖"后端每个端点都记得避开 401"这一件事单独成立。
+- **顺带修复的兜底路径**：拉取模型失败时，若界面此时仍停留在上一次成功拉取留下的下拉框（切换 provider 或改了 key 后重新拉取失败），此前只有一枚「改手动填写」按钮可以切回手填、不是自动露出；`public/js/profile.js` 的拉取失败分支现在会在这种情况下自动调用既有的 `showModelManual()` 切回手填输入框（首次拉取就失败时手填框本来就是默认可见的一等控件，不受影响）。
+
+**测试**：`tools/test-agent-models-client.js` 新增场景 12，直接对 `modelsErrorToHttpStatus()` 这个纯函数做全表回归（核心断言 `upstream_unauthorized` 绝不能是 401）；`tools/test-agent-models-http.js` 场景 8 的 `upstream_unauthorized` 预期状态码改为 502 并新增"绝不是 401"的显式断言，另加场景 8.5——对 `public/js/api.js` 源码做静态断言，确认 401 分支确实依据 `body.code` 做判断、且 `location.href` 跳转确实被包在引用 `code` 的条件判断里（不是无条件跳转，回归此前的 bug 形态）；`tools/smoke-agent-profile-frontend.js` 新增对 `profile.js` 拉取失败分支「自动切回手填」逻辑的静态断言。
 
 ### 已知边界（非本轮范围）
 

@@ -104,6 +104,30 @@ const profileJs = fs.readFileSync(path.join(ROOT, 'public/js/profile.js'), 'utf8
   assert.match(profileJs, /agentFetchBtn\.disabled\s*=\s*blocked/, '条件成立时必须真的把「拉取可用模型」按钮置灰,不能只是弹一次性提示');
   assert.match(profileJs, /agentApiKey\.addEventListener\('input', updateFetchGate\)/, '输入框内容变化必须实时重算按钮可用性,不能只在页面加载/保存时算一次');
   say('profile.js：openai-completions 下 env 来源不再无差别禁用输入框 + 拉取按钮按 provider/输入实时置灰，两条可用性回归修复均命中');
+
+  // 【2026-08-23 UX 缺陷修复回归，编排方人工验收发现】拉取模型失败时，手填
+  // Model 入口必须始终可达：
+  //   (1) 首次拉取（此前从未成功过）时手填输入框本来就是 profile.html 里
+  //       默认可见的一等控件（agent-model-label 不带 hidden，见上面 HTML
+  //       静态审查），不依赖任何 JS 逻辑；
+  //   (2) 已经成功拉取过一次、之后再次拉取又失败这条路径，此前下拉框会继续
+  //       停留在旧列表、手填框保持折叠，用户还需要额外点一次「改手动填写」
+  //       才能摸到手填入口——这里断言 catch 分支必须在下拉框仍展示时主动
+  //       调用 showModelManual() 把手填框重新露出来，不能指望用户自己找到
+  //       那枚切换按钮。
+  // 用 catch/finally 这对锚点定位「拉取可用模型」按钮点击处理里的失败分支
+  // ——不用括号计数/正则贪婪匹配（profile.js 里 `api('/agent/models', {
+  // method: 'POST', body });` 这行本身就含有一个提前的 "});" 子串，天真地
+  // 找第一个 "});" 会把捕获范围截断在 try 块中途,连 catch 都进不去）。
+  const fetchHandlerStart = profileJs.indexOf("agentFetchBtn.addEventListener('click'");
+  assert.ok(fetchHandlerStart >= 0, '必须存在「拉取可用模型」按钮的点击处理');
+  const catchStart = profileJs.indexOf('} catch (e) {', fetchHandlerStart);
+  const finallyStart = profileJs.indexOf('} finally {', catchStart);
+  assert.ok(catchStart > fetchHandlerStart, '拉取模型点击处理必须有 catch 分支');
+  assert.ok(finallyStart > catchStart, '拉取模型点击处理的 catch 分支后必须跟着 finally');
+  const catchBody = profileJs.slice(catchStart, finallyStart);
+  assert.match(catchBody, /if\s*\(\s*!agentModelSelectWrap\.hidden\s*\)\s*showModelManual\(\)/, '拉取失败时，若此刻仍在下拉模式，必须自动调用 showModelManual() 露出手填入口，不能让用户困在"旧下拉列表+折叠手填框"里');
+  say('profile.js：拉取模型失败时手填 Model 入口自动露出（首次失败默认可见 + 二次失败自动切回手填）');
 }
 
 // ---- c：起真实 server.js，验证 settings 掩码往返在真实进程里成立 ----

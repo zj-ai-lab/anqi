@@ -176,10 +176,44 @@ export async function fetchProviderModels({
 }
 
 // 路由层的错误 → HTTP 状态码映射，与 fetchProviderModels() 抛出的 .code
-// 一一对应；未识别的 code 一律 502（防御性兜底，不应该真的走到）。
+// 一一对应。
+//
+// 【2026-08-23 UX 缺陷修复，编排方人工验收发现】核心原则：本端点自己回给
+// 浏览器的 HTTP 状态码只能表达"anqi 这次请求本身"的语义，绝不能被误读成
+// "anqi 会话/凭据失效"——因为 public/js/api.js 的全局 fetch 封装把**任何**
+// 401 一律当成"anqi 会话过期"直接跳 /login.html。此前 upstream_unauthorized
+// （上游供应商说这把 key 无效/无权限）也回 401，于是公开版用户在设置页把
+// API Key 填错一个字符、点「拉取可用模型」，就被直接踢回登录页——上面这句
+// 写好的中文提示（'API Key 无效或无权限，请检查后重试'）永远看不到，且
+// 与本轮改造「降低配置门槛」的目标正相反。现在把"anqi 自身鉴权失败"这个
+// HTTP 401 留给 apiAuth 中间件独占（见 src/middleware/auth.js），本端点
+// 任何分支都不再产出 401。
+//
+//   上游状态码/情形       本模块 .code              本端点 HTTP  理由
+//   ────────────────────────────────────────────────────────────────────
+//   401 / 403            upstream_unauthorized     502          上游供应商认证失败，不是 anqi 自身会话失效（本次修复的核心）；
+//                                                                选 502 而不是 422——502 Bad Gateway 的标准语义正是"网关/代理
+//                                                                从上游收到了一个错误响应"，与本端点的角色（代用户去问上游
+//                                                                "这把 key 行不行"，上游说不行）完全对应；请求体本身
+//                                                                （provider/baseURL/apiKey 字符串）对 anqi 而言语法语义都合法，
+//                                                                出问题的是下游对凭据的判定，不是"anqi 收到的请求本身有误"
+//                                                                （后者才是 422 通常表达的场景，本端点的 provider 非法/baseURL
+//                                                                校验不过已经用 400 覆盖，见上方路由代码，不需要 422）。
+//                                                                502 也与本仓库既有惯例一致——src/routes/records.js:352 对
+//                                                                "上游挂了"同样用 502（且注释同样写"前端应退回手填"）。
+//   404                   upstream_not_found        404          该 /models 路径在上游不存在。全站没有任何前端代码对
+//                                                                "带业务 code 字段的 404" 做特殊分支（唯一被特判的是无 code
+//                                                                的 401，见下面 public/js/api.js 的改动），不会被误读成
+//                                                                "anqi 这个路由本身不存在"。
+//   3xx（重定向）          upstream_redirect_blocked 502          anqi 主动拒绝跟随，既不是"上游出错"也不是"anqi 会话问题"。
+//   429/5xx/其它非 2xx     upstream_error            502          与 records.js:352 同一惯例；anqi 自身的 429 只出现在登录频率
+//                                                                限制（src/middleware/auth.js 的 /api/login），两者从不共享
+//                                                                同一次响应，不会混淆。
+//   超时/连接失败          timeout / network_error   504          纯网络层问题，与"认证"或"资源是否存在"都无关。
+//   其它未识别 code                                   502          防御性兜底，不应该真的走到。
 export function modelsErrorToHttpStatus(code) {
   switch (code) {
-    case 'upstream_unauthorized': return 401;
+    case 'upstream_unauthorized': return 502;
     case 'upstream_not_found': return 404;
     case 'upstream_redirect_blocked': return 502;
     case 'timeout':

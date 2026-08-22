@@ -5,8 +5,24 @@ export async function api(path, opts = {}) {
     body: opts.body ? JSON.stringify(opts.body) : undefined,
   });
   if (res.status === 401) {
-    location.href = '/login.html';
-    throw new Error('unauthorized');
+    // 【2026-08-23 UX 缺陷修复，编排方人工验收发现】并非所有 401 都等于
+    // "anqi 会话过期"——例如 POST /api/agent/models 这类业务端点表达"上游
+    // 供应商认证失败"时，服务端已经改用非 401 状态码（见
+    // src/agent/models-client.js 的 modelsErrorToHttpStatus() 注释表）；这里
+    // 再加一层前端纵深防御，与后端那一层互为兜底，不依赖"后端每个端点都记得
+    // 避开 401"这一件事单独成立。判断依据：apiAuth 中间件返回的会话失效
+    // 401，body 恒为 {error:'unauthorized'}（见 src/middleware/auth.js），
+    // 从不带业务 `code` 字段；只有响应体确实不含非空字符串 `code` 时才当真
+    // 是会话失效并跳登录页——带 code 的 401（万一未来某个端点疏忽把业务语义
+    // 塞进了 401）一律交给下面 !res.ok 分支按普通错误处理并展示给调用方，
+    // 不再无条件跳转。用 res.clone() 是因为 body 只能被消费一次，这里预读一
+    // 次不影响下面 !res.ok 分支正常再读一次原始 res。
+    let body = null;
+    try { body = await res.clone().json(); } catch { /* body 不是 JSON，按无 code 处理 */ }
+    if (!body || typeof body.code !== 'string' || !body.code) {
+      location.href = '/login.html';
+      throw new Error('unauthorized');
+    }
   }
   if (!res.ok) {
     let data = null;
