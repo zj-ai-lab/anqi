@@ -51,19 +51,17 @@ const STATUS_CHIP_CLASS = {
 };
 // 会触发「启动/重新启动」按钮的状态：还没起过、或已经落终态但不是 disabled。
 const STARTABLE_STATUSES = new Set(['stopped', 'error', 'crashed']);
-// 只读工具白名单：anqi 自己的三个只读工具，加上 preset 挂的 dsh-tool-fs /
-// dsh-tool-fs-search 里天然只读的 read/read_image（读文件）与 glob/grep（搜
-// 索）——这四个是助理最高频调用的工具，漏标会让律师看到「🔧 read · 写入」
-// 这种误导性的性质标注。write/edit 不在此列——preset 的 sandbox-policy 把它
-// 们钉死 read-only，必然被拒，标「写入」才是对的（见 agent.cordis.yml）。
-// 另外三个（dsh-tool-skill/dsh-tool-ask-user/dsh-tool-todo 的 skill/
-// ask_user_question/todo_write，工具名见各自 lib/index.js 的 name 字段）
-// 都不写案件数据：skill 只读取受信任 skill 定义；ask_user_question 只是向
-// 律师提问、不落任何字段；todo_write 写的是助理会话自己的待办草稿（不进
-// anjian.db 的案件表），三者标「写入」同样是误导。
+// 只读工具白名单：anqi 自己的三个只读工具，加上三个不写案件数据的 DSH 工具
+// （dsh-tool-skill/dsh-tool-ask-user/dsh-tool-todo 的 skill/ask_user_question/
+// todo_write，工具名见各自 lib/index.js 的 name 字段）：skill 只读取受信任
+// skill 定义；ask_user_question 只是向律师提问、不落任何字段；todo_write 写
+// 的是助理会话自己的待办草稿（不进 anjian.db 的案件表）。三者标「写入」同样
+// 是误导。read/read_image/glob/grep 曾经也在这份名单里——preset 自 2026-08-22
+// 起不再挂载 dsh-tool-fs/dsh-tool-fs-search（见 agent.cordis.yml 顶部注释、
+// docs/agent-gates.md 门禁 1/3「已知限制」§3），这四个工具名不会再出现在
+// 任何 tool/call 事件里，这里同步去掉，避免留一份指向不存在工具的死配置。
 const READONLY_TOOLS = new Set([
   'mcp__anqi-local__case_folder_info', 'anqi_case_get', 'anqi_digest',
-  'read', 'read_image', 'glob', 'grep',
   'skill', 'ask_user_question', 'todo_write',
 ]);
 const PROPOSE_TOOL = 'anqi_inbox_propose';

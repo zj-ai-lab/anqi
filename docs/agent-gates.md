@@ -12,11 +12,12 @@
 | 档 | 含义 |
 |---|---|
 | **机械** | `npm run check` 里有一条会因为该不变量被破坏而变红的断言（最强，回归可复跑） |
+| **结构+** | 直接用 `@deepseek-ai/cordis` 真实装配本仓库生产实际使用的 vendor 类（非 mock/FakeChild），对同型 config 发起一次真实调用并观察实际行为——比纯静态阅读强（真的跑了代码），但不是模型驱动的端到端 turn，不算「动态」 |
 | **结构** | 由代码结构本身保证（例如某能力压根没有入口），可静态复核，但没有专门的失败用例 |
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 39 步，其中第 30–36、39 步专供 sidecar；第 37–38 步是打包/桌面版接线守卫。
+`npm run check` 当前 40 步，其中第 30–36、39–40 步专供 sidecar；第 37–38 步是打包/桌面版接线守卫。
 
 ---
 
@@ -52,6 +53,12 @@
   记录的直接代码探针发现，DSH 通用 `read`/`glob` 工具对绝对路径没有 containment
   ——本条"未出现王五案真实数据"目前依赖的是模型对 persona 指示的服从，不是
   这条不变量在 fs 工具面上的代码级保证。详见「未覆盖/已知限制」§3。
+  **2026-08-22 处置**：beta 已从 `preset/anqi/agent.cordis.yml` 移除模型侧
+  文件读取工具（`read`/`read_image`/`glob`/`grep`，随 `dsh-tool-fs`/
+  `dsh-tool-fs-search` 一并摘除）；read 无 containment 的这条缺口在 beta 面
+  收口为"工具不存在"级别，不再是"工具存在但依赖 persona 劝阻"。GA 若要恢复
+  文件读取能力，必须先给 read 路径补上显式 containment，不能只靠 persona
+  约束重新打开这条面。
 
 ## 门禁 2 · `enabled=false` 在 credential、MCP、prewarm、spawn 之前短路
 
@@ -93,7 +100,8 @@
   turn 正常 completed（不是被系统强行打断）。
   证据：`/private/tmp/.../scratchpad/wf-logs/gates/g3-cross-case-prompt-injection.log`
   （原始抓流 `g3-crosscase-sse.log`）。
-- ⚠️ **补做的关键探针，且是一条真实发现，不是"通过"**（2026-08-22 修复轮）——
+- ⚠️ **[结构+] 补做的关键探针，且是一条真实发现，不是"通过"**（2026-08-22 修复轮，
+  真跑生产同型 vendor 代码，非模型驱动）——
   上面那条动态证据只证明了"模型自己选择不越界"，从未让 fs 沙箱真正面对一次
   越界读请求。本轮 1Password/secretctl 会话反复 `authorization timeout`
   （Monitor 重试 6 次、每次 25s 全部超时），无法重跑真实 DeepSeek turn 去
@@ -115,6 +123,12 @@
   详细方法、原始输出与影响面分析：
   `/private/tmp/.../scratchpad/wf-logs/gates/g3-fs-backend-read-probe.log`。
   另见「未覆盖/已知限制」§3。
+  **2026-08-22 处置**：beta 已从 `preset/anqi/agent.cordis.yml` 移除模型侧
+  文件读取工具（`read`/`read_image`/`glob`/`grep`，随 `dsh-tool-fs`/
+  `dsh-tool-fs-search` 一并摘除）；read 无 containment 的这条缺口在 beta 面
+  收口为"工具不存在"级别，不再是"工具存在但依赖 persona 劝阻"。GA 若要恢复
+  文件读取能力，必须先给 read 路径补上显式 containment，不能只靠 persona
+  约束重新打开这条面。
 
 ## 门禁 4 · 首个 `request/header` 含唯一 anqi skill 与精确 MCP 工具，且同一 turn 实际调用该工具
 
@@ -143,6 +157,12 @@
   而不是仅在 FakeChild 回放下才成立。
   证据：`/private/tmp/.../scratchpad/wf-logs/gates/g4-first-header-mcp-tool.log`
   （原始抓流 `g1-g4-sse.log` turn 1 / `g4-retry2-sse.log` turn 1）。
+  ⚠️ **工具集已于 07c0630 后收窄**（移除 fs 读取工具 `read`/`read_image`/`glob`/
+  `grep`，见 preset 变更）：上面这条 [动态] 证据里"`header.tools` 恰好 13 个"
+  的样本是收窄**之前**采集的，收窄之后首 header 的工具总数会变少（不是本文
+  重新动态取证得出的数字，这里没有、也不应该谎称已经重新跑过）。收窄之后
+  首 header 的正确性以 preflight/`tools/check.sh` 第 40 步机械守卫为准；下一次
+  做 model-backed 取证时需要重新抓一次首 header 样本，刷新这里的工具计数。
 
 ## 门禁 5 · approval / question 的 allow / reject / answer / timeout / disconnect / shutdown 全部 session-bound、one-shot、fail-closed
 
@@ -313,16 +333,25 @@
    `/private/tmp/.../scratchpad/wf-logs/gates/` 下对应文件（该临时目录本轮结束后保留供
    复核，但不在仓库 tracked 范围内，之后可能被清理——长期证据以 commit 时写入的日志摘录
    与本文件登记的结论为准）。门禁 5 的 question 半支取得完整真实闭环证据；approval 半支
-   如实记录了一个真实发现：本仓库实际发运的 `read-only` + `user-approval.policy:never`
-   配置下，fs escalation 走确定性拒绝、从未产生 pending-interaction 记录，因此
-   reject/allow-once 两个 outcome 分支本身没有可在当前配置下诱导出的真实交互可测——这两个
+   如实记录了一个真实观察，口径与该条目下方一致（**不是**「fs escalation 走确定性
+   拒绝」本身被真实验证）：真实 turn 里模型确实调用了 `write` 并收到
+   `FS_SANDBOX_DENIED`——这一步是 **[动态]**；但拒绝之后模型的 reasoning 明确引用
+   系统提示、从未发出任何 escalation 请求——`user-approval.policy:never` 让
+   escalation 走确定性拒绝的这条分支，本轮**没有被真实请求触达过**，`pendingInteractions`
+   全程为空只是因为没有 escalation 请求送达，不是"送达后被拒绝"，因此这条分支仍是
+   **[结构]**（静态代码阅读 + 未被本轮任何真实 turn 反驳），不应算作对它的动态印证。
+   reject/allow-once 两个 outcome 分支本身也没有可在当前配置下诱导出的真实交互可测——这两个
    分支的正确性继续依赖既有回归（FakeChild 回放，[机械]档）。GA 前如果要拿到这两个
    outcome 的**动态**证据，需要专门起一个把 `user-approval.policy` 打开成非 `never`
    的一次性验收配置（不是本仓库默认发运的配置），不属于本轮范围。
-2. **`write`/`edit` 工具名仍对模型可见**：rc.7 的 `@deepseek-ai/dsh-tool-fs` 不可拆分只读子集，
+2. ~~**`write`/`edit` 工具名仍对模型可见**：rc.7 的 `@deepseek-ai/dsh-tool-fs` 不可拆分只读子集，
    只能靠 `sandbox-policy.mode: read-only` + `user-approval.policy: never` 拒绝，
-   不是"工具不存在"级别的保证（见 `preset/anqi/agent.cordis.yml` 顶部注释）。
-3. **`read`/`glob` 对绝对路径没有 containment——这是本轮修复直接调用真实
+   不是"工具不存在"级别的保证（见 `preset/anqi/agent.cordis.yml` 顶部注释）。~~
+   **已由 2026-08-22 处置解决**：preset 已整体不再挂载 `@deepseek-ai/dsh-tool-fs`，
+   `write`/`edit`（以及 `read`/`read_image`）四个工具名现在对模型完全不可见，
+   不再是"可见但被沙箱拒绝"，而是"工具不存在"级别；本条保留作历史记录，
+   不再是当前状态。
+3. **[结构+]** **`read`/`glob` 对绝对路径没有 containment——这是本轮修复直接调用真实
    vendor 代码验证出的发现，不是猜测**：`@deepseek-ai/dsh-fs-sandbox` 的
    `SandboxedFileSystem` 只重写了 `writeText`/`editText`（`checkedTarget()`
    只在这两个方法里生效），`resolve`/`stat`/`readText`/`streamText` 全部原样
@@ -343,6 +372,16 @@
    收紧这一点。方法、原始输出见
    `/private/tmp/.../scratchpad/wf-logs/gates/g3-fs-backend-read-probe.log`，
    门禁 3 条目下也有摘录。
+   **2026-08-22 处置**：编排方基于这条发现拍板，beta 从
+   `preset/anqi/agent.cordis.yml` 整体移除 `@deepseek-ai/dsh-tool-fs`
+   （read/read_image/write/edit）与 `@deepseek-ai/dsh-tool-fs-search`
+   （glob/grep）——模型侧不再拥有任何文件读取工具，read 无 containment 的
+   这条缺口在 beta 面收口为"工具不存在"级别，不再依赖 persona 劝阻这道
+   唯一防线。`tools/check.sh` 第 40 步新增机械守卫，preset 组装文本里
+   不得再出现这两个包名，防止未来无人重新评估这条围栏就把它们加回来。
+   GA 若要恢复文件读取能力，必须先给 read 路径补上显式 containment（例如
+   包一层校验绝对路径必须仍解析在 workspaceRoot 下），不能只靠 persona
+   约束。
 4. **打包体积**：本轮 bundle 的是全闭包而非 trace-derived 最小闭包，双架构 DMG 均较
    2.6.0 基线（140,389,719 B）显著增大——arm64 200,356,527 B（+42.71%）、
    x64 205,187,873 B（+46.16%），依赖裁剪留给 GA（见 `CHANGES.md`）。

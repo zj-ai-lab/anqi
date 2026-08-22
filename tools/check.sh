@@ -8,7 +8,7 @@ cd "$(dirname "$0")/.."
 unset FORCE_COLOR
 export NO_COLOR=1
 
-echo "[1/39] node --check"
+echo "[1/40] node --check"
 for f in server.js src/db.js src/lib/*.js src/lib/*.cjs src/middleware/*.js src/routes/*.js src/agent/*.js src/agent/assets/plugins/*/index.js src/agent/assets/mcp/server.mjs public/js/*.js cli/case tools/seed-demo.js tools/seed-finance-qa.js tools/qa-finance-ui.js tools/hash-password.js tools/test-engine.js tools/test-settlement.js tools/test-settlement-view.js tools/test-settlement-transaction.js tools/test-settlement-http.js tools/test-share.js tools/test-migration-006.js tools/test-migration-007.js tools/test-migration-008.js tools/test-migration-009.js tools/test-migration-010.js tools/test-migration-011.js tools/test-migration-012.js tools/test-migration-013.js tools/test-migration-014.js tools/test-migration-015.js tools/test-migration-016.js tools/test-password-hash.js tools/test-startup-config.js tools/test-trust-proxy.js tools/test-auth-security.js tools/test-secure-files.js tools/test-files-http.js tools/test-error-handler.js tools/test-document-extractor.js tools/test-legalrag-bridge.js tools/test-legalrag-http.js tools/test-inbox-http.js tools/test-agent-config.js tools/test-agent-supervisor.js tools/test-agent-proposals.js tools/test-agent-proposals-http.js tools/test-agent-settings.js tools/test-agent-http.js tools/test-agent-session-read-http.js tools/test-pack-manifest.js electron/main.js electron/backend-env.js tools/test-electron-backend-env.js tools/smoke-agent-frontend.js build/adhoc-sign.cjs build/afterpack-agent-runtime-link.cjs build/ensure-cross-arch-optional-deps.mjs; do
   node --check "$f"
 done
@@ -20,7 +20,7 @@ if grep -rnE '\.(append|prepend)\(.*\?.*:[[:space:]]*null[[:space:]]*\)' public/
 fi
 echo "  ok"
 
-echo "[2/39] rules JSON 合法性"
+echo "[2/40] rules JSON 合法性"
 node -e "
 const fs = require('fs');
 for (const f of ['rules/event_types.json','rules/stage_templates.json','rules/deadline_rules.json','rules/holidays-2026.json']) {
@@ -29,87 +29,87 @@ for (const f of ['rules/event_types.json','rules/stage_templates.json','rules/de
 console.log('  ok');
 "
 
-echo "[3/39] migration 干跑（临时库）"
+echo "[3/40] migration 干跑（临时库）"
 TMPDIR_CHECK=$(mktemp -d)
 DB_PATH="$TMPDIR_CHECK/check.db" node -e "import('./src/db.js').then(() => console.log('  ok'))"
 
-echo "[4/39] migration 005 → 006 fixture + 原子性测试"
+echo "[4/40] migration 005 → 006 fixture + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-006.db" node tools/test-migration-006.js
 
-echo "[5/39] migration 006 → 007 fixture + 原子性测试"
+echo "[5/40] migration 006 → 007 fixture + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-007.db" node tools/test-migration-007.js
 
-echo "[6/39] migration 007 → 008 fixture + 原子性测试"
+echo "[6/40] migration 007 → 008 fixture + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-008.db" node tools/test-migration-008.js
 
-echo "[7/39] migration 008 → 009 文件桥 + 原子性测试"
+echo "[7/40] migration 008 → 009 文件桥 + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-009.db" node tools/test-migration-009.js
 
-echo "[8/39] migration 009 → 010 人类语义字段 + 原子性测试"
+echo "[8/40] migration 009 → 010 人类语义字段 + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-010-bootstrap.db" node tools/test-migration-010.js
 
-echo "[9/39] migration 010 → 011 推荐反馈 + 候选事实层"
+echo "[9/40] migration 010 → 011 推荐反馈 + 候选事实层"
 DB_PATH="$TMPDIR_CHECK/migration-011-bootstrap.db" node tools/test-migration-011.js
 
-echo "[10/39] migration 011 → 012 款项凭证指针"
+echo "[10/40] migration 011 → 012 款项凭证指针"
 DB_PATH="$TMPDIR_CHECK/migration-012-bootstrap.db" node tools/test-migration-012.js
 
-echo "[11/39] migration 012 → 013 去个人化 actor（带存量数据的 fixture）"
+echo "[11/40] migration 012 → 013 去个人化 actor（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-013-bootstrap.db" node tools/test-migration-013.js
 
-echo "[12/39] migration 013 → 014 settings 键值表（带存量数据的 fixture）"
+echo "[12/40] migration 013 → 014 settings 键值表（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-014-bootstrap.db" node tools/test-migration-014.js
 
-echo "[13/39] migration 014 → 015 tasks 截止时刻（带存量数据的 fixture）"
+echo "[13/40] migration 014 → 015 tasks 截止时刻（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-015-bootstrap.db" node tools/test-migration-015.js
 
-echo "[14/39] migration 015 → 016 sessions UTC（带存量数据的 fixture）"
+echo "[14/40] migration 015 → 016 sessions UTC（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-016-bootstrap.db" node tools/test-migration-016.js
 
-echo "[15/39] 密码 hash 版本与 legacy 兼容"
+echo "[15/40] 密码 hash 版本与 legacy 兼容"
 node tools/test-password-hash.js
 
-echo "[16/39] 启动 fail-closed + trusted proxy 解析"
+echo "[16/40] 启动 fail-closed + trusted proxy 解析"
 node tools/test-startup-config.js
 node tools/test-trust-proxy.js
 
-echo "[17/39] 会话、恒时凭据比较与案件文件安全边界"
+echo "[17/40] 会话、恒时凭据比较与案件文件安全边界"
 node tools/test-auth-security.js
 node tools/test-secure-files.js
 node tools/test-files-http.js
 
-echo "[18/39] production 500 脱敏"
+echo "[18/40] production 500 脱敏"
 node tools/test-error-handler.js
 
-echo "[19/39] 结算整数公式单元测试"
+echo "[19/40] 结算整数公式单元测试"
 node tools/test-settlement.js
 
-echo "[20/39] 律师资金卡 view model 测试"
+echo "[20/40] 律师资金卡 view model 测试"
 node tools/test-settlement-view.js
 
-echo "[21/39] 期限引擎单元测试"
+echo "[21/40] 期限引擎单元测试"
 DB_PATH="$TMPDIR_CHECK/engine.db" node tools/test-engine.js
 
-echo "[22/39] 分成兼容 + 提醒单元测试（1.2.0/1.3.0 语义）"
+echo "[22/40] 分成兼容 + 提醒单元测试（1.2.0/1.3.0 语义）"
 DB_PATH="$TMPDIR_CHECK/share.db" node tools/test-share.js
 
-echo "[23/39] 外层结算事务组合回归"
+echo "[23/40] 外层结算事务组合回归"
 DB_PATH="$TMPDIR_CHECK/settlement-transaction.db" node tools/test-settlement-transaction.js
 
-echo "[24/39] 结算 HTTP 回归（临时库 + 临时端口）"
+echo "[24/40] 结算 HTTP 回归（临时库 + 临时端口）"
 node tools/test-settlement-http.js
 
-echo "[25/39] LegalRAG 语义筛选 + 文件桥队列 + 提取候选单元回归"
+echo "[25/40] LegalRAG 语义筛选 + 文件桥队列 + 提取候选单元回归"
 node tools/test-document-extractor.js
 DB_PATH="$TMPDIR_CHECK/legalrag-bridge.db" node tools/test-legalrag-bridge.js
 
-echo "[26/39] LegalRAG 候选人工确认 HTTP 回归"
+echo "[26/40] LegalRAG 候选人工确认 HTTP 回归"
 DB_PATH="$TMPDIR_CHECK/legalrag-http.db" node tools/test-legalrag-http.js
 
-echo "[27/39] L2 推荐去重与裁决记忆 HTTP 回归"
+echo "[27/40] L2 推荐去重与裁决记忆 HTTP 回归"
 node tools/test-inbox-http.js
 
-echo "[28/39] API 冒烟（临时库 + 临时端口）"
+echo "[28/40] API 冒烟（临时库 + 临时端口）"
 PORT=39770
 DB_PATH="$TMPDIR_CHECK/smoke.db" PORT=$PORT NODE_ENV=test HOST=127.0.0.1 ANJIAN_UNSAFE_NO_AUTH=1 node server.js >"$TMPDIR_CHECK/server.log" 2>&1 &
 SRV=$!
@@ -343,7 +343,7 @@ grep -q '^event: change' "$SSE_OUT"
 curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID/files/sig?dir=%E6%B3%95%E9%99%A2%E6%96%87%E4%B9%A6" | grep -q '外部丢入.txt'
 echo "  ok"
 
-echo "[29/39] 登录门冒烟（带 ANJIAN_USER 的实例）"
+echo "[29/40] 登录门冒烟（带 ANJIAN_USER 的实例）"
 PORT2=39771
 HASH=$(DB_PATH="$TMPDIR_CHECK/hash.db" node -e "import('./src/middleware/auth.js').then(m=>console.log(m.hashPassword('smoke-pass-123')))")
 DB_PATH="$TMPDIR_CHECK/auth.db" PORT=$PORT2 NODE_ENV=test HOST=127.0.0.1 ANJIAN_UNSAFE_NO_AUTH= ANJIAN_USER=smokeuser ANJIAN_PASS_HASH="$HASH" node server.js >"$TMPDIR_CHECK/auth.log" 2>&1 &
@@ -359,31 +359,31 @@ COOKIE=$(curl -s -D - -o /dev/null -X POST "http://127.0.0.1:$PORT2/api/login" -
 curl -fsS -H "Cookie: $COOKIE" "http://127.0.0.1:$PORT2/api/digest" >/dev/null
 echo "  ok"
 
-echo "[30/39] DSH sidecar 设置白名单（enabled 门 + baseURL 允许域策略 + apiKeyEnv 保留名）"
+echo "[30/40] DSH sidecar 设置白名单（enabled 门 + baseURL 允许域策略 + apiKeyEnv 保留名）"
 node tools/test-agent-config.js
 
-echo "[31/39] DSH sidecar supervisor（门禁红线 + turn/worker 生命周期回归）"
+echo "[31/40] DSH sidecar supervisor（门禁红线 + turn/worker 生命周期回归）"
 node tools/test-agent-supervisor.js
 
-echo "[32/39] agent 提案闭环（proposal_id 幂等 + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖）"
+echo "[32/40] agent 提案闭环（proposal_id 幂等 + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖）"
 node tools/test-agent-proposals.js
 
-echo "[33/39] agent-proposals 路由回归（session 绑定信任边界 + kind/source/payload/source_ref 白名单 + 幂等状态码）"
+echo "[33/40] agent-proposals 路由回归（session 绑定信任边界 + kind/source/payload/source_ref 白名单 + 幂等状态码）"
 node tools/test-agent-proposals-http.js
 
-echo "[34/39] agent session 绑定只读面路由回归（agent-case-view/agent-digest 按 session 反查 case + 他案零泄漏 + 旧全所端点不受影响）"
+echo "[34/40] agent session 绑定只读面路由回归（agent-case-view/agent-digest 按 session 反查 case + 他案零泄漏 + 旧全所端点不受影响）"
 node tools/test-agent-session-read-http.js
 
-echo "[35/39] agent 设置白名单 HTTP 回归（enabled 布尔 + provider 枚举 + apiKeyEnv 保留名 + baseURL 协议/内网/官方域 + provider 联动 + 事务原子性）"
+echo "[35/40] agent 设置白名单 HTTP 回归（enabled 布尔 + provider 枚举 + apiKeyEnv 保留名 + baseURL 协议/内网/官方域 + provider 联动 + 事务原子性）"
 node tools/test-agent-settings.js
 
-echo "[36/39] /api/agent* 路由回归（状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅）"
+echo "[36/40] /api/agent* 路由回归（状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅）"
 node tools/test-agent-http.js
 
-echo "[37/39] 打包清单守卫（build.files 不得排除 server.js 静态 import 图里的任何 src/** 文件）"
+echo "[37/40] 打包清单守卫（build.files 不得排除 server.js 静态 import 图里的任何 src/** 文件）"
 node tools/test-pack-manifest.js
 
-echo "[38/39] electron backend-env（dataDir 路径拼接 + ANJIAN_TEST_USERDATA 的 env+argv 双门）"
+echo "[38/40] electron backend-env（dataDir 路径拼接 + ANJIAN_TEST_USERDATA 的 env+argv 双门）"
 node tools/test-electron-backend-env.js
 
 # 红线「agent_enabled=false 时整块 UI 不渲染」此前只有源码可读性背书，没有任何
@@ -393,7 +393,42 @@ node tools/test-electron-backend-env.js
 # 按钮之后、前端监听的 SSE 事件名与后端真实广播源漂移，这三类回归都会在自检里
 # 当场变红。该脚本自带固定端口 3009（与本文件其余步骤的 39770/39771 不冲突）
 # 与临时库，跑完自行收尾。
-echo "[39/39] 前端行为冒烟（counts.agent 特性探测门 + agent_* 五键往返 + SSE 帧到 DOM 映射静态审查）"
+echo "[39/40] 前端行为冒烟（counts.agent 特性探测门 + agent_* 五键往返 + SSE 帧到 DOM 映射静态审查）"
 node tools/smoke-agent-frontend.js
+
+# 产品决策（2026-08-22，见 docs/agent-gates.md 门禁 1/3「已知限制」§3）：门禁
+# 取证发现 rc.7 的 dsh-fs-sandbox 只对 write/edit 做 containment，read 对绝对
+# 路径完全没有围栏；beta 因此把 dsh-tool-fs/dsh-tool-fs-search 整体从 preset
+# 里拿掉，收口到「工具不存在」级别。这一步是纯文本机械守卫，防止未来有人
+# 为了"方便模型读文件"又把这两行加回 preset/anqi/agent.cordis.yml，却没有
+# 人重新评估这条围栏缺口——加回来的第一时间就在这里变红，逼这条评估发生。
+echo "[40/40] preset 工具面机械守卫（不得再挂载模型侧文件读取工具）"
+node -e "
+const fs = require('fs');
+const p = 'src/agent/assets/preset/anqi/agent.cordis.yml';
+const text = fs.readFileSync(p, 'utf8');
+const forbidden = [\"'@deepseek-ai/dsh-tool-fs'\", \"'@deepseek-ai/dsh-tool-fs-search'\"];
+for (const name of forbidden) {
+  if (text.includes(name)) {
+    console.error('  ❌ preset 仍挂载 ' + name + '——beta 决策是模型侧不提供文件读取工具' +
+      '（read/read_image/glob/grep），见 docs/agent-gates.md 门禁 1/3「已知限制」§3。' +
+      '如确需恢复，必须先给 read 路径补上显式 containment，再回到这条守卫里放行。');
+    process.exit(1);
+  }
+}
+const required = [
+  \"'@deepseek-ai/dsh-skill-filesystem'\", \"'@deepseek-ai/dsh-tool-skill'\",
+  \"'@deepseek-ai/dsh-tool-todo'\", \"'@deepseek-ai/dsh-tool-ask-user'\",
+  \"'../../plugins/dsh-anqi/index.js'\",
+];
+for (const name of required) {
+  if (!text.includes(name)) {
+    console.error('  ❌ preset 缺少必需行 ' + name + '——skill 加载依赖 dsh-skill-filesystem，' +
+      '不是模型 fs 工具，误删会连带断掉 skill 内容加载。');
+    process.exit(1);
+  }
+}
+console.log('  ok（未发现 dsh-tool-fs / dsh-tool-fs-search；skill-filesystem/tool-skill/tool-todo/tool-ask-user/dsh-anqi 齐全）');
+"
 
 echo "ALL GREEN ✅"

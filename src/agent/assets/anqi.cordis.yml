@@ -47,8 +47,11 @@
   name: '@deepseek-ai/dsh-subprocess-local'
 
 # mode 与 policy 都钉死为常量，不接受任何 env 覆盖——同 spike 不同的是，主线
-# preset 只暴露 fs 读/搜索（见 preset/anqi/agent.cordis.yml 顶部注释：dsh-tool-fs
-# 包本身不可拆分 read/write/edit，只能整包挂载再用沙箱层锁死）。read-only 是
+# preset（见 preset/anqi/agent.cordis.yml 顶部注释）自 2026-08-22 起已经不再
+# 挂载 `@deepseek-ai/dsh-tool-fs`/`dsh-tool-fs-search`，模型侧没有任何 fs
+# 读写工具，这两个宿主服务当前已无模型可达路径能触发。仍然保留是纵深防御：
+# 万一未来又在某个 preset 里重新挂上 fs 工具，read-only/never 这两个钉死值
+# 立刻生效，不依赖那个 preset 自己记得配对。read-only 是
 # dsh-sandbox-policy 的 schema 默认值，这里显式写出防止未来改动误删；'never' 让
 # 任何升级到 workspace-write/danger-full-access 的 escalation 请求走确定性拒绝
 # （不产生 wire round-trip，不落 supervisor 的 pending-interaction 表）。
@@ -104,8 +107,11 @@
   config:
     cwd: !!js (() => { if (!process.env.DSH_CWD) throw new Error('DSH_CWD is required'); return process.env.DSH_CWD; })()
 
-# 模型可见的 filesystem/skill/question/todo 与 anqi 领域工具只在 preset/anqi 里
-# 挂载；宿主面不挂 bash/web/subagent/workflow/ralph 中任何一个。
+# 模型可见的 skill/question/todo 与 anqi 领域工具只在 preset/anqi 里挂载；宿主面
+# 不挂 bash/web/subagent/workflow/ralph 中任何一个。fs 读写工具（read/read_image/
+# write/edit/glob/grep）自 2026-08-22 起也不在 preset/anqi 里挂载——`fs-sandbox`/
+# `sandbox-policy` 这两个宿主服务因此当前没有模型可达路径能触发，见上面
+# `sandbox-policy` 行的注释。
 
 - id: llm-deepseek
   name: '@deepseek-ai/dsh-llm-deepseek'
