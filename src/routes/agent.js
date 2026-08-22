@@ -36,6 +36,15 @@
 //     /agent/status 与 SSE 首帧做了这一层短路，start/prompt/cancel/answer
 //     要么完全没查、要么只在 supervisor 内部间接查，见
 //     docs/agent-gates.md 门禁 2/10 补记）。
+//   - POST /api/agent/models                        —— 上面这五个端点之外的
+//     第六个端点，刻意例外：不查 loadAgentConfig()、不受 enabled 门约束——
+//     这是"保存前先测试 provider/baseURL/key"的配置期工具，用户可能还没点
+//     启用开关就要看模型下拉框。这个例外不等于"不设防"：它有自己独立的红
+//     线（见该路由内的详细注释与 docs/agent-gates.md 门禁 2/9 补记）——
+//     apiKey 省略时只有 baseURL 与 provider 官方域/已保存的 agent_base_url
+//     同源才允许回落到 env/本机存储的 key，否则要求请求体显式带 apiKey，
+//     防止把 key 外带到调用方指定的任意主机；baseURL 仍然过与保存设置同一
+//     套 SSRF 校验（协议/凭据/内网回环/官方域）。
 //   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
 //     （src/routes/views.js 的 /api/inbox/:id/accept|decline），本文件不新开
 //     任何模型可达的 accept API。

@@ -77,6 +77,21 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
 - **机械** — `tools/test-agent-http.js`（check 第 36 步）覆盖 `enabled=false` 的 REST/SSE 短路。
 - **机械** — `tools/smoke-agent-frontend.js`（check 第 39 步）：默认态 `/api/counts.agent=false`，
   且 `case.html` 静态源码里只有一个空挂载点 `#agent-entry-slot`，不含任何硬编码入口标记。
+- ⚠️ **[口径说明，2026-08-23 复审] 本条门禁不适用于两个刻意的配置期例外**——
+  beta.2 新增的 `POST /api/agent/models`（`src/routes/agent.js`）与
+  `GET /api/settings` 的 `buildSettingsView()`（`src/routes/settings.js`）都
+  **不**经过 `agent_enabled` 门就会解析 credential：这是设计使然，不是本条
+  门禁的疏漏——用户在设置页填 key、还没点击「启用」开关之前，就需要能
+  "拉取模型列表"验证 key 是否可用、"看到已存的 key 是否被认出来"，如果
+  这两个操作也被 `enabled` 门挡住，公开版用户根本没法在打开开关前确认配置
+  是否正确。这两处读凭据的口子各自有独立的红线约束（不是"不设防"）：
+  `POST /api/agent/models` 只在 `baseURL` 与 provider 官方域/已保存地址
+  同源时才回落到 env/本机存储的 key（见门禁 9 关于 key 外带通道的补记），
+  `buildSettingsView()` 只返回掩码/布尔/来源枚举、绝不回显明文。读者不应该
+  把本条门禁的"未启用时后面任何一行都不执行"当成对整个代码库的断言——它
+  精确覆盖 `loadAgentConfig()`/`_startWorker()`/REST-SSE 的 `start`/
+  `prompt`/`cancel`/`answer`/`events` 六个 worker 生命周期入口，不覆盖这两
+  个刻意设计的配置期读取路径。
 - **动态**（2026-08-22）— 关闭 `agent_enabled` 后对一个从未启动过 worker 的案件
   `POST /api/cases/:id/agent/start`：返回 `409 {code:'agent_disabled'}`，不是 200/静默失败；
   DSH 子进程数量在关闭前后保持不变（仍只有另一案早先在 `enabled=true` 下启动的那一个，
@@ -340,6 +355,33 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
 - **结构** — 配置侧堵死"把宿主内部 key 当模型 key 发出去"：`isReservedEnvName()` 拒绝
   `ANJIAN_`/`ANQI_`/`DSH_` 前缀与常见宿主变量名；`validateBaseURL()` 拒绝内网/回环/带凭据 URL，
   `deepseek-official` 钉死官方域。
+- ⚠️ **[口径更新，2026-08-23 复审]** beta.2 的「界面填 key」功能扩大了 key 值存在的位置——
+  上面三条 [结构] 是 beta.1 时代（只有 `apiKeyEnv` 一条路径）的口径，以下逐条更新为
+  当前实际情况，均已复核过对应的保护措施仍然成立：
+  - **"key 值只存在于两处"** 不再成立：现在还存在于 `settings` 表的 `agent_api_key_encrypted`
+    行（AES-256-GCM 密文，非明文）、`getStoredApiKey()` 一次性解密出的内存明文（用完即弃，不
+    缓存）、`GET /api/settings` 响应体里的 `agent_api_key_masked`（只留末 4 位，非明文）、以及
+    `POST /api/agent/models` 发往调用方指定主机的 `Authorization` 头（这是该端点的设计目的
+    本身——把 key 发给一个模型 provider 的 `/models` 接口——不是泄漏；该端点现在只信任
+    provider 官方域或与已保存 `agent_base_url` 同源的目标，见本条目下方的"外带通道"补记）。
+  - **"`/api/counts` 只回一个布尔"** 不再成立：现在还回 `agent_key_source`（`env`/`stored`/
+    `none` 三态枚举），仍然不含 key 值本身，只是多了一个"来源"维度。`GET /api/settings` 同样
+    新增 `agent_api_key_masked` 与 `agent_api_key_source`——均为脱敏字段，未回归到明文。
+  - **"`isReservedEnvName()` 堵死内部 key 外发"** 此前只在 `loadAgentConfig()` 这一条读路径上
+    强制；`src/routes/agent.js`/`src/routes/settings.js` 另有两处裸读 settings 表的消费者曾经
+    绕过这层校验（2026-08-23 复审探针实证：把 `agent_api_key_env` 直接置成
+    `ANJIAN_INTERNAL_KEY`，这两个消费者会把内部密钥当模型 key 读出来）。现已修复：校验下沉进
+    `resolveAgentApiKey()` 本身，所有调用方自动继承，不再依赖每个新增消费者各自记得复检一遍。
+  - **【2026-08-23 复审新增的外带通道，已修复】** `POST /api/agent/models` 曾经对**任意**
+    调用方指定的 `baseURL` 都放行 env/本机存储的 key 回落——这构成一条把只在 `GET /api/settings`
+    里以掩码形式暴露的完整明文 key，外带到调用方指定的任意主机的通道（且该端点如上所述刻意
+    不经过 `agent_enabled` 门）。现已修复为只信任 provider 官方域或与已保存 `agent_base_url`
+    同源的目标，机械回归见 `tools/test-agent-models-http.js` 场景 7.5。
+  - **【2026-08-23 复审新增，已修复】** `fetchProviderModels()` 曾经跟随 3xx 重定向，可以把
+    一个已通过 SSRF 校验的公网 `baseURL` 用 302 带进内网——虽然跨源重定向时 undici 会剥掉
+    `Authorization` 头（key 本身没有跟着走），但内网 JSON 响应体的 `id` 字段会被当成模型列表
+    原样返回，构成一个内网端口存活探测 oracle。现已改为 `redirect:'manual'`，3xx 显式拒绝为
+    `upstream_redirect_blocked`，机械回归见 `tools/test-agent-models-client.js` 场景 11。
 - **机械** — 场景 7（`listPendingInteractions` 脱敏）、场景 16c（对象 key 名脱敏）、
   场景 19（`worker.error` 兜底脱敏）、场景 23（wire 事件撞名重写）；
   `tools/test-agent-config.js` / `tools/test-agent-settings.js` 覆盖保留名与 baseURL 策略。
