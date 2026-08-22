@@ -70,7 +70,7 @@
 
 ### 功能
 
-- **界面直接填 key，AES-256-GCM 静态加密落库**：新增 `src/lib/secret-box.js`——加密主密钥优先取 env `ANJIAN_SECRET`（须至少 32 字节 UTF-8 熵，摘要成 32 字节 key，不足直接拒绝），否则用数据目录下的 `secret.key`（首次自动生成 32 随机字节、写盘 `mode:0o600` 后再显式 `chmodSync` 一次钉死权限位，父目录已存在时不改其权限）。密文格式 `v1:<nonce base64>:<tag base64>:<密文 base64>`，GCM 认证加密——密钥错误或密文被篡改时 `decryptSecret()` 直接抛错，不会安静吐出乱码明文。
+- **界面直接填 key，AES-256-GCM 静态加密落库**：新增 `src/lib/secret-box.js`——加密主密钥优先取 env `ANJIAN_SECRET`（须至少 32 字节 UTF-8 熵，另需字符多样性达标，不足/单一重复字符直接拒绝；`scrypt`（固定应用层 salt + 加重成本参数）派生出 32 字节 key，按 passphrase 精确值做进程内缓存以抵消 scrypt 引入的计算开销——具体强度校验与派生算法演进见下方"复审修复"小节），否则用数据目录下的 `secret.key`（首次自动生成 32 随机字节、写盘 `mode:0o600` 后再显式 `chmodSync` 一次钉死权限位，父目录已存在时不改其权限）。密文格式 `v1:<nonce base64>:<tag base64>:<密文 base64>`，GCM 认证加密——密钥错误或密文被篡改时 `decryptSecret()` 直接抛错，不会安静吐出乱码明文。
 - **取值优先级链（关键）**：`src/agent/config.js` 新增 `resolveAgentApiKey(config)`——`agent_api_key_env` 指向的环境变量若存在且非空 → 用它，`source:'env'`（保证现有 Docker/桌面部署零改动继续工作）；否则取界面存的加密 key（`getStoredApiKey()`，解密失败/格式非法一律安全失败为 `null`，不抛出）；两者都没有 → `source:'none'`。`agentReady()`/新增的 `agentKeyStatus()` 均基于这条链，`enabled=false` 时仍在任何 key 解析之前短路（与既有红线同一条判断）。
 - **`agent_api_key_env` 退居可选高级项**：`loadAgentConfig()`/`PUT /api/settings` 的校验从"必须是合法环境变量名"改为"留空则跳过校验、非空仍必须合法且不得是保留名/前缀"——不再是 `enabled` 判定的必要条件，`provider`/`model`/`baseURL` 仍然必需。
 - **`PUT /api/settings` 新增 `agent_api_key`**（明文入参，落库前加密）：空字符串是显式"清空已存 key"的信号；超过 4096 字符拒绝；类型非字符串拒绝。GET/PUT 响应体不再带出存储键 `agent_api_key_encrypted`（密文本身也不回显），改为三个计算字段 `agent_api_key_configured`（布尔）/`agent_api_key_source`（`env`\|`stored`\|`none`）/`agent_api_key_masked`（如 `…abcd`，只留末 4 位）——全程不经过 `agent_enabled` 门，配置期（尚未点启用开关）也能看到"我刚存的 key 有没有被认出来"。
@@ -106,7 +106,7 @@
 - **`POST /api/agent/models` 堵住 key 外带通道**（当时的修复方案本身仍留有一个洞，二次复审已实证复现并真正修复，见下方"二次复审修复"）：该端点刻意不经过 `agent_enabled` 门（配置期"保存前先测 key"的正当设计），但此前 `apiKey` 省略时会无条件回落到 env/本机存储的 key，再把它当 Bearer 发给请求体里调用方指定的任意 `baseURL`——绕过了 `GET /api/settings` 只回末 4 位掩码这层保护。当时的修复：新增 `baseURLsShareOrigin()`，只有 `deepseek-official`（baseURL 已被钉死成官方域）或 `openai-completions` 且这次 `baseURL` 与已保存的 `agent_base_url` 同源时才允许回落，否则要求请求体显式带 `apiKey`。
 - **`fetchProviderModels()` 不再跟随 3xx 重定向**：`baseURL` 只在第一跳做过 SSRF 校验，默认 `redirect:'follow'` 会让一个已通过校验的公网地址用 302 把请求带进内网。改为 `redirect:'manual'`，3xx 显式拒绝为 `upstream_redirect_blocked`。
 - **`validateBaseURL()` 黑名单补漏**：新增拦截云元数据主机名（`metadata.google.internal`/`metadata.goog`/`*.internal`）、IPv4-compatible IPv6（`::a.b.c.d` 归一化后的纯十六进制形式，与已处理的 IPv4-mapped `::ffff:a.b.c.d` 不同）、`0.0.0.0/8`、RFC 2544 基准测试段 `198.18.0.0/15`。
-- **公网地址强制 https**：内网/回环地址已被整体拒绝，能通过该校验的 host 按定义就是公网地址，此前仍接受 `http:`，key 会明文过网；现与 android-v1.1.0 同一条规则对齐。
+- **公网地址强制 https**：内网/回环地址已被整体拒绝，能通过该校验的 host 按定义就是公网地址，此前仍接受 `http:`，key 会明文过网；现与 android-v1.1.0 同一条规则对齐。**迁移提示**：升级到本版本后，存量 `agent_base_url` 若是公网 `http://` 地址会被 `validateBaseURL()` 拒绝（回环/内网地址不受此限），需要把该地址改成 `https://` 才能继续使用 AI 助理。
 - **`resolveAgentApiKey()` 自身复检 `apiKeyEnv` 格式/保留名**：此前只有 `loadAgentConfig()` 校验过 `isReservedEnvName()`，另外两处裸读 settings 表的消费者（`agent.js`/`settings.js`）会绕过这层校验；现在下沉进 `resolveAgentApiKey()` 本身，所有调用方自动继承。
 - **`agent_api_key` 落库前 trim**，纯空白输入显式拒绝（此前会静默存成"已配置"，但 supervisor 实际会拿一把空白 key 去启动 worker）。
 - **`secret.key` 首次生成的 TOCTOU 竞态**：并发首次生成时改用"写临时文件 + `linkSync` 原子提交"，不再可能被后写者覆盖或被并发读者读到半写状态。
@@ -130,13 +130,25 @@
 - **`resolvePinnedAddress()` 只钉死 DNS 返回的首条记录，没有故障转移**：`records[0]` 一旦不可达（常见场景：`verbatim:true` 保留系统应答顺序,双栈域名先给出 AAAA 而宿主机只有 IPv4 出口）就直接 504,不像 undici/fetch 或普通 `http.request(hostname)` 那样有 Happy-Eyeballs/多记录重试的机会。**修复**：`resolvePinnedAddress()` 现在把**全部**通过校验的候选地址放进新增的 `addresses` 字段（`address`/`family` 两个字段保留向后兼容,等于 `addresses[0]`）；`fetchProviderModels()` 新增 `pinnedAddresses`（数组）参数,按顺序逐个尝试,只在"连接层面失败"（`network_error`/`timeout`,即从未真正拿到一个 HTTP 响应）时才换下一个候选——一旦某个地址给出真实 HTTP 响应（哪怕是 401/404 这类应用层错误）就立即原样抛出,不再尝试其余候选,避免把用户的真实错误原因掩盖成一条不相关的"最后一次尝试凑巧超时"。上限 4 条候选,纯粹是防止极端情形拖长等待,不是安全边界（每条候选都已经过同一套内网/回环核对）。
 - **【口径缺口，文档更新，非代码修复】** 门禁 9 与本条目"二次复审修复"里"现在只保留 `provider === 'deepseek-official'` 一种可以省略 `apiKey` 的情形"这句话容易被读成"已存明文 key 不可能再流向攻击者指定的主机"，但 `src/agent/supervisor.js` 的 worker 启动路径（`POST /api/cases/:id/agent/start`）仍然会用 `resolveAgentApiKey()` 解出同一把已存明文 key，连同同样客户端可写、且不经过 `resolvePinnedAddress()` 核对（只过字符串层 `validateBaseURL()`）的 `agent_base_url` 一起注入子进程环境——`openai-completions` 场景下，同一个能发 `PUT /api/settings` 的调用方理论上仍有一条门槛更高（需要 `agent_enabled=true`、需要真实案件、需要 DSH runtime 起得来、动静大且留审计）但确实存在的路径，能让子进程把明文 key 当 Bearer 发给攻击者指定的 `baseURL`。这条残余面本轮不改代码（门槛/影响面与 `POST /api/agent/models` 那条已修复的通道不在同一量级，且收紧 worker 启动路径涉及产品行为取舍，超出本轮范围），仅在 [agent-gates.md](agent-gates.md) 门禁 9 与"未覆盖/已知限制"补充准确记录，避免误导读者。
 
+### 减法：移除连接期 DNS 解析 + IP 钉住层（本轮，产品决策，非安全缺陷驱动）
+
+编排方复核上面几轮复审为 `POST /api/agent/models` 加的 `resolvePinnedAddress()`（连接期对 baseURL 的 hostname 做真实 DNS 解析、核对全部候选地址、钉住具体 IP 再发起请求，用来堵 `validateBaseURL()` 字符串黑名单堵不住的"看起来合法、DNS 却解析到内网/回环"这类域名）之后，决定将其连同全部接线（`pinnedAddress`/`pinnedAddresses` 参数、故障转移、`skipRfc2544Bench`/fake-ip 豁免）整体移除，理由：
+
+1. **它并未消除风险，只是把门槛从两步变三步**：`POST /api/agent/models` 已经在 `apiAuth` 之后，能调用它的调用方本来就能通过既有 supervisor 路径（改 `agent_base_url` + 开 `agent_enabled` + `POST /api/cases/:id/agent/start`）达成同等外联——worker 启动路径从未接入过 `resolvePinnedAddress()`（见上方"三次复审修复"第 4 条口径缺口记录），DNS 钉住只让这一个端点看起来更安全,实际风险敞口没有变化。
+2. **它在真实环境里会大面积误伤**：本机开着 Surge/Clash 等 fake-ip 类透明代理时，所有域名都会被解析到 `198.18.0.0/15`，为绕开这类误伤而加的豁免（三次复审新增的 `skipRfc2544Bench`）又让这道闸门对这批用户整体退化成 no-op——"有一道其实不生效的闸门，文档却写着它有效"比"明确没有这道闸门"更糟。
+3. **它给一个纯设置校验动作引入了运行时 DNS 依赖**：VPN/代理/企业 DNS 都会让"拉取可用模型列表"这条易用性流程报"网络错误"，与本轮"降低配置门槛"的目标直接冲突。
+
+**删除范围**：`src/agent/config.js` 的 `resolvePinnedAddress()`（及其 `isPrivateOrLoopbackHost()` 的 `skipRfc2544Bench` 选项）、`src/routes/agent.js` 里对它的调用与依赖注入点、`src/agent/models-client.js` 的 `pinnedAddress`/`pinnedAddresses`/`requestImpl` 参数与多候选故障转移逻辑，以及 `tools/test-agent-config.js` 场景 18、`tools/test-agent-models-client.js` 场景 12–15、`tools/test-agent-models-http.js` 场景 3.5 这些专门覆盖被删代码的测试，一并删除（不留"已废弃但仍存在"的死代码/死测试）。RFC 2544 基准测试段 `198.18.0.0/15` 作为 baseURL **字符串字面量**仍然被 `validateBaseURL()` 无条件拒绝，只是不再对"DNS 解析结果"这一层单独放行——因为这一层本身已经不存在。
+
+**现状（如实描述）**：`POST /api/agent/models` 的 SSRF 防线现在只剩 `validateBaseURL()` 这一层字符串校验（协议白名单/禁 userinfo/禁 query-fragment/公网强制 https/字面量回环-内网-链路本地-CGNAT-metadata 主机名黑名单/deepseek-official 官方域钉死），与 worker 启动路径处于同一水位；一个字符串看起来合法、实际解析到内网/回环的公网注册域名（如 `localtest.me` 一类）现在仍能通过这层校验——这是本轮明确接受的已知取舍，详见 [agent-gates.md](agent-gates.md) 门禁 9。
+
 ### 已知边界（非本轮范围）
 
 - `PROVIDER_CANONICAL_KEY_ENV` 目前只覆盖已有的两个 provider 枚举值，新增 provider 时需要同步补充。
-- `POST /api/agent/models` 没有单独的调用频率限制：它是 `apiAuth` 之后的端点（需要已登录会话），每次请求最长占用 15s 超时窗口并向外发一次 GET。SSRF 三层闸门保证目标不可能是内网/回环，但一个已登录会话理论上仍可反复调用它对公网地址产生放大流量。GA 前可考虑加一条按会话的频率限制。
+- `POST /api/agent/models` 没有单独的调用频率限制：它是 `apiAuth` 之后的端点（需要已登录会话），每次请求最长占用 15s 超时窗口并向外发一次 GET。`validateBaseURL()` 的字符串黑名单保证目标不可能是字面量内网/回环地址，但一个已登录会话理论上仍可反复调用它对公网地址产生放大流量。GA 前可考虑加一条按会话的频率限制。
 - `agent_api_key_masked` 对 `env` 来源的 key 同样回末四位掩码——这是设计明确要求的展示（"掩码或布尔已配置"），但对既有的纯环境变量部署而言，是一个此前不存在的新增展示面（改造前 `GET /api/settings` 从不透出与 key 值相关的任何字符）。掩码只留末 4 位、长度 ≤4 时整串折叠为 `*`，且仅对已登录会话可见。
 - 数据结构新增一个 settings 键 `agent_api_key_encrypted`（无 migration，`settings` 是既有 key-value 表）；未配置时该键不存在，不影响任何既有功能。
-- **worker 启动路径的残余 key 外带面**（见上方"三次复审修复"最后一条）：`openai-completions` 下 `agent_base_url` 客户端可写、`src/agent/supervisor.js` 的 `buildSpawnEnv()` 会把已存明文 key 与该 baseURL 一起注入子进程，且不经过 `resolvePinnedAddress()` 的 DNS 钉住核对。GA 前应评估是否需要对 `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key 重新确认。
+- **worker 启动路径与 `POST /api/agent/models` 共同的残余 key 外带面**：`openai-completions` 下 `agent_base_url` 客户端可写，`src/agent/supervisor.js` 的 `buildSpawnEnv()` 会把已存明文 key 与该 baseURL 一起注入子进程；`POST /api/agent/models` 则要求该 provider 下必须显式带 `apiKey`（见上方"二次复审修复"）。两条路径现在都只过字符串层 `validateBaseURL()`，不再有"一条路径比另一条更安全"的落差（见上方"减法"小节）。GA 前应评估是否需要对 `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key 重新确认。
 
 ## 未发布 → 2.7.0-beta.1 — AI 助理 sidecar（分支 `feat/agent-sidecar`，尚未合并 `main`）
 

@@ -1,15 +1,17 @@
 // POST /api/agent/models 的路由层回归：provider/baseURL 输入校验（复用与
-// 保存设置同一套 validateBaseURL，SSRF 拦截）、连接期 DNS 解析+IP 钉住
-// （resolvePinnedAddress()）的接线、apiKey 取值优先级（请求体 > 仅
-// deepseek-official 才允许的 env/已存加密 key 回落）、错误码 → HTTP 状态
+// 保存设置同一套 validateBaseURL，SSRF 拦截）、apiKey 取值优先级（请求体 >
+// 仅 deepseek-official 才允许的 env/已存加密 key 回落）、错误码 → HTTP 状态
 // 映射、审计与响应体绝不含 apiKey/明文。网络层本身（真实 fetch 解析/超时/
-// 大小上限/pinnedAddress 连接机制）已经在 tools/test-agent-models-client.js
-// 用真实本地服务器覆盖过；DNS 解析规则本身（任意一条私网地址即整体拒绝）
-// 已经在 tools/test-agent-config.js 用注入的假 lookupImpl 覆盖过。这里注入
-// 假 fetchModels 与假 resolvePinnedAddress（同 AgentSupervisor 的 spawnFn
-// 依赖注入风格）只验证路由自己的职责——不在这个文件里发起任何真实网络/DNS
-// 调用，顺带断言"baseURL 校验/DNS 钉住失败时压根没调用过 fetchModels"（防止
-// 校验被绕过/顺序颠倒）。
+// 大小上限）已经在 tools/test-agent-models-client.js 用真实本地服务器覆盖
+// 过。这里注入假 fetchModels（同 AgentSupervisor 的 spawnFn 依赖注入风格）
+// 只验证路由自己的职责——不在这个文件里发起任何真实网络调用，顺带断言
+// "baseURL 校验失败时压根没调用过 fetchModels"（防止校验被绕过/顺序颠倒）。
+//
+// 【2026-08-23 减法】此前这里还注入一个假 resolvePinnedAddress() 验证"连接
+// 期 DNS 解析 + IP 钉住"这道闸门的接线（场景 3.5）——该层已随
+// resolvePinnedAddress() 一起从 src/agent/config.js/src/routes/agent.js 整体
+// 移除（理由见两处顶部注释），createAgentRouter() 也不再接受这个注入点，
+// 场景 3.5 与相关断言已一并删除。
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -53,34 +55,10 @@ function makeFakeFetchModels() {
 
 const fetchModels = makeFakeFetchModels();
 
-// 假 resolvePinnedAddress：默认对任何 hostname 都放行（返回一个固定的假
-// 公网地址），让本文件其余场景专注测试路由自己的逻辑（apiKey 取值优先级/
-// 错误映射/审计），不必依赖真实 DNS。可以用 setResult() 切到拒绝态，验证
-// 路由层确实调用了这道闸门、拒绝时正确 400 且从未调用 fetchModels——真实
-// DNS 解析规则本身（任意一条私网地址即整体拒绝）由 tools/test-agent-
-// config.js 单独覆盖，不在这里重复。
-function makeFakeResolvePinnedAddress() {
-  const calls = [];
-  // addresses：resolvePinnedAddress() 现在还带回全部通过校验的候选地址
-  // （2026-08-23 四次复审新增，见 src/agent/config.js 顶部注释）——路由层
-  // 把整个数组转交给 fetchModels() 的 pinnedAddresses 参数,这里的假实现同
-  // 步带上这个字段,不只是 address/family 两个向后兼容字段。
-  let nextResult = { ok: true, address: '203.0.113.1', family: 4, addresses: [{ address: '203.0.113.1', family: 4 }] };
-  const fn = async (hostname) => {
-    calls.push(hostname);
-    return nextResult;
-  };
-  fn.calls = calls;
-  fn.setResult = (result) => { nextResult = result; };
-  return fn;
-}
-
-const resolvePinnedAddress = makeFakeResolvePinnedAddress();
-
 const app = express();
 app.use(express.json({ limit: '1mb' }));
 app.use((req, res, next) => { req.actor = 'models-http-test'; next(); });
-app.use('/api', createAgentRouter(fakeSupervisor, { fetchModels, resolvePinnedAddress }));
+app.use('/api', createAgentRouter(fakeSupervisor, { fetchModels }));
 
 const server = http.createServer(app);
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -122,29 +100,7 @@ try {
     assert.equal(fetchModels.calls.length, 0);
   }
 
-  // ---- 3.5) 【红线回归，2026-08-23 复审新增】连接期 DNS 解析 + IP 钉住的
-  //      接线：字符串校验（validateBaseURL）本身放行的 baseURL，如果
-  //      resolvePinnedAddress() 判定解析结果落在内网/回环（模拟一个字符串
-  //      看起来合法、DNS 却指向 127.0.0.1 的公网域名，如复审探针实测的
-  //      `localtest.me`），路由必须整体拒绝，且从未调用 fetchModels——不能
-  //      因为字符串校验已经通过就跳过这道第二层闸门。 ----
-  {
-    resolvePinnedAddress.setResult({ ok: false, error: 'baseURL 解析后指向内网/回环地址，已拒绝（该域名可能被指向了本机或内网 IP）' });
-    const before = fetchModels.calls.length;
-    const { status, data } = await postModels({ provider: 'openai-completions', baseURL: 'https://looks-public-but-resolves-private.example.com/v1', apiKey: 'sk-x' });
-    assert.equal(status, 400, 'DNS 钉住判定为内网/回环时必须整体拒绝，即使字符串校验已经通过');
-    assert.match(data.error, /内网|回环/);
-    assert.equal(fetchModels.calls.length, before, 'DNS 钉住拒绝时不应该调用 fetchModels');
-    assert.ok(resolvePinnedAddress.calls.includes('looks-public-but-resolves-private.example.com'), '路由必须真的调用了 resolvePinnedAddress()，不是摆设');
-    resolvePinnedAddress.setResult({ ok: true, address: '203.0.113.1', family: 4, addresses: [{ address: '203.0.113.1', family: 4 }] }); // 复位
-  }
-
-  // ---- 4) 合法请求：apiKey 直接在请求体里给出,优先于任何已存配置；实际
-  //      连接目标（pinnedAddresses）必须来自 resolvePinnedAddress() 的返回
-  //      值，原样透传给 fetchModels()（2026-08-23 四次复审：从单地址
-  //      pinnedAddress 换成全部候选地址 pinnedAddresses——路由层只取每条
-  //      候选的 address 字符串，family 目前没有消费方需要，见 src/routes/
-  //      agent.js 该处注释）----
+  // ---- 4) 合法请求：apiKey 直接在请求体里给出,优先于任何已存配置 ----
   {
     fetchModels.setResult({ models: ['deepseek-chat', 'deepseek-reasoner'] });
     const { status, data } = await postModels({ provider: 'deepseek-official', baseURL: '', apiKey: 'sk-request-body-key' });
@@ -153,7 +109,6 @@ try {
     assert.equal(fetchModels.calls.length, 1);
     assert.equal(fetchModels.calls[0].apiKey, 'sk-request-body-key', 'apiKey 应该直接透传请求体里的值给 fetchModels');
     assert.equal(fetchModels.calls[0].baseURL, 'https://api.deepseek.com', 'baseURL 留空时 deepseek-official 应该自动带出官方域');
-    assert.deepEqual(fetchModels.calls[0].pinnedAddresses, ['203.0.113.1'], 'resolvePinnedAddress() 解析出的候选地址列表必须原样（只取 address）传给 fetchModels()');
     assert.ok(!JSON.stringify(data).includes('sk-request-body-key'), '响应体不能包含 apiKey');
   }
 

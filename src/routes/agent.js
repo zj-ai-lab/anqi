@@ -51,11 +51,17 @@
 //     两次请求就能把已存的完整明文 key 送到攻击者服务器（复审探针实测复
 //     现），已整段删除，不再复用（见 src/agent/config.js 顶部关于
 //     baseURLsShareOrigin() 被移除的说明）。baseURL 仍然过与保存设置同一
-//     套字符串 SSRF 校验（协议/凭据/内网回环字面量/官方域），并在此基础上
-//     额外做一次连接期 DNS 解析 + IP 钉住（resolvePinnedAddress()）——纯
-//     字符串黑名单堵不住"字符串本身看起来是公网域名、DNS 却把它解析到内网/
-//     回环"这类情形（复审探针实测：`localtest.me` 之类真实注册域名解析到
-//     127.0.0.1）。
+//     套字符串 SSRF 校验（协议/凭据/内网回环字面量/官方域）——【2026-08-23
+//     减法】此前这里在此基础上还额外做一次连接期 DNS 解析 + IP 钉住
+//     （resolvePinnedAddress()），已整体移除：该端点本来就在 apiAuth 之后，
+//     能调用它的调用方本就能走既有 supervisor 路径达成同等外联（worker 启动
+//     路径从未有过这层 DNS 钉住），钉 IP 没有消除风险，只是把门槛从两步变
+//     三步；它在真实环境里还会误伤本机跑 fake-ip 类代理的用户（详见
+//     src/agent/config.js 顶部关于这次移除的完整理由）。现在与保存设置、
+//     worker 启动路径共用同一层纯字符串黑名单，不再对 hostname 做任何 DNS
+//     解析——这意味着一个字符串看起来合法、实际解析到内网/回环的公网注册
+//     域名（如 `localtest.me` 一类）仍能通过这层校验，这是本轮明确接受的
+//     取舍（见 docs/CHANGES.md 与 docs/agent-gates.md 门禁 9）。
 //   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
 //     （src/routes/views.js 的 /api/inbox/:id/accept|decline），本文件不新开
 //     任何模型可达的 accept API。
@@ -67,7 +73,6 @@ import {
   agentKeyStatus,
   loadAgentConfig,
   resolveAgentApiKey,
-  resolvePinnedAddress,
   validateBaseURL,
 } from '../agent/config.js';
 import { fetchProviderModels, modelsErrorToHttpStatus } from '../agent/models-client.js';
@@ -133,11 +138,6 @@ function buildQuestionAnswer(pendingQuestions, rawAnswers) {
 // 自己的职责（校验/取值优先级/错误映射/脱敏），不必每次都发起真实网络调用。
 export function createAgentRouter(supervisor, {
   fetchModels = fetchProviderModels,
-  // 依赖注入点，同 fetchModels 一个风格：生产环境用真实 DNS 解析，测试传
-  // 入假实现验证"路由层真的调用了这道闸门、且失败时正确 400 并从不调用
-  // fetchModels"，不需要在路由层自检里发起真实网络 DNS 查询（真实解析行为
-  // 由 src/agent/config.js 的单元测试单独覆盖）。
-  resolvePinnedAddress: resolveAddress = resolvePinnedAddress,
 } = {}) {
   const r = Router();
 
@@ -190,28 +190,16 @@ export function createAgentRouter(supervisor, {
 
     // baseURL 必须过与保存时同一套安全校验（协议、credential-free、内网/
     // 回环字面量拦截、deepseek-official 官方域钉死）——这一步是防 SSRF 的
-    // 第一层闸门,不能因为这是"只是拉个列表"的辅助端点就绕过；但纯字符串
+    // 唯一一层闸门,不能因为这是"只是拉个列表"的辅助端点就绕过；纯字符串
     // 黑名单堵不住"字符串本身看起来是合法公网域名、DNS 却解析到内网/回环"
-    // 这类情形,下面 resolveAddress() 是第二层、真正决定连接目标的闸门。
+    // 这类情形（此前这里还有一层连接期 DNS 解析 + IP 钉住，已整体移除，见
+    // src/agent/config.js 顶部关于该决策的完整理由——本端点与 worker 启动
+    // 路径现在处于同一条 SSRF 防线水位上，不再有落差）。
     const baseURLResult = validateBaseURL(body.baseURL, provider);
     if (!baseURLResult.ok) {
       return res.status(400).json({ error: baseURLResult.error });
     }
     const baseURL = baseURLResult.normalized;
-
-    // 【2026-08-23 复审新增】连接期 DNS 解析 + IP 钉住——见
-    // src/agent/config.js 的 resolvePinnedAddress() 顶部注释。这一步必须
-    // 发生在 apiKey 取值链之前：即使调用方在请求体里显式带了 apiKey（不走
-    // 任何自动回落），这个端点依然会替调用方去连一次这个 baseURL,不能允许
-    // "只要我自己带 key,就可以让 anqi 服务器帮我打内网/回环地址"这条路径
-    // 存在（这与 apiKey 来自哪里无关,是纯粹的 SSRF 防护,对所有调用方一
-    // 视同仁）。拒绝时不区分是"字符串黑名单"还是"DNS 解析"命中的,统一走
-    // 同一条 400,避免把内部判定细节当成端口/内网结构探测 oracle 暴露出去。
-    const pinResult = await resolveAddress(baseURLResult.parsed.hostname);
-    if (!pinResult.ok) {
-      audit(req.actor, 'agent-models-fetch-fail', 'agent-models', null, `provider=${provider} reason=dns_pin_rejected`);
-      return res.status(400).json({ error: pinResult.error });
-    }
 
     // apiKey 省略时,用已保存的/环境变量的(取值优先级链与 loadAgentConfig()
     // 同源,见 resolveAgentApiKey());body.apiKey 只在类型是非空字符串时才
@@ -254,14 +242,7 @@ export function createAgentRouter(supervisor, {
 
     let result;
     try {
-      // 【2026-08-23 四次复审修复】传全部候选地址（pinnedAddresses，纯字符
-      // 串数组——resolvePinnedAddress() 的 addresses 是 {address,family} 对
-      // 象数组，这里只取 address，family 目前没有消费方需要），不再只传首
-      // 条——见 src/agent/config.js resolvePinnedAddress() 与
-      // src/agent/models-client.js fetchProviderModels() 顶部注释：全部候选
-      // 都已经通过同一套内网/回环核对，只在"连接层面失败"时才依次换下一个，
-      // 不是安全边界的放宽。
-      result = await fetchModels({ baseURL, apiKey, pinnedAddresses: (pinResult.addresses || []).map((a) => a.address) });
+      result = await fetchModels({ baseURL, apiKey });
     } catch (error) {
       // fetchProviderModels() 的所有错误分支都带 .code（见
       // src/agent/models-client.js），message 本身已经是脱敏过的中文提

@@ -13,19 +13,19 @@
 //      用注入的假 fetchModels 代替真实网络调用（同 supervisor.js 的
 //      spawnFn 注入模式），不必每次跑真实网络请求。
 //
-// 【2026-08-23 复审新增】本模块**确实**负责"连接期 IP 钉住"这一件事——这不
-// 是字符串校验，是消除 DNS rebinding 的 TOCTOU 窗口所必须的能力，只有在真
-// 正发起连接的这一层才能做到（调用方在字符串校验之后另外做一次真实 DNS 解
-// 析——见 src/agent/config.js 的 resolvePinnedAddress()——但如果解析出的地
-// 址不能原样传导到这里的实际连接目标，两次解析之间仍然存在攻击者可以让
-// DNS 应答改变的窗口）。因此本模块改用 Node 核心 http/https 模块而不是全局
-// fetch：可选的 pinnedAddress 参数被当作 TCP 连接的实际目标（net.connect
-// 层面的 host），不再触发任何一次新的 DNS 查询；Host 请求头与 TLS SNI
-// （servername）则仍然使用原始 hostname——这两件事分离开是必须的：前者决
-// 定"字节实际流向哪台机器"（安全边界），后者决定"对方证书校验用哪个名字/
-// 反向代理按哪个虚拟主机路由"（正确性，与安全无关）。调用方省略
-// pinnedAddress 时（例如本模块自己的单元测试，故意保持"不做 SSRF 判断"的
-// 定位）退化成普通按 hostname 解析连接，行为与改造前一致。
+// 【2026-08-23 减法】此前这里还负责"连接期 IP 钉住"（pinnedAddress/
+// pinnedAddresses 参数——调用方对 hostname 做完一次真实 DNS 解析核对之后
+// 把结果原样传导到实际 TCP 连接目标，消除两次解析之间的 DNS rebinding
+// 窗口）。这一层已整体移除——理由见 src/agent/config.js 顶部与
+// docs/agent-gates.md 门禁 9：这个端点本来就在 apiAuth 之后，能调用它的
+// 调用方走既有 supervisor 路径（改 baseURL + 开关 + start worker）就能达成
+// 同等外联，钉 IP 并未消除该类风险，只是把门槛从两步变三步；而它在真实
+// 环境里的误伤（本机跑 Surge/Clash 等 fake-ip 代理时所有域名都解析到
+// 198.18.0.0/15，为绕开误伤加的豁免又让这道闸门对这批用户整体退化成
+// no-op）比"明确没有这道闸门"更糟。现在只连 target.hostname 本身，不再对
+// "DNS 解析结果与实际连接目标是否一致"做任何额外核对——SSRF 防护回退成
+// 调用方（validateBaseURL()）的纯字符串黑名单一层，与 worker 启动路径
+// 处于同一水位，不是新增风险。
 //
 // 红线：本模块任何一条抛出的错误里都不含 apiKey 本身——apiKey 只出现在
 // 发出去的 Authorization 请求头里，从未进入过任何字符串拼接/模板/错误消
@@ -82,25 +82,30 @@ function extractModelIds(parsedBody) {
   return ids;
 }
 
-// 单次连接尝试：connectHost 是这次实际要打的 TCP 目标（钉住的某一个具体
-// 地址，或者省略 pinnedAddress 时的原始 hostname）。抽成独立函数是为了让
-// 主入口 fetchProviderModels() 可以对"多个候选地址"逐个重试（见下方
-// MAX_PINNED_ADDRESS_ATTEMPTS 的说明），而不必复制这一整段连接/解析逻辑。
-async function attemptOnce({ target, isHttps, transport, connectHost, hostHeader, apiKey, timeoutMs, maxBytes }) {
+// 主入口：baseURL 必须是调用方已经校验过的、去掉尾部斜杠的绝对 URL
+// （validateBaseURL() 的 normalized 值）。
+export async function fetchProviderModels({
+  baseURL,
+  apiKey,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES,
+}) {
+  let target;
+  try {
+    target = new URL(`${baseURL}${MODELS_PATH_SUFFIX}`);
+  } catch {
+    throw modelsError('network_error', '连接模型服务失败，请检查网络与 baseURL');
+  }
+
+  const isHttps = target.protocol === 'https:';
+  const transport = isHttps ? https : http;
   const options = {
     method: 'GET',
-    host: connectHost,
+    host: target.hostname,
     port: target.port ? Number(target.port) : (isHttps ? 443 : 80),
     path: `${target.pathname}${target.search}`,
-    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json', Host: hostHeader },
+    headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
   };
-  if (isHttps) {
-    // servername 决定 TLS SNI 与证书校验用哪个名字——必须仍然是原始
-    // hostname,不能是 pinnedAddress:否则证书校验会拿"IP 字面量"去匹配一张
-    // 签给域名的证书,连接会直接失败;这也是"连具体 IP、但认域名证书"这个
-    // 钉 IP 技巧本身依赖的机制,与上面的 Host 头是同一件事的两个必要部分。
-    options.servername = target.hostname;
-  }
 
   let timedOut = false;
   let req;
@@ -120,13 +125,13 @@ async function attemptOnce({ target, isHttps, transport, connectHost, hostHeader
     if (response.statusCode >= 300 && response.statusCode < 400) {
       // 绝不自动跟随 3xx。/models 是一次单纯的只读探测,没有任何正当理由
       // 需要跟着上游的 Location 走;跟随会把这次请求带去一个从未审过、也
-      // 从未做过 DNS 钉住的第二个地址,直接废掉上面两层 SSRF 拦截（复审
-      // 探针历史实测：一个已通过校验的"公网"baseURL 返回 302 指向 127.0.0.1
-      // 上的内网服务,内网服务被真实打到一次,其响应体被当成模型列表原样
-      // 返回）。这里显式拒绝,不落到下面泛化的 upstream_error 分支（那样
-      // 错误码会误导成"上游服务出错",而真实情况是"上游想让我们去一个没
-      // 审过的地址"）。不读取 Location 头,不做任何形式的"提示用户改用最终
-      // 地址"之外的自动化——那样等于换一种方式重新实现跟随重定向。
+      // 从未做过校验的第二个地址,直接废掉上面的 SSRF 拦截（复审探针历史
+      // 实测：一个已通过校验的"公网"baseURL 返回 302 指向 127.0.0.1 上的
+      // 内网服务,内网服务被真实打到一次,其响应体被当成模型列表原样返回）。
+      // 这里显式拒绝,不落到下面泛化的 upstream_error 分支（那样错误码会
+      // 误导成"上游服务出错",而真实情况是"上游想让我们去一个没审过的
+      // 地址"）。不读取 Location 头,不做任何形式的"提示用户改用最终地址"
+      // 之外的自动化——那样等于换一种方式重新实现跟随重定向。
       response.resume();
       throw modelsError('upstream_redirect_blocked', '模型服务地址返回了重定向，出于安全考虑已阻止自动跟随，请直接填写最终地址', { status: response.statusCode });
     }
@@ -168,82 +173,6 @@ async function attemptOnce({ target, isHttps, transport, connectHost, hostHeader
   } finally {
     clearTimeout(timer);
   }
-}
-
-// 【2026-08-23 四次复审新增】一个 hostname 通过 resolvePinnedAddress() 核对
-// 后可能带回多条候选地址（见该函数顶部注释）；这里只对**前面这几条**依次
-// 重试——DNS 正常不会返回几十条记录,给一个小上限只是防止极端情形下把一次
-// "拉模型列表"的用户操作拖成"挨个尝试几十个地址"的长时间等待,不是安全边界
-// （每一条候选都已经在 resolvePinnedAddress() 里核对过,不存在"多试几个就
-// 多一分风险"这回事）。
-const MAX_PINNED_ADDRESS_ATTEMPTS = 4;
-
-// 主入口：baseURL 必须是调用方已经校验过的、去掉尾部斜杠的绝对 URL
-// （validateBaseURL() 的 normalized 值）。
-//   - pinnedAddresses（可选，数组）：调用方对 baseURL 的 hostname 做完真实
-//     DNS 解析 + 内网/回环核对之后（resolvePinnedAddress()）拿到的**全部**
-//     候选地址——依次尝试连接（Happy-Eyeballs 风格的故障转移，2026-08-23
-//     四次复审新增：此前只钉死首条记录,该记录一旦不可达就直接 504,不会像
-//     普通 DNS 解析那样有机会试第二条）。只在遇到"连接层面"失败
-//     （network_error/timeout，即从未真正拿到一个 HTTP 响应）时才换下一个
-//     候选;一旦某个地址真的给出了 HTTP 响应（哪怕是 401/404/5xx 这类应用层
-//     错误），说明连接目标本身没问题,立即把这个错误原样抛给调用方,不再
-//     尝试其余候选——那些"错误"是关于这个服务本身的（key 不对/没有
-//     /models 接口/上游出错）,换一个 IP 重试解决不了,反而可能把用户的
-//     真实错误原因掩盖成一条不相关的"最后一次尝试凑巧超时"。
-//   - pinnedAddress（可选，字符串，向后兼容单地址调用方/自身单元测试）：
-//     等价于 `pinnedAddresses: [pinnedAddress]`。两者都省略时按 hostname
-//     走一次普通解析连接（仅供本模块自身的单元测试使用,生产路径`总是`
-//     传入 pinnedAddresses，见 src/routes/agent.js）。
-//   - requestImpl（可选）：默认按协议选 node:http 或 node:https，测试可以
-//     传入其它兼容 `.request(options, callback)` 的实现（同仓库其它地方的
-//     依赖注入风格），目前的自检直接用真实本地 http 服务器,不需要替换这个
-//     参数,但保留注入点。
-export async function fetchProviderModels({
-  baseURL,
-  apiKey,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-  maxBytes = DEFAULT_MAX_BYTES,
-  pinnedAddress,
-  pinnedAddresses,
-  requestImpl,
-}) {
-  let target;
-  try {
-    target = new URL(`${baseURL}${MODELS_PATH_SUFFIX}`);
-  } catch {
-    throw modelsError('network_error', '连接模型服务失败，请检查网络与 baseURL');
-  }
-
-  const isHttps = target.protocol === 'https:';
-  const transport = requestImpl || (isHttps ? https : http);
-  // 【正确性,与安全无关】Host 请求头必须仍然是原始 hostname——很多第三方
-  // OpenAI 兼容网关/反向代理按 Host 头做虚拟主机路由,连去裸 IP 会直接 404
-  // 或路由到错误的后端,这与 SSRF 无关,是纯粹的协议正确性要求。
-  const hostHeader = target.port ? `${target.hostname}:${target.port}` : target.hostname;
-
-  // 【安全边界】candidates 决定字节实际流向哪(几)台机器：有 pinnedAddresses/
-  // pinnedAddress 时只从这个已核对过的列表里选,不再解析 hostname；两者都
-  // 省略时退化成原始 hostname（由本次调用触发一次普通的 DNS 解析,仅测试
-  // 路径会走到这里）。
-  const candidates = Array.isArray(pinnedAddresses) && pinnedAddresses.length > 0
-    ? pinnedAddresses.slice(0, MAX_PINNED_ADDRESS_ATTEMPTS)
-    : [pinnedAddress || target.hostname];
-
-  let lastError;
-  for (let i = 0; i < candidates.length; i++) {
-    const connectHost = candidates[i];
-    try {
-      return await attemptOnce({ target, isHttps, transport, connectHost, hostHeader, apiKey, timeoutMs, maxBytes });
-    } catch (error) {
-      const isLast = i === candidates.length - 1;
-      const isConnectionLevel = error?.code === 'network_error' || error?.code === 'timeout';
-      if (!isConnectionLevel || isLast) throw error;
-      lastError = error; // 只是记录,循环体内已经判断过不是最后一个候选
-    }
-  }
-  // 理论上走不到这里（循环体的最后一次迭代必然 throw），保留作为防御性兜底。
-  throw lastError || modelsError('network_error', '连接模型服务失败，请检查网络与 baseURL');
 }
 
 // 路由层的错误 → HTTP 状态码映射，与 fetchProviderModels() 抛出的 .code

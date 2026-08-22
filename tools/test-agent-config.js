@@ -22,7 +22,6 @@ const {
   getStoredApiKey,
   agentKeyStatus,
   PROVIDER_CANONICAL_KEY_ENV,
-  resolvePinnedAddress,
 } = await import('../src/agent/config.js');
 const { encryptSecret, resolveMasterKey } = await import('../src/lib/secret-box.js');
 
@@ -323,78 +322,12 @@ assert.deepEqual(agentKeyStatus(), { configured: false, keySource: 'none' }, 'en
 clearAgentSettings();
 db.prepare('DELETE FROM settings WHERE key = ?').run(AGENT_SETTINGS_KEYS.apiKeyEncrypted);
 
-// 18) 【红线回归，2026-08-23 复审新增】resolvePinnedAddress()：validateBaseURL()
-//     的 isPrivateOrLoopbackHost() 只做字符串匹配，不做 DNS 解析——任何一个
-//     字符串看起来合法、实际解析到内网/回环的公网域名（复审探针实测
-//     `localtest.me` 真实解析到 127.0.0.1）都能跳过它。这里不发起真实网络
-//     DNS 查询（沙箱环境不一定有出网权限，也不该让单元测试依赖真实互联网状
-//     态），改用注入的假 lookupImpl 验证 resolvePinnedAddress() 自身的判定
-//     规则：任意一条解析结果落在内网/回环范围即整体拒绝，即使同时存在一条
-//     公网地址（多值 DNS 应答本身就是可疑信号，不能"挑一条凑合过关"）。
-{
-  // 18a) 全部解析到公网地址 → 放行，返回第一条记录 + 全部候选地址列表
-  //      （2026-08-23 四次复审新增 addresses 字段，见 resolvePinnedAddress()
-  //      顶部注释——供 models-client.js 逐个重试用）。
-  const allPublic = async () => [{ address: '203.0.113.10', family: 4 }, { address: '203.0.113.11', family: 4 }];
-  const okResult = await resolvePinnedAddress('api.example.com', { lookupImpl: allPublic });
-  assert.deepEqual(okResult, {
-    ok: true,
-    address: '203.0.113.10',
-    family: 4,
-    addresses: [{ address: '203.0.113.10', family: 4 }, { address: '203.0.113.11', family: 4 }],
-  });
-
-  // 18b) 全部解析到内网/回环地址（模拟 localtest.me 这类域名）→ 拒绝。
-  const allPrivate = async () => [{ address: '127.0.0.1', family: 4 }];
-  const rejectedAllPrivate = await resolvePinnedAddress('localtest.me', { lookupImpl: allPrivate });
-  assert.equal(rejectedAllPrivate.ok, false);
-  assert.ok(rejectedAllPrivate.error);
-
-  // 18c) 混合应答（一条公网 + 一条内网）→ 同样整体拒绝，不是"挑安全的那条用"。
-  const mixed = async () => [{ address: '203.0.113.10', family: 4 }, { address: '169.254.169.254', family: 4 }];
-  const rejectedMixed = await resolvePinnedAddress('rebinding.example.com', { lookupImpl: mixed });
-  assert.equal(rejectedMixed.ok, false, '解析结果里只要出现一条内网/回环地址，整体必须拒绝');
-
-  // 18d) IPv6 回环/链路本地同样覆盖（与 isPrivateOrLoopbackHost() 现有判定
-  //      复用同一套规则,这里只确认接线正确,不重新验证每条 IPv6 地址段）。
-  const ipv6Private = async () => [{ address: '::1', family: 6 }];
-  const rejectedIpv6 = await resolvePinnedAddress('v6.example.com', { lookupImpl: ipv6Private });
-  assert.equal(rejectedIpv6.ok, false);
-
-  // 18e) DNS 查询本身失败（ENOTFOUND 之类）→ 安全失败,同样拒绝而不是抛出。
-  const throwing = async () => { throw Object.assign(new Error('queryA ENOTFOUND'), { code: 'ENOTFOUND' }); };
-  const rejectedThrow = await resolvePinnedAddress('does-not-exist.invalid', { lookupImpl: throwing });
-  assert.equal(rejectedThrow.ok, false);
-
-  // 18f) hostname 带 IPv6 字面量方括号（WHATWG URL 解析产物）时,传给
-  //      lookupImpl 的必须是去掉方括号之后的裸地址——否则字面 IP 会被误当
-  //      成域名字符串,解析失败。
-  let receivedHost = null;
-  const capturing = async (host) => { receivedHost = host; return [{ address: '203.0.113.10', family: 4 }]; };
-  await resolvePinnedAddress('[2001:db8::1]', { lookupImpl: capturing });
-  assert.equal(receivedHost, '2001:db8::1', 'IPv6 字面量的方括号必须先剥掉再交给 lookupImpl');
-
-  // 18g) 【红线回归，2026-08-23 三次复审新增·可用性修复】fake-ip 代理场景：
-  //      DNS 解析结果**全部**落在 RFC 2544 基准测试段 198.18.0.0/15
-  //      （Surge/Clash/ClashX 默认的 fake-ip-range，实测本机开着 Surge 时
-  //      任意域名都会解析到这个网段）——resolvePinnedAddress() 现在必须放
-  //      行,不能像 validateBaseURL() 的字符串层那样拒绝,否则开着这类代理
-  //      的用户在"拉取可用模型"这条旗舰易用性流程上会 100% 失败。
-  const fakeIpRange = async () => [{ address: '198.18.7.228', family: 4 }];
-  const allowedFakeIp = await resolvePinnedAddress('localtest.me', { lookupImpl: fakeIpRange });
-  assert.equal(allowedFakeIp.ok, true, 'fake-ip 代理把域名解析到 198.18.0.0/15 时，resolvePinnedAddress() 不应该再误判成内网');
-  assert.equal(allowedFakeIp.address, '198.18.7.228');
-
-  // 18h) 但 198.18.0.0/15 混一条**真正**的内网/回环地址时仍必须整体拒绝——
-  //      放开这个网段只是为了兼容 fake-ip 哨兵值，不是把它当成"公网地址"，
-  //      混答场景下依然按"任意一条不安全即整体拒绝"处理。
-  const fakeIpMixedWithPrivate = async () => [{ address: '198.18.1.1', family: 4 }, { address: '127.0.0.1', family: 4 }];
-  const rejectedFakeIpMixed = await resolvePinnedAddress('rebinding2.example.com', { lookupImpl: fakeIpMixedWithPrivate });
-  assert.equal(rejectedFakeIpMixed.ok, false, '198.18.0.0/15 与真正的回环地址混答时仍然必须整体拒绝');
-
-  // 18i) 而 validateBaseURL() 对**字符串本身**直接写成 198.18.0.0/15 字面量
-  //      的判断不受这次修复影响——继续拒绝，见 tools/test-agent-config.js
-  //      场景 13.5（`http://198.18.0.1/v1` 断言仍然是 enabled:false）。
-}
+// 【2026-08-23 减法】此前这里还有一段场景 18，覆盖 resolvePinnedAddress()——
+// 连接期对 baseURL 的 hostname 做真实 DNS 解析、核对全部候选地址、并对
+// fake-ip 代理解析出的 198.18.0.0/15 做特例放行的那道闸门。该函数已随其在
+// src/agent/config.js/src/routes/agent.js/src/agent/models-client.js 里的
+// 全部接线一起整体移除（理由见 src/agent/config.js 顶部注释），因此这段测试
+// 也随之删除，不再保留任何指向已删除函数的测试。198.18.0.0/15 作为 baseURL
+// **字符串字面量**仍然被无条件拒绝——见上面场景 13.5。
 
 console.log('agent config 自检全部通过');

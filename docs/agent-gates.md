@@ -35,9 +35,11 @@
 - 第 42 步：preset 工具面机械守卫（不得再挂载模型侧文件读取工具，与「界面填 key」改造无关，
   是同一分支上另一条独立守卫，顺延到这个步号）。
 - 第 43–45 步：beta.2「界面填 key」易用性改造守卫（服务端）——secret-box 静态加密自检、
-  `POST /api/agent/models` 的网络层（本地假服务器，含 2026-08-23 新增的 `pinnedAddress`
-  连接机制回归）与路由层（provider/baseURL SSRF 校验 + 连接期 DNS 钉住接线 + apiKey 取值
-  优先级）回归。
+  `POST /api/agent/models` 的网络层（本地假服务器：OpenAI 兼容格式解析、超时/大小上限、
+  3xx 重定向拦截）与路由层（provider/baseURL SSRF 字符串校验 + apiKey 取值优先级）回归。
+  **【2026-08-23 减法】** 此前第 44/45 步还各自覆盖一层"连接期 DNS 解析 + IP 钉住"
+  （`resolvePinnedAddress()`）——该层已随其全部接线一起整体移除（决策与理由见
+  `docs/CHANGES.md` 与本文件门禁 9），两步描述已同步更新，步号本身不变（45 步）。
 
 ---
 
@@ -412,87 +414,51 @@
     `api_key_required_for_custom_provider`），不再提供任何形式的静默回落。机械回归见
     `tools/test-agent-models-http.js` 场景 7.5——同一份"baseURL 与已保存值完全同源"的输入，
     断言从原来的"必须 200"改成"修复后必须仍是 400"，直接复现并锁死这条回归。
-  - **【2026-08-23 二次复审新增，已修复】** `validateBaseURL()`（`isPrivateOrLoopbackHost()`）
-    只对 URL 解析出来的 hostname 字符串做黑名单匹配，注释里一直如实写着"不做 DNS 解析"——
-    这意味着整套内网/回环拦截对任何一个字符串看起来合法、实际解析到回环/内网的公网注册域
-    名结构性失效。二次复审探针实测：`https://localtest.me:8443/v1`（真实存在、可签发有效
-    证书的公网域名，DNS 却把它解析到 127.0.0.1；同类现成域名还有 `*.traefik.me`、
-    `*.local.gd`）能通过 `validateBaseURL()` 的全部校验，`POST /api/agent/models` 返回
-    200 并真实打到了本机回环端口。**修复**：新增 `resolvePinnedAddress()`
-    （`src/agent/config.js`）——在真正发起请求前对 hostname 做一次真实 DNS 解析，只要解析
-    结果里**任何一条**记录落在内网/回环范围就整体拒绝（不是"挑一条公网地址凑合过关"，防止
-    同一 hostname 混答公网/内网地址的绕过思路），并把选中的地址原样传给
-    `fetchProviderModels()` 的新参数 `pinnedAddress`——`models-client.js` 因此从全局
-    `fetch()` 改写成 Node 核心 `http`/`https` 模块，实际 TCP 连接直接打到这个已核对过的具体
-    地址，不再让下层网络库重新解析一次 hostname，消除两次解析之间的 DNS rebinding 窗口；
-    `Host` 请求头与 TLS SNI（`servername`）保持原始 hostname 不变（这是虚拟主机路由/证书
-    校验的正确性要求，与安全边界无关，两者刻意分离）。`validateBaseURL()` 的字符串黑名单
-    继续保留，作为不需要网络 I/O 的快速失败层，两层互补。机械回归：`tools/test-agent-
-    config.js` 场景 18（注入假 `lookupImpl`，覆盖全公网/全私网/混合应答/解析失败/IPv6 字面
-    量方括号剥离五种情形，不依赖真实网络）、`tools/test-agent-models-client.js` 场景 12/13
-    （`pinnedAddress` 机制本身：连接目标是钉住的 IP，Host 头仍是原始 hostname；省略
-    `pinnedAddress` 时同一 hostname 确实会走真实 DNS 解析并失败，反证机制生效）、
-    `tools/test-agent-models-http.js` 场景 3.5（路由层接线：注入假 `resolvePinnedAddress`
-    验证拒绝时 400 且从未调用 `fetchModels`）。
-  - **【2026-08-23 复审新增，已修复】** `fetchProviderModels()` 曾经跟随 3xx 重定向，可以把
-    一个已通过 SSRF 校验的公网 `baseURL` 用 302 带进内网——虽然跨源重定向时 undici 会剥掉
-    `Authorization` 头（key 本身没有跟着走），但内网 JSON 响应体的 `id` 字段会被当成模型列表
-    原样返回，构成一个内网端口存活探测 oracle。现已改为手动处理响应状态码（不再是 undici 的
-    `redirect:'manual'`，见上一条改用核心 http/https 模块的说明；语义不变），3xx 显式拒绝为
-    `upstream_redirect_blocked`，机械回归见 `tools/test-agent-models-client.js` 场景 11。
-  - **【2026-08-23 三次复审新增，已修复·可用性回归 ①】** `resolvePinnedAddress()` 对 DNS 解析
-    结果复用的 `isPrivateOrLoopbackHost()` 把 RFC 2544 基准测试段 `198.18.0.0/15` 判定为不安全
-    ——这条规则对 baseURL **字符串字面量**成立，但 Surge/Clash/ClashX 等透明代理的 fake-ip 模式
-    默认就把任意域名解析到这个网段（Clash 默认 `fake-ip-range` 是 `198.18.0.1/16`），三次复审
-    探针在开着 Surge 的本机实测：`example.com`/`localtest.me`/`api.deepseek.com` 全部解析到
-    `198.18.x.x`，于是 `POST /api/agent/models` 这条旗舰易用性流程对**任何**开着此类代理的用户
-    100% 失败（`provider=deepseek-official` 省略 baseURL 走官方域同样触发，与用户填了什么完全
-    无关）。**修复**：`isPrivateOrLoopbackHost()` 新增 `skipRfc2544Bench` 选项，
-    `resolvePinnedAddress()` 对解析结果的核对传 `true`（这段地址本来就不路由到公网，DNS 应答
-    把域名指向这里时实际能连到的对象只取决于本机代理软件自己怎么拦截/转发，不构成"攻击者借
-    DNS 把请求引到*别的*内网服务"这条真正的 SSRF 路径）；`validateBaseURL()` 对 baseURL
-    **字符串本身**的校验不受影响，仍然拒绝这段地址的字面量。机械回归：`tools/test-agent-
-    config.js` 场景 18g/18h（`resolvePinnedAddress()` 对 `198.18.0.0/15` 的放行 + 与真正私网
-    地址混答仍整体拒绝）。
-  - **【2026-08-23 三次复审新增，已修复·可用性回归 ②】** `public/js/profile.js` 没有跟着
-    `openai-completions` 收紧到"必须显式 apiKey"同步调整：已保存 key/env 来源这两条最常见路径
-    点「拉取可用模型」必然先打一次注定 400 的请求，env 来源时输入框此前被无差别禁用，用户在
-    界面上没有任何入口能补上这次显式要求的 key——该 provider 下「拉取模型」是死胡同（三次复审
-    探针用真实浏览器复现两条路径）。**修复**：新增 `updateFetchGate()`——`openai-completions`
-    且输入框为空时就地提示 + 按钮置灰，不再发出注定失败的请求；`applyKeyUI()` 的"env 来源禁用
-    输入框"规则收窄为只对 `deepseek-official` 生效，`openai-completions` + env 来源下输入框保持
-    可用。机械回归：`tools/smoke-agent-profile-frontend.js`（`updateFetchGate`/`envLocksInput`
-    等关键逻辑的静态锚定）。
-  - **【2026-08-23 四次复审新增，已修复·健壮性】** `resolvePinnedAddress()` 只钉死 DNS 返回的
-    首条记录（`records[0]`），其余全部通过校验的记录被直接丢弃——首条记录一旦不可达（常见场景：
-    `verbatim:true` 保留系统应答顺序，双栈域名先给出 AAAA 而宿主机只有 IPv4 出口）就直接 504
-    `network_error`，不像 undici/fetch 或普通 `http.request(hostname)` 那样有 Happy-Eyeballs/
-    多记录重试的机会；返回值里的 `family` 字段也是死值，没有任何消费方读取它。**修复**：
-    `resolvePinnedAddress()` 新增 `addresses` 字段，带回**全部**通过校验的候选地址（`address`/
-    `family` 两个字段保留向后兼容，等于 `addresses[0]`）；`fetchProviderModels()`
-    （`src/agent/models-client.js`）新增 `pinnedAddresses`（数组）参数，按顺序逐个尝试，只在
-    "连接层面失败"（`network_error`/`timeout`，即从未真正拿到一个 HTTP 响应）时才换下一个候选
-    ——一旦某个地址给出真实 HTTP 响应（哪怕是 401/404 这类应用层错误）就立即原样抛出，不再尝试
-    其余候选，避免把用户的真实错误原因掩盖成一条不相关的"最后一次尝试凑巧超时"。上限 4 条候选，
-    纯粹防止极端情形拖长等待，不是安全边界。机械回归：`tools/test-agent-config.js` 场景 18a
-    （`addresses` 字段本身）、`tools/test-agent-models-client.js` 场景 14/15（故障转移生效 +
-    首条给出真实响应后不再尝试后续候选）。
-  - **【2026-08-23 四次复审新增，口径缺口，文档更新，非代码修复】** 上面"现在只保留
-    `provider === 'deepseek-official'` 一种可以省略 `apiKey` 的情形"这句话，与本条目下方"真正的
-    修复"那一段的表述，容易被读成"已存明文 key 不可能再流向攻击者指定的主机"——但这只覆盖了
-    `POST /api/agent/models` 这一条通道。`src/agent/supervisor.js` 的 worker 启动路径
-    （`POST /api/cases/:id/agent/start` → `_startWorker()`）同样用 `resolveAgentApiKey(config)`
-    解出同一把已存明文 key，`buildSpawnEnv()`（`supervisor.js` 约 376-393 行）把它连同同样客户端
-    可写的 `config.baseURL` 一起注入子进程环境——`openai-completions` 的 `agent_base_url` 不经过
-    `resolvePinnedAddress()` 的 DNS 钉住核对（只过字符串层 `validateBaseURL()`）。也就是说，同一
-    个能发 `PUT /api/settings` 的调用方（`POST /api/agent/models` 假定的 XSS 威胁模型下）理论上
-    仍有一条路径：`PUT {agent_enabled:true, agent_provider:'openai-completions',
-    agent_base_url:'https://攻击者/v1', agent_model:'x'}` → `POST /api/cases/:id/agent/start`，
-    DSH 子进程会把明文 key 当 Bearer 打给攻击者端点。门槛明显高于已修复的 `/agent/models` 通道
-    （需要 `agent_enabled=true`、需要真实案件、需要 DSH runtime 起得来、动静大且留审计），因此
-    不否定上面那条修复的价值，但不应被误读为"整条外带通道已封死"。**处置**：本轮只更新文档
-    准确记录这条残余面（见下方"未覆盖/已知限制"第 6 条），不改代码——收紧 worker 启动路径涉及
-    对 `agent_base_url` 变更加二次确认之类的产品行为取舍，超出本轮范围。
+  - **【历史记录，2026-08-23 二～四次复审引入，2026-08-23 本轮已整体移除，不再是现行防线】**
+    二次复审曾发现 `validateBaseURL()`（`isPrivateOrLoopbackHost()`）只对 URL 解析出来的
+    hostname 字符串做黑名单匹配、不做 DNS 解析——任何一个字符串看起来合法、实际解析到回环/
+    内网的公网注册域名（探针实测 `https://localtest.me:8443/v1` 真实解析到 127.0.0.1，同类
+    还有 `*.traefik.me`、`*.local.gd`）都能跳过全部校验，`POST /api/agent/models` 会真实打到
+    本机回环端口。当时的修复是新增 `resolvePinnedAddress()`（`src/agent/config.js`）——在真正
+    发起请求前对 hostname 做一次真实 DNS 解析，任意一条记录落在内网/回环范围即整体拒绝，并把
+    核对过的地址原样传给 `fetchProviderModels()` 的 `pinnedAddress` 参数，消除两次解析之间的
+    DNS rebinding 窗口。这套机制随后又经过两轮复审修复：三次复审发现它把 Surge/Clash 等
+    fake-ip 透明代理解析出的 `198.18.0.0/15` 误判成内网、导致开代理用户「拉取可用模型」
+    100% 失败，修复是给这段地址在"DNS 解析结果"这一层单独放行；四次复审发现它只钉死
+    `records[0]`、首条不可达就直接超时失败，修复是改为对全部候选地址依次故障转移。（三次复审
+    同批还修复了一处无关的前端问题：`openai-completions` 收紧到必须显式 `apiKey` 之后，
+    `public/js/profile.js` 没有跟着调整,已保存 key/env 来源两条路径点「拉取可用模型」必然先打
+    一次注定 400 的请求——这条修复与 DNS 钉住无关，`updateFetchGate()`/`applyKeyUI()` 的收紧
+    本身不受本轮移除影响,继续有效。）
+    **2026-08-23 本轮（产品决策，非发现新的安全缺陷）：`resolvePinnedAddress()` 连同上述两轮
+    修复、fake-ip 豁免、多候选故障转移，以及它在 `src/routes/agent.js`／
+    `src/agent/models-client.js` 里的全部接线（`pinnedAddress`/`pinnedAddresses` 参数）已整体
+    删除**，不再是 `POST /api/agent/models` 的现行防线。理由：① 该端点已在 `apiAuth` 之后，
+    能调用它的调用方本来就能通过既有 supervisor 路径（改 `agent_base_url` + 开
+    `agent_enabled` + `POST /api/cases/:id/agent/start`）达成同等外联——worker 启动路径从未
+    接入过 `resolvePinnedAddress()`（只过字符串层 `validateBaseURL()`），DNS 钉住并未消除这
+    一类风险，只是把 `/agent/models` 这一个端点的门槛从两步变三步，制造了"一个端点比另一个端点
+    更安全"的误导性落差，也就是下方"未覆盖/已知限制"第 6 条曾登记的口径缺口；② 它在真实环境里
+    的误伤是结构性的：本机开着 fake-ip 类代理时所有域名都解析到 `198.18.0.0/15`，为绕开误伤加
+    的豁免让这道闸门对这批用户整体退化成 no-op——"写着有效但其实不生效的闸门"比"如实写明没有
+    这道闸门"更差；③ 它给一个纯配置校验动作引入了运行时 DNS 依赖，VPN/代理/企业 DNS 都会让这
+    条易用性流程报"网络错误"，与本轮"降低配置门槛"的目标直接冲突。**移除后的现状（如实描述）**：
+    `POST /api/agent/models` 与 worker 启动路径现在处于同一条 SSRF 防线水位——都只有
+    `validateBaseURL()` 的纯字符串黑名单（协议白名单/禁 userinfo/禁 query-fragment/公网强制
+    https/字面量回环-内网-链路本地-CGNAT-metadata 主机名黑名单/deepseek-official 官方域钉死），
+    不再对 hostname 做任何 DNS 解析或连接目标核对；一个字符串看起来合法、实际解析到内网/回环的
+    公网注册域名（如 `localtest.me` 一类）现在仍能通过这层校验——这是本轮明确接受的已知取舍，
+    不是被忽略的缺口，见 `docs/CHANGES.md` 对应条目。已删除的机械回归（曾存在，随代码一起移除，
+    不再可复跑）：`tools/test-agent-config.js` 曾有的场景 18、`tools/test-agent-models-
+    client.js` 曾有的场景 12–15、`tools/test-agent-models-http.js` 曾有的场景 3.5。
+  - **【2026-08-23 复审新增，已修复，本轮未受影响】** `fetchProviderModels()` 曾经跟随 3xx
+    重定向，可以把一个已通过 SSRF 校验的公网 `baseURL` 用 302 带进内网——虽然跨源重定向时
+    undici 会剥掉 `Authorization` 头（key 本身没有跟着走），但内网 JSON 响应体的 `id` 字段会
+    被当成模型列表原样返回，构成一个内网端口存活探测 oracle。修复是改为手动处理响应状态码
+    （`models-client.js` 使用 Node 核心 `http`/`https` 模块而非 `fetch`，以便完全控制重定向
+    语义），3xx 显式拒绝为 `upstream_redirect_blocked`——这条防线与上面被移除的 DNS 钉住层
+    无关，本轮移除后继续生效，机械回归见 `tools/test-agent-models-client.js` 场景 11（本轮
+    移除相邻场景后重新编号，仍然覆盖同一条不变量）。
 - **机械** — 场景 7（`listPendingInteractions` 脱敏）、场景 16c（对象 key 名脱敏）、
   场景 19（`worker.error` 兜底脱敏）、场景 23（wire 事件撞名重写）；
   `tools/test-agent-config.js` / `tools/test-agent-settings.js` 覆盖保留名与 baseURL 策略。
@@ -616,18 +582,20 @@
 5. **DMG 体积/双架构可跑性无法在纯源码树复核**：`dist-electron/` 不入库，
    相关数字与 `codesign --verify` 结论来自当时的本机构建记录，复核需重跑
    `RELEASING.md` 的本机打包流程或 CI 的 "Verify agent runtime bundled in DMG" 步骤。
-6. **[口径缺口，2026-08-23 四次复审登记，非代码问题]** worker 启动路径仍是已存明文 key 的一条
-   残余外带面——`POST /api/agent/models` 的 key 外带通道已在门禁 9 修复（只有
-   `provider === 'deepseek-official'` 才允许省略 `apiKey`），但这只覆盖了那一个端点。
-   `src/agent/supervisor.js` 的 `POST /api/cases/:id/agent/start` → `_startWorker()` 同样用
-   `resolveAgentApiKey(config)` 解出同一把已存明文 key，`buildSpawnEnv()` 把它连同同样客户端
-   可写、且不经过 `resolvePinnedAddress()` DNS 钉住核对（只过字符串层 `validateBaseURL()`）的
-   `config.baseURL` 一起注入子进程环境。同一个能发 `PUT /api/settings` 的调用方
-   （`agent_provider:'openai-completions'` + 攻击者 `agent_base_url`）理论上仍可以通过
-   `POST /api/cases/:id/agent/start` 让 DSH 子进程把明文 key 当 Bearer 打给攻击者端点——门槛明显
-   高于已修复的 `/agent/models` 通道（需要 `agent_enabled=true`、需要真实案件、需要 DSH runtime
-   起得来、动静大且留审计），本轮不因此否定门禁 9 那条修复的价值，但门禁 9 与 `CHANGES.md`
-   里"只保留 deepseek-official 一种可以省略 apiKey 的情形"这句话不应被误读为"整条外带通道已
-   封死"。**GA 前应评估**：对 `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key
-   重新确认（与门禁 9 该处修复思路一致，同样适用于这条路径）；本轮只做文档登记，未改代码——
-   收紧 worker 启动路径涉及产品行为取舍，超出本轮范围。
+6. **[已知取舍，2026-08-23 四次复审登记为"口径缺口"，2026-08-23 本轮起不再是两条路径之间的
+   落差，而是两条路径共同接受的取舍]** `POST /api/cases/:id/agent/start` → `_startWorker()`
+   与 `POST /api/agent/models` 同样用 `resolveAgentApiKey(config)` 解出已存明文 key，
+   `buildSpawnEnv()` 把它连同客户端可写的 `config.baseURL` 一起注入子进程环境——`agent_base_url`
+   只过字符串层 `validateBaseURL()`，不做任何 DNS 解析或连接目标核对。四次复审登记本条时，
+   这被视为"口径缺口"：`/agent/models` 当时已经接入 `resolvePinnedAddress()` 而 worker 启动
+   路径没有，二者标准不一致。**2026-08-23 本轮移除 `resolvePinnedAddress()` 之后，这个落差
+   本身已经消失**——两条路径现在都只有 `validateBaseURL()` 这一层字符串校验，不再有"一个端点
+   比另一个端点更安全"的误导。剩下的是两条路径共同的、本轮明确接受的残余面：同一个能发
+   `PUT /api/settings` 的调用方（`agent_provider:'openai-completions'` + 攻击者
+   `agent_base_url`）理论上仍可以通过 `POST /api/agent/models`（需要显式带 `apiKey`，不能
+   静默用已存 key，见门禁 9）或 `POST /api/cases/:id/agent/start`（需要 `agent_enabled=true`、
+   真实案件、DSH runtime 起得来、动静大且留审计）让已存明文 key 或本次请求的 key 被当 Bearer
+   打给攻击者指定的地址；移除 DNS 钉住并没有让这条路径变得比移除前更差——它本来就一直存在
+   （worker 启动路径从未有过钉住），只是不再对它视而不见。**GA 前可评估**：对
+   `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key 重新确认，但这是产品行为
+   取舍，不是本轮范围。

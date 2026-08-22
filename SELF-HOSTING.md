@@ -232,7 +232,7 @@ cp -a data "data.backup-$(date +%Y%m%d-%H%M%S)"
 docker start anqi
 ```
 
-若改用 `tools/backup.cjs` 做在线增量备份（SQLite backup API，无需停机）：脚本会把 `secret.key` 与当天的数据库备份一并同步到 `/app/data/backup/secret.key.bak`，不需要额外配置；但若这次部署改用 `ANJIAN_SECRET` 环境变量而不是 `secret.key` 文件，该脚本无法替你备份一个环境变量，必须自行把它存进独立的 secret 管理系统（见下方「AI 助理（可选）」）。
+若改用 `tools/backup.cjs` 做在线增量备份（SQLite backup API，无需停机）：脚本会把 `secret.key` 与当天的数据库备份一并同步到 `/app/data/backup/secret.key.bak`，不需要额外配置；但若这次部署改用 `ANJIAN_SECRET` 环境变量而不是 `secret.key` 文件，该脚本无法替你备份一个环境变量，必须自行把它存进独立的 secret 管理系统（见下方「AI 助理（可选）」）。**警示**：`backup` 目录因此同时含有 `secret.key`（主密钥）与加密后的数据库副本——拿到这两者就能解出 settings 表里存储的 AI 助理 API key 明文，该目录必须与主密钥本身同等级别保护（访问控制、传输加密、不落入未受控存储），切勿把这份备份目录与其它数据库备份一起明文外发或上传到通用网盘/协作工具。
 
 案件夹很大时，应使用支持版本历史、完整性校验和静态加密的备份方案。仅“同步”不等于备份：误删、加密勒索和损坏也可能被同步。
 
