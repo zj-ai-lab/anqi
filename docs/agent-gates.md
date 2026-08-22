@@ -17,12 +17,27 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 45 步，其中第 30–36、39–40 步专供 sidecar；第 37–38 步是打包/桌面版接线守卫；
-第 42–44 步是 beta.2 新增的「界面填 key」易用性改造守卫（服务端）——secret-box 静态加密自检、
-POST /api/agent/models 的网络层（本地假服务器）与路由层（provider/baseURL/apiKey 取值优先级）
-回归。第 40 步是 beta.2 同一改造的前端半边——「用户中心 · AI 助理」设置面新控件/联动逻辑的
-静态审查，加上真实 server.js 固定端口 3013 上 agent_api_key 掩码往返、apiKeyEnv 优先级、
-本地假 /models 服务器的整合冒烟（`tools/smoke-agent-profile-frontend.js`）。
+`npm run check` 当前 45 步（步号区间随本轮新增的第 41 步整体顺延，与上一版记录相比 41 步之后
+全部 +1；下面按当前实际步号记录，不再有任何步号被两句话各认领一次的歧义）：
+
+- 第 30–36 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
+  session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
+- 第 37–38 步：打包清单守卫、Electron 桌面版接线守卫（与 sidecar 具体逻辑无关，只是同一批改造
+  顺带触碰到的接线面）。
+- 第 39 步：sidecar 时代就有的前端行为冒烟（`tools/smoke-agent-frontend.js`）——counts.agent
+  特性探测门、agent_* 五键往返、SSE 帧到 DOM 映射静态审查。
+- 第 40 步：beta.2「界面填 key」易用性改造的前端半边（`tools/smoke-agent-profile-frontend.js`）
+  ——「用户中心 · AI 助理」设置面新控件/联动逻辑的静态审查，加上真实 server.js 固定端口 3013 上
+  agent_api_key 掩码往返、apiKeyEnv 优先级、本地假 `/models` 服务器的整合冒烟。
+- 第 41 步（2026-08-23 复审新增）：`tools/test-agent-model-options.js`——拉取模型下拉框默认
+  选中项的纯逻辑单测（命中/未命中/空列表/无 preferValue 四类场景），修复"外来旧值冒充默认选中
+  项"那条前端红线（详见本文件对应门禁条目）。
+- 第 42 步：preset 工具面机械守卫（不得再挂载模型侧文件读取工具，与「界面填 key」改造无关，
+  是同一分支上另一条独立守卫，顺延到这个步号）。
+- 第 43–45 步：beta.2「界面填 key」易用性改造守卫（服务端）——secret-box 静态加密自检、
+  `POST /api/agent/models` 的网络层（本地假服务器，含 2026-08-23 新增的 `pinnedAddress`
+  连接机制回归）与路由层（provider/baseURL SSRF 校验 + 连接期 DNS 钉住接线 + apiKey 取值
+  优先级）回归。
 
 ---
 
@@ -87,8 +102,10 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
   "拉取模型列表"验证 key 是否可用、"看到已存的 key 是否被认出来"，如果
   这两个操作也被 `enabled` 门挡住，公开版用户根本没法在打开开关前确认配置
   是否正确。这两处读凭据的口子各自有独立的红线约束（不是"不设防"）：
-  `POST /api/agent/models` 只在 `baseURL` 与 provider 官方域/已保存地址
-  同源时才回落到 env/本机存储的 key（见门禁 9 关于 key 外带通道的补记），
+  `POST /api/agent/models` 只在 `provider === 'deepseek-official'`（baseURL
+  钉死官方域常量，不是攻击者可写的值）时才回落到 env/本机存储的 key，
+  `openai-completions` 一律要求请求体显式带 `apiKey`（见门禁 9 关于 key
+  外带通道的补记——"与已保存地址同源即信任"这条路径已被证明可绕过并删除），
   `buildSettingsView()` 只返回掩码/布尔/来源枚举、绝不回显明文。读者不应该
   把本条门禁的"未启用时后面任何一行都不执行"当成对整个代码库的断言——它
   精确覆盖 `loadAgentConfig()`/`_startWorker()`/REST-SSE 的 `start`/
@@ -237,7 +254,7 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
   `grep`，见 preset 变更）：上面这条 [动态] 证据里"`header.tools` 恰好 13 个"
   的样本是收窄**之前**采集的，收窄之后首 header 的工具总数会变少（不是本文
   重新动态取证得出的数字，这里没有、也不应该谎称已经重新跑过）。收窄之后
-  首 header 的正确性以 preflight/`tools/check.sh` 第 40 步机械守卫为准；下一次
+  首 header 的正确性以 preflight/`tools/check.sh` 第 42 步机械守卫为准（该守卫在本条目记录时是第 41 步，随后续新增步骤顺延到当前的第 42 步）；下一次
   做 model-backed 取证时需要重新抓一次首 header 样本，刷新这里的工具计数。
 
 ## 门禁 5 · approval / question 的 allow / reject / answer / timeout / disconnect / shutdown 全部 session-bound、one-shot、fail-closed
@@ -535,7 +552,7 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
    （read/read_image/write/edit）与 `@deepseek-ai/dsh-tool-fs-search`
    （glob/grep）——模型侧不再拥有任何文件读取工具，read 无 containment 的
    这条缺口在 beta 面收口为"工具不存在"级别，不再依赖 persona 劝阻这道
-   唯一防线。`tools/check.sh` 第 40 步新增机械守卫，preset 组装文本里
+   唯一防线。`tools/check.sh` 新增机械守卫（登记时为第 41 步，随后续新增步骤顺延到当前的第 42 步），preset 组装文本里
    不得再出现这两个包名，防止未来无人重新评估这条围栏就把它们加回来。
    GA 若要恢复文件读取能力，必须先给 read 路径补上显式 containment（例如
    包一层校验绝对路径必须仍解析在 workspaceRoot 下），不能只靠 persona

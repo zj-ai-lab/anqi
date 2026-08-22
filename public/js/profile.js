@@ -9,6 +9,7 @@
 import { mountNav } from './nav.js';
 import { setSkin, getSkin, getResolvedSkin } from './skin.js';
 import { api, toast } from './api.js';
+import { buildModelOptions } from './agent-model-options.js';
 
 await mountNav();
 
@@ -181,18 +182,20 @@ if (agentEnabled && agentFields && agentSave) {
 
   // 拉取模型成功后把 Model 从手填 input 切到下拉 select（保留手填入口作为
   // 兜底，设计 4）；点「改手动填写」切回去，并把 select 当前选中值带回 input，
-  // 不丢用户已经选定的模型。
+  // 不丢用户已经选定的模型。选项列表/默认选中项的计算规则本身（含 2026-08-23
+  // 复审修复的"外来旧值不能冒充默认选中项"这条红线）拆到不依赖 DOM 的纯函数
+  // buildModelOptions()（./agent-model-options.js），单元测试见
+  // tools/test-agent-model-options.js——这里只负责把它的结果画进 DOM。
   function showModelSelect(models, preferValue) {
     agentModelSelect.innerHTML = '';
-    const values = models.slice();
-    if (preferValue && !values.includes(preferValue)) values.unshift(preferValue);
-    for (const m of values) {
+    const { options, selected } = buildModelOptions(models, preferValue);
+    for (const { value, label } of options) {
       const opt = document.createElement('option');
-      opt.value = m;
-      opt.textContent = m;
+      opt.value = value;
+      opt.textContent = label;
       agentModelSelect.appendChild(opt);
     }
-    if (preferValue && values.includes(preferValue)) agentModelSelect.value = preferValue;
+    if (selected != null) agentModelSelect.value = selected;
     agentModelLabel.hidden = true;
     agentModelSelectWrap.hidden = false;
     agentModelToggle.hidden = false;

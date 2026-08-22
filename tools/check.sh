@@ -9,7 +9,7 @@ unset FORCE_COLOR
 export NO_COLOR=1
 
 echo "[1/45] node --check"
-for f in server.js src/db.js src/lib/*.js src/lib/*.cjs src/middleware/*.js src/routes/*.js src/agent/*.js src/agent/assets/plugins/*/index.js src/agent/assets/mcp/server.mjs public/js/*.js cli/case tools/seed-demo.js tools/seed-finance-qa.js tools/qa-finance-ui.js tools/hash-password.js tools/backup.cjs tools/test-engine.js tools/test-settlement.js tools/test-settlement-view.js tools/test-settlement-transaction.js tools/test-settlement-http.js tools/test-share.js tools/test-migration-006.js tools/test-migration-007.js tools/test-migration-008.js tools/test-migration-009.js tools/test-migration-010.js tools/test-migration-011.js tools/test-migration-012.js tools/test-migration-013.js tools/test-migration-014.js tools/test-migration-015.js tools/test-migration-016.js tools/test-password-hash.js tools/test-startup-config.js tools/test-trust-proxy.js tools/test-auth-security.js tools/test-secure-files.js tools/test-files-http.js tools/test-error-handler.js tools/test-document-extractor.js tools/test-legalrag-bridge.js tools/test-legalrag-http.js tools/test-inbox-http.js tools/test-agent-config.js tools/test-agent-supervisor.js tools/test-agent-proposals.js tools/test-agent-proposals-http.js tools/test-agent-settings.js tools/test-agent-http.js tools/test-agent-session-read-http.js tools/test-secret-box.js tools/test-agent-models-client.js tools/test-agent-models-http.js tools/test-pack-manifest.js electron/main.js electron/backend-env.js tools/test-electron-backend-env.js tools/smoke-agent-frontend.js tools/smoke-agent-profile-frontend.js build/adhoc-sign.cjs build/afterpack-agent-runtime-link.cjs build/ensure-cross-arch-optional-deps.mjs; do
+for f in server.js src/db.js src/lib/*.js src/lib/*.cjs src/middleware/*.js src/routes/*.js src/agent/*.js src/agent/assets/plugins/*/index.js src/agent/assets/mcp/server.mjs public/js/*.js cli/case tools/seed-demo.js tools/seed-finance-qa.js tools/qa-finance-ui.js tools/hash-password.js tools/backup.cjs tools/test-engine.js tools/test-settlement.js tools/test-settlement-view.js tools/test-settlement-transaction.js tools/test-settlement-http.js tools/test-share.js tools/test-migration-006.js tools/test-migration-007.js tools/test-migration-008.js tools/test-migration-009.js tools/test-migration-010.js tools/test-migration-011.js tools/test-migration-012.js tools/test-migration-013.js tools/test-migration-014.js tools/test-migration-015.js tools/test-migration-016.js tools/test-password-hash.js tools/test-startup-config.js tools/test-trust-proxy.js tools/test-auth-security.js tools/test-secure-files.js tools/test-files-http.js tools/test-error-handler.js tools/test-document-extractor.js tools/test-legalrag-bridge.js tools/test-legalrag-http.js tools/test-inbox-http.js tools/test-agent-config.js tools/test-agent-supervisor.js tools/test-agent-proposals.js tools/test-agent-proposals-http.js tools/test-agent-settings.js tools/test-agent-http.js tools/test-agent-session-read-http.js tools/test-secret-box.js tools/test-agent-models-client.js tools/test-agent-models-http.js tools/test-agent-model-options.js tools/test-pack-manifest.js electron/main.js electron/backend-env.js tools/test-electron-backend-env.js tools/smoke-agent-frontend.js tools/smoke-agent-profile-frontend.js build/adhoc-sign.cjs build/afterpack-agent-runtime-link.cjs build/ensure-cross-arch-optional-deps.mjs; do
   node --check "$f"
 done
 # 原生 DOM 的 append()/prepend() 会把 null 转成字符串 "null" 塞进页面（api.js 的 el() 才会跳过）。
@@ -408,13 +408,21 @@ node tools/smoke-agent-frontend.js
 echo "[40/45] AI 助理设置面前端冒烟（新控件静态审查 + agent_api_key 掩码往返 + apiKeyEnv 优先级 + 本地假模型服务器）"
 node tools/smoke-agent-profile-frontend.js
 
+# 2026-08-23 复审修复：拉取模型成功后下拉框的默认选中项曾经可能是一个供应商
+# 这次压根没返回的旧模型名（unshift 进渲染列表之后又用同一个列表判断"是否
+# 命中"，判断恒为真）。把这条选项计算规则拆成不依赖 DOM 的纯函数
+# buildModelOptions()（public/js/agent-model-options.js），这里单独跑它的
+# Node 单测，不需要真实浏览器。
+echo "[41/45] agent 模型下拉默认选中项纯逻辑自检（命中/未命中/空列表四类场景）"
+node tools/test-agent-model-options.js
+
 # 产品决策（2026-08-22，见 docs/agent-gates.md 门禁 1/3「已知限制」§3）：门禁
 # 取证发现 rc.7 的 dsh-fs-sandbox 只对 write/edit 做 containment，read 对绝对
 # 路径完全没有围栏；beta 因此把 dsh-tool-fs/dsh-tool-fs-search 整体从 preset
 # 里拿掉，收口到「工具不存在」级别。这一步是纯文本机械守卫，防止未来有人
 # 为了"方便模型读文件"又把这两行加回 preset/anqi/agent.cordis.yml，却没有
 # 人重新评估这条围栏缺口——加回来的第一时间就在这里变红，逼这条评估发生。
-echo "[41/45] preset 工具面机械守卫（不得再挂载模型侧文件读取工具）"
+echo "[42/45] preset 工具面机械守卫（不得再挂载模型侧文件读取工具）"
 node -e "
 const fs = require('fs');
 const p = 'src/agent/assets/preset/anqi/agent.cordis.yml';
@@ -443,13 +451,13 @@ for (const name of required) {
 console.log('  ok（未发现 dsh-tool-fs / dsh-tool-fs-search；skill-filesystem/tool-skill/tool-todo/tool-ask-user/dsh-anqi 齐全）');
 "
 
-echo "[42/45] secret-box 静态加密自检（AES-256-GCM 往返 + 错误密钥/畸形密文安全失败 + secret.key 0o600 + ANJIAN_SECRET 熵校验）"
+echo "[43/45] secret-box 静态加密自检（AES-256-GCM 往返 + 错误密钥/畸形密文安全失败 + secret.key 0o600 + ANJIAN_SECRET 熵校验）"
 node tools/test-secret-box.js
 
-echo "[43/45] agent models-client 网络层自检（本地假 /models 服务器：OpenAI 兼容格式解析 + 超时/大小上限/401/404/畸形 JSON/未知形状全部映射成安全失败）"
+echo "[44/45] agent models-client 网络层自检（本地假 /models 服务器：OpenAI 兼容格式解析 + 超时/大小上限/401/404/畸形 JSON/未知形状/pinnedAddress 连接机制全部映射成安全失败或正确接线）"
 node tools/test-agent-models-client.js
 
-echo "[44/45] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 校验 + apiKey 取值优先级 请求体>env>本机保存 + 错误码映射 + 审计/响应体不含明文 key）"
+echo "[45/45] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 校验 + 连接期 DNS 钉住接线 + apiKey 取值优先级 请求体>仅 deepseek-official 允许的已保存 + 错误码映射 + 审计/响应体不含明文 key）"
 node tools/test-agent-models-http.js
 
 echo "ALL GREEN ✅"
