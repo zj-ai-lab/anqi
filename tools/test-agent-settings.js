@@ -147,8 +147,9 @@ try {
     assert.equal((await get()).agent_model, 'deepseek-v4-flash');
   }
 
-  // ---- apiKeyEnv：格式 + 保留名/前缀 ----
-  for (const bad of ['1BAD', 'has-dash', 'has space', '']) {
+  // ---- apiKeyEnv：格式 + 保留名/前缀（现在是可选高级项——非空值仍必须
+  //      合法，但空字符串本身不再是非法输入，见下面单独一段） ----
+  for (const bad of ['1BAD', 'has-dash', 'has space']) {
     const { status } = await put({ agent_api_key_env: bad });
     assert.equal(status, 400, `应该拒绝非法环境变量名: ${JSON.stringify(bad)}`);
   }
@@ -161,6 +162,71 @@ try {
     const { status } = await put({ agent_api_key_env: 'MY_DEEPSEEK_KEY' });
     assert.equal(status, 200);
     assert.equal((await get()).agent_api_key_env, 'MY_DEEPSEEK_KEY');
+  }
+  // ---- apiKeyEnv 留空：设计 5 把它降级为可选高级项——公开版用户走「界面
+  //      填 key」这条路，压根不需要碰环境变量；留空必须放行，且落库后 GET
+  //      读回的是空字符串（不是拒绝、也不是保留旧值）。----
+  {
+    const { status } = await put({ agent_api_key_env: '' });
+    assert.equal(status, 200, 'agent_api_key_env 留空必须放行——它现在是可选项，不是必填');
+    assert.equal((await get()).agent_api_key_env, '', '留空应该落库成空字符串，不是被拒绝或保留旧值');
+  }
+  {
+    const { status } = await put({ agent_api_key_env: 'MY_DEEPSEEK_KEY' });
+    assert.equal(status, 200);
+  }
+
+  // ---- agent_api_key：明文入参，落库前加密，PUT/GET 响应体永不回显明文
+  //      （只回掩码 + 布尔「已配置」+ 来源），且不得写超长输入 ----
+  {
+    const { status, data } = await put({ agent_api_key: 123 });
+    assert.equal(status, 400, 'agent_api_key 非字符串必须拒绝');
+    assert.match(data.error, /agent_api_key/);
+  }
+  {
+    const { status, data } = await put({ agent_api_key: 'x'.repeat(5000) });
+    assert.equal(status, 400, '超长 agent_api_key 必须拒绝');
+    assert.match(data.error, /过长/);
+  }
+  {
+    // apiKeyEnv 此刻已经落库成 MY_DEEPSEEK_KEY，但该环境变量在本测试进程里
+    // 没有值——所以填了 agent_api_key 之后，resolveAgentApiKey() 应该走
+    // stored 分支（env 优先但 env 为空时兜底），而不是被 env 名的存在挡住。
+    delete process.env.MY_DEEPSEEK_KEY;
+    const { status, data } = await put({ agent_api_key: 'sk-test-plaintext-abcd1234' });
+    assert.equal(status, 200);
+    assert.equal(data.agent_api_key_configured, true);
+    assert.equal(data.agent_api_key_source, 'stored');
+    assert.equal(data.agent_api_key_masked, '…1234', 'masked 只应该带末 4 位');
+    assert.ok(
+      !JSON.stringify(data).includes('sk-test-plaintext-abcd1234'),
+      'PUT 响应体绝不能包含提交上去的明文 key'
+    );
+    const after = await get();
+    assert.equal(after.agent_api_key_configured, true);
+    assert.equal(after.agent_api_key_masked, '…1234');
+    assert.ok(
+      !Object.keys(after).includes('agent_api_key_encrypted'),
+      'GET 响应体不应该带出 agent_api_key_encrypted 这一行的密文'
+    );
+    assert.ok(
+      !JSON.stringify(after).includes('sk-test-plaintext-abcd1234'),
+      'GET 响应体绝不能包含明文 key'
+    );
+  }
+  // ---- env 优先于已存加密 key：给 MY_DEEPSEEK_KEY 赋值后，source 必须翻成 env ----
+  {
+    process.env.MY_DEEPSEEK_KEY = 'sk-from-env-value';
+    const after = await get();
+    assert.equal(after.agent_api_key_source, 'env', 'env 变量一旦有值，必须优先于已存的加密 key');
+    assert.equal(after.agent_api_key_masked, '…alue');
+    delete process.env.MY_DEEPSEEK_KEY;
+  }
+  // ---- 清空已存 key：提交空字符串必须能清掉，而不是被当成"不改动" ----
+  {
+    const { data } = await put({ agent_api_key: '' });
+    assert.equal(data.agent_api_key_configured, false, '提交空字符串必须清空已存的 key');
+    assert.equal(data.agent_api_key_source, 'none');
   }
 
   // ---- baseURL：协议、凭据、内网/回环、deepseek-official 官方域 ----

@@ -4,10 +4,19 @@ import {
   AGENT_SETTINGS_KEYS,
   ALLOWED_PROVIDERS,
   ENV_NAME_RE,
+  agentKeyStatus,
   isReservedEnvName,
   loadAgentConfig,
+  resolveAgentApiKey,
   validateBaseURL,
 } from '../agent/config.js';
+import { encryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
+
+// agent_api_key 明文入参的长度上限——纯粹是防御式的 DoS/误用兜底（真实
+// API key 从没见过超过几百字符的），不是安全边界本身：加密/落库对任意长度
+// 字符串都能正确处理，这里只是拒绝明显不像 key 的超长输入，避免整条巨大字
+// 符串被加密后长期占用 settings 表一行。
+const MAX_API_KEY_LENGTH = 4096;
 
 // 系统设置（键值）。「用户中心 · 个人设置」六个抬头字段——纯展示信息，不进
 // 期限引擎、不进任何计算、无 LLM 通道；加上 DSH sidecar 的 agent_* 五键
@@ -60,7 +69,15 @@ export function createSettingsRouter(supervisor) {
   const r = Router();
 
   const ALLOWED = ['name', 'license_no', 'firm', 'phone', 'email', 'address'];
-  const AGENT_KEYS = Object.values(AGENT_SETTINGS_KEYS);
+  // 存储层键名（settings 表里真实的行名）——GET 响应要把其中的
+  // agent_api_key_encrypted 过滤掉，绝不把密文原样吐给前端（虽然密文不是
+  // 明文，但没有正当理由顺手带出去，见文件顶部注释）。
+  const AGENT_STORAGE_KEYS = Object.values(AGENT_SETTINGS_KEYS);
+  // PUT body 里认的 agent_* 键名——比存储键名多一个 'agent_api_key'：这是
+  // 用户在界面填的明文 key，落库前会被加密进 AGENT_SETTINGS_KEYS.apiKeyEncrypted
+  // 那一行,body 键名与存储键名故意不同,避免调用方以为"传进去的就是存进去
+  // 的原始字符串"。
+  const AGENT_BODY_KEYS = [...AGENT_STORAGE_KEYS.filter((k) => k !== AGENT_SETTINGS_KEYS.apiKeyEncrypted), 'agent_api_key'];
 
   function readAgentSetting(key) {
     const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -101,15 +118,36 @@ export function createSettingsRouter(supervisor) {
       values.agent_model = model;
     }
 
+    // apiKeyEnv 现在是可选高级项（设计 5）：留空表示"不走环境变量，用界面
+    // 存的加密 key"，不再是非法输入；但一旦填了非空值，格式/保留名校验尺度
+    // 不变——不能因为"现在可选"就顺带放松已经存在的红线。
     if (touches('agent_api_key_env')) {
       const apiKeyEnv = String(body.agent_api_key_env ?? '').trim();
-      if (!ENV_NAME_RE.test(apiKeyEnv)) {
-        return { ok: false, error: 'agent_api_key_env 必须是合法的环境变量名（不是 key 本身）' };
-      }
-      if (isReservedEnvName(apiKeyEnv)) {
-        return { ok: false, error: 'agent_api_key_env 不得使用 anqi 自身的保留变量名/前缀' };
+      if (apiKeyEnv) {
+        if (!ENV_NAME_RE.test(apiKeyEnv)) {
+          return { ok: false, error: 'agent_api_key_env 必须是合法的环境变量名（不是 key 本身）' };
+        }
+        if (isReservedEnvName(apiKeyEnv)) {
+          return { ok: false, error: 'agent_api_key_env 不得使用 anqi 自身的保留变量名/前缀' };
+        }
       }
       values.agent_api_key_env = apiKeyEnv;
+    }
+
+    // 界面填的明文 key（设计 2/3）：落库前加密，本函数返回值里也只有密文，
+    // 从不是明文本身——PUT 响应体最终由下面的 buildAgentKeyView() 单独构建
+    // 掩码/布尔视图，绝不会把这里算出来的密文或调用方传入的明文原样回显。
+    // 空字符串是显式"清空已存 key"的信号（用户想切回纯环境变量模式），不是
+    // 非法输入，加密一个空串没有意义，直接存空串表示"没有已存 key"。
+    if (touches('agent_api_key')) {
+      if (typeof body.agent_api_key !== 'string') {
+        return { ok: false, error: 'agent_api_key 必须为字符串' };
+      }
+      const raw = body.agent_api_key;
+      if (raw.length > MAX_API_KEY_LENGTH) {
+        return { ok: false, error: `agent_api_key 过长（上限 ${MAX_API_KEY_LENGTH} 字符）` };
+      }
+      values[AGENT_SETTINGS_KEYS.apiKeyEncrypted] = raw ? encryptSecret(raw, resolveMasterKey()) : '';
     }
 
     if (touches('agent_base_url') || touches('agent_provider')) {
@@ -127,16 +165,40 @@ export function createSettingsRouter(supervisor) {
     return { ok: true, values };
   }
 
-  r.get('/settings', (req, res) => {
+  // GET/PUT /api/settings 共用的响应体构造：
+  //   - settings 表的原始行原样带出（六个人工字段 + agent_enabled/provider/
+  //     baseURL/model/apiKeyEnv 五个白名单字段），但把 agent_api_key_encrypted
+  //     这一行剔除——密文本身虽不是明文，但没有正当理由顺手带出去。
+  //   - 额外附三个只读计算字段供前端展示："配置来自哪里/是否已配置/掩码"，
+  //     一律经 resolveAgentApiKey()（同 loadAgentConfig() 取值链完全同源）
+  //     + maskSecret() 算出，绝不把 resolveAgentApiKey() 返回的明文原样吐
+  //     出去。这里刻意不经过 config.enabled 门（不调用 agentKeyStatus()）：
+  //     设置页本身就是"配置尚未启用时"的编辑现场，用户需要在还没勾选
+  //     agent_enabled 之前就能看到"我刚存的 key 是否被认出来了"。
+  function buildSettingsView() {
     const rows = db.prepare('SELECT key, value FROM settings').all();
-    res.json(Object.fromEntries(rows.map((row) => [row.key, row.value])));
+    const view = Object.fromEntries(
+      rows
+        .filter((row) => row.key !== AGENT_SETTINGS_KEYS.apiKeyEncrypted)
+        .map((row) => [row.key, row.value])
+    );
+    const apiKeyEnv = String(view[AGENT_SETTINGS_KEYS.apiKeyEnv] ?? '').trim();
+    const { value, source } = resolveAgentApiKey({ apiKeyEnv });
+    view.agent_api_key_configured = !!value;
+    view.agent_api_key_source = source;
+    view.agent_api_key_masked = value ? maskSecret(value) : null;
+    return view;
+  }
+
+  r.get('/settings', (req, res) => {
+    res.json(buildSettingsView());
   });
 
   r.put('/settings', async (req, res) => {
     const body = req.body || {};
 
     let agentValues = {};
-    const touchesAnyAgentKey = AGENT_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key));
+    const touchesAnyAgentKey = AGENT_BODY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key));
     if (touchesAnyAgentKey) {
       const validated = validateAgentFields(body);
       if (!validated.ok) return res.status(400).json({ error: validated.error });
@@ -201,8 +263,7 @@ export function createSettingsRouter(supervisor) {
       }
     }
 
-    const rows = db.prepare('SELECT key, value FROM settings').all();
-    res.json(Object.fromEntries(rows.map((row) => [row.key, row.value])));
+    res.json(buildSettingsView());
   });
 
   return r;
