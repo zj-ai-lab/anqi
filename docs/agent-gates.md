@@ -17,10 +17,12 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 43 步，其中第 30–36、39–40 步专供 sidecar；第 37–38 步是打包/桌面版接线守卫；
-第 41–43 步是 beta.2 新增的「界面填 key」易用性改造守卫——secret-box 静态加密自检、
+`npm run check` 当前 45 步，其中第 30–36、39–40 步专供 sidecar；第 37–38 步是打包/桌面版接线守卫；
+第 42–44 步是 beta.2 新增的「界面填 key」易用性改造守卫（服务端）——secret-box 静态加密自检、
 POST /api/agent/models 的网络层（本地假服务器）与路由层（provider/baseURL/apiKey 取值优先级）
-回归。
+回归。第 40 步是 beta.2 同一改造的前端半边——「用户中心 · AI 助理」设置面新控件/联动逻辑的
+静态审查，加上真实 server.js 固定端口 3013 上 agent_api_key 掩码往返、apiKeyEnv 优先级、
+本地假 /models 服务器的整合冒烟（`tools/smoke-agent-profile-frontend.js`）。
 
 ---
 

@@ -1759,6 +1759,15 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .set-ctl input[type=range] { flex: 1; min-width: 0; }
 .settings-row input:disabled { opacity: .55; cursor: not-allowed; }
 .set-ctl:has(input:disabled) .num { color: var(--meta); }
+
+/* AI 助理设置面（profile 页）：只读 Base URL（deepseek-official 官方域自动
+   带出、不可编辑）+ 禁用态 API Key（由环境变量提供时界面输入框整体锁死）+
+   拉取模型失败时的行内错误文案，三处都复用 --meta/--red 主题 token，不新增
+   跨皮肤硬编码色。 */
+#agent-base-url:read-only,
+#agent-api-key:disabled { background: var(--surface-2); color: var(--meta); cursor: not-allowed; }
+#agent-fields select:disabled { opacity: .55; cursor: not-allowed; }
+#agent-models-status.is-error { color: var(--red); }
 .set-ctl .num {
   flex: none; width: 52px; text-align: right; white-space: nowrap;
   font: 650 16px/1 var(--f-num); color: var(--green);

@@ -8,7 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **2.7.0-beta.2** | 未发布（工作树 2026-08-23） | AI 助理设置面易用性改造（服务端）：界面直接填 API key（AES-256-GCM 静态加密存储）、供应商预设自动带出 baseURL、新增 `POST /api/agent/models` 拉取可用模型列表；apiKeyEnv 退居可选高级项，env 优先/本机保存兜底的取值链保证既有 Docker/桌面部署零改动 |
+| **2.7.0-beta.2** | 未发布（工作树 2026-08-23） | AI 助理设置面易用性改造：界面直接填 API key（AES-256-GCM 静态加密存储）、供应商预设自动带出 baseURL、新增 `POST /api/agent/models` 拉取可用模型列表；apiKeyEnv 退居可选高级项，env 优先/本机保存兜底的取值链保证既有 Docker/桌面部署零改动。前端（用户中心 · AI 助理面板）随之重做：供应商切换自动带出/锁定 baseURL、API Key 密码框按「环境变量提供/已保存掩码/未配置」三态展示且留空提交不覆盖已存 key、Model 拉取成功后手填输入框切换为下拉（保留手填兜底）、apiKeyEnv 折进默认收起的「高级选项」 |
 | **2.7.0-beta.1** | 未发布（工作树 2026-08-22） | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |

@@ -102,18 +102,37 @@
         <div id="agent-fields" hidden>
           <div class="formgrid">
             <label class="f">Provider<select id="agent-provider">
-              <option value="deepseek-official">deepseek-official</option>
-              <option value="openai-completions">openai-completions</option>
+              <option value="deepseek-official">deepseek-official（DeepSeek 官方）</option>
+              <option value="openai-completions">openai-completions（自定义 OpenAI 兼容端点）</option>
             </select></label>
-            <label class="f">Model<input id="agent-model" placeholder="deepseek-chat"></label>
           </div>
           <div class="formrow">
             <label class="f grow">Base URL<input id="agent-base-url" placeholder="https://api.deepseek.com"></label>
           </div>
+          <p class="page-sub" id="agent-base-url-note" hidden>deepseek-official 固定走官方地址，不可编辑。</p>
+
           <div class="formrow">
-            <label class="f grow">API Key 环境变量名<input id="agent-api-key-env" placeholder="DEEPSEEK_API_KEY" autocomplete="off" spellcheck="false"></label>
+            <label class="f grow">API Key<input id="agent-api-key" type="password" autocomplete="off" spellcheck="false" placeholder="sk-…"></label>
           </div>
-          <p class="page-sub" id="agent-key-note">这里填的只是<b>变量名</b>，不是 key 本身——key 值请通过启动环境提供（systemd/launchd 环境变量、.env 之类），绝不保存在案齐里、不进数据库、不进日志。</p>
+          <p class="page-sub" id="agent-api-key-note"></p>
+
+          <div class="formrow">
+            <label class="f grow" id="agent-model-label">Model<input id="agent-model" placeholder="deepseek-chat"></label>
+            <label class="f grow" id="agent-model-select-wrap" hidden>Model（从列表选择）<select id="agent-model-select"></select></label>
+            <button class="btn" type="button" id="agent-fetch-models">拉取可用模型</button>
+          </div>
+          <div class="formrow">
+            <button class="btn small" type="button" id="agent-model-toggle" hidden>改手动填写</button>
+          </div>
+          <p class="page-sub" id="agent-models-status" hidden></p>
+
+          <details class="adder" id="agent-advanced">
+            <summary>高级选项</summary>
+            <div class="formrow">
+              <label class="f grow">API Key 环境变量名<input id="agent-api-key-env" placeholder="DEEPSEEK_API_KEY" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <p class="page-sub">这里填的只是<b>变量名</b>，不是 key 本身——若该环境变量在启动环境（systemd/launchd/.env 之类）里存在且非空，优先级高于上面在界面填的 key；留空则完全用界面保存的 key。</p>
+          </details>
         </div>
         <div class="formrow">
           <button class="btn primary" type="button" id="agent-save">保存 AI 助理设置</button>

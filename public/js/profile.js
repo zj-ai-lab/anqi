@@ -104,51 +104,193 @@ if (saveBtn) {
   });
 }
 
-/* ── AI 助理（DSH sidecar）：enabled 开关 + provider/baseURL/model/apiKeyEnv 五键 ──
-   白名单/格式/协议/保留名校验的权威在 src/agent/config.js + src/routes/settings.js
-   的 agent_* PUT 分支；本文件只做「读回填 → 折叠 → 保存」，不在前端重复一遍校验
-   规则——校验不过就让 api() 的失败 toast 把服务端 error 显示出来，与全站其它
-   表单一致。*/
+/* ── AI 助理（DSH sidecar）：enabled 开关 + provider/baseURL/model/apiKey 易用性改造 ──
+   白名单/格式/协议/保留名/SSRF 校验的权威在 src/agent/config.js +
+   src/routes/settings.js 的 agent_* PUT 分支、src/routes/agent.js 的
+   POST /api/agent/models；本文件只做「读回填 → 供应商联动 → 拉模型 → 折叠 →
+   保存」，不在前端重复一遍校验规则——校验不过就让 api() 的失败 toast 把服务端
+   error 显示出来，与全站其它表单一致。*/
 const agentEnabled = $('agent-enabled');
 const agentFields = $('agent-fields');
 const agentSave = $('agent-save');
 
 if (agentEnabled && agentFields && agentSave) {
   const agentProvider = $('agent-provider');
-  const agentModel = $('agent-model');
   const agentBaseUrl = $('agent-base-url');
+  const agentBaseUrlNote = $('agent-base-url-note');
+  const agentApiKey = $('agent-api-key');
+  const agentApiKeyNote = $('agent-api-key-note');
   const agentApiKeyEnv = $('agent-api-key-env');
+  const agentAdvanced = $('agent-advanced');
+  const agentModel = $('agent-model');
+  const agentModelLabel = $('agent-model-label');
+  const agentModelSelect = $('agent-model-select');
+  const agentModelSelectWrap = $('agent-model-select-wrap');
+  const agentModelToggle = $('agent-model-toggle');
+  const agentFetchBtn = $('agent-fetch-models');
+  const agentModelsStatus = $('agent-models-status');
+
+  const DEEPSEEK_OFFICIAL_URL = 'https://api.deepseek.com';
+  // GET /api/settings 附带的三个只读派生字段（buildSettingsView()，
+  // src/routes/settings.js）——key 是否已可用/来自哪里/掩码，从不含明文。
+  // 保存前端本轮读到的这份快照，供「留空提交表示不修改」与「env 时禁用输入
+  // 框」两条逻辑复用，不重新发请求判断。
+  let keySnapshot = { configured: false, source: 'none', masked: null };
 
   const syncAgentCollapse = () => { agentFields.hidden = !agentEnabled.checked; };
   agentEnabled.addEventListener('change', syncAgentCollapse);
 
+  // 供应商切换：deepseek-official 自动带出官方地址且锁定为只读（用户不可编辑，
+  // 设计 1）；切到 openai-completions 时，若当前值仍是刚才自动填入的官方地址
+  // （用户还没自己改过），清空好让用户填自己的端点，不留一个看似自定义、实际
+  // 是残留官方地址的误导值。
+  function applyProviderUI(provider) {
+    const isOfficial = provider === 'deepseek-official';
+    if (isOfficial) {
+      agentBaseUrl.value = DEEPSEEK_OFFICIAL_URL;
+    } else if (agentBaseUrl.value.trim() === DEEPSEEK_OFFICIAL_URL) {
+      agentBaseUrl.value = '';
+    }
+    agentBaseUrl.readOnly = isOfficial;
+    agentBaseUrlNote.hidden = !isOfficial;
+  }
+  agentProvider.addEventListener('change', () => applyProviderUI(agentProvider.value));
+
+  // API Key 输入框的三种展示态（设计 2/3，keySource 三取值 env/stored/none，
+  // 见 resolveAgentApiKey()）：env 时界面填写不生效、直接禁用输入框；stored
+  // 时用掩码告知「已保存」并说明留空不修改；none 时纯提示。三种态都带上
+  // 「保存在本机数据库并加密；能拿到数据目录的人可以解出来」这句如实说明——
+  // 唯一例外是 env 态（那时界面存的 key 根本不生效，这句话对当前生效值无
+  // 意义，只保留「界面填写不会覆盖」这句）。
+  function applyKeyUI() {
+    agentApiKey.value = '';
+    if (keySnapshot.source === 'env') {
+      agentApiKey.disabled = true;
+      agentApiKey.placeholder = '由环境变量提供';
+      agentApiKeyNote.textContent = '当前由环境变量提供，界面填写不会覆盖。';
+    } else if (keySnapshot.configured) {
+      agentApiKey.disabled = false;
+      agentApiKey.placeholder = `已保存（末四位 ${keySnapshot.masked || ''}）`;
+      agentApiKeyNote.textContent = '留空提交表示不修改已保存的 key。保存在本机数据库并加密；能拿到数据目录的人可以解出来。';
+    } else {
+      agentApiKey.disabled = false;
+      agentApiKey.placeholder = 'sk-…';
+      agentApiKeyNote.textContent = '尚未配置。保存在本机数据库并加密；能拿到数据目录的人可以解出来。';
+    }
+  }
+
+  // 拉取模型成功后把 Model 从手填 input 切到下拉 select（保留手填入口作为
+  // 兜底，设计 4）；点「改手动填写」切回去，并把 select 当前选中值带回 input，
+  // 不丢用户已经选定的模型。
+  function showModelSelect(models, preferValue) {
+    agentModelSelect.innerHTML = '';
+    const values = models.slice();
+    if (preferValue && !values.includes(preferValue)) values.unshift(preferValue);
+    for (const m of values) {
+      const opt = document.createElement('option');
+      opt.value = m;
+      opt.textContent = m;
+      agentModelSelect.appendChild(opt);
+    }
+    if (preferValue && values.includes(preferValue)) agentModelSelect.value = preferValue;
+    agentModelLabel.hidden = true;
+    agentModelSelectWrap.hidden = false;
+    agentModelToggle.hidden = false;
+  }
+  function showModelManual() {
+    if (!agentModelSelectWrap.hidden && agentModelSelect.value) agentModel.value = agentModelSelect.value;
+    agentModelLabel.hidden = false;
+    agentModelSelectWrap.hidden = true;
+    agentModelToggle.hidden = true;
+  }
+  agentModelToggle.addEventListener('click', showModelManual);
+
+  // 当前生效的 model 值：select 可见时以 select 为准，否则以手填 input 为准
+  // ——两者只有一个在同一时刻代表用户的选择。
+  function currentModelValue() {
+    return agentModelSelectWrap.hidden ? agentModel.value.trim() : agentModelSelect.value.trim();
+  }
+
+  agentFetchBtn.addEventListener('click', async () => {
+    agentFetchBtn.disabled = true;
+    agentModelsStatus.hidden = true;
+    agentModelsStatus.classList.remove('is-error');
+    try {
+      const body = { provider: agentProvider.value, baseURL: agentBaseUrl.value.trim() };
+      const keyInput = agentApiKey.value.trim();
+      // 已填了新 key 就带上；留空则不传，服务端按取值优先级链回落到
+      // 已保存/环境变量的 key（POST /api/agent/models 与 loadAgentConfig()
+      // 同源，见 src/routes/agent.js 顶部注释）。
+      if (keyInput) body.apiKey = keyInput;
+      const result = await api('/agent/models', { method: 'POST', body });
+      const preferValue = currentModelValue();
+      showModelSelect(result.models || [], preferValue);
+      agentModelsStatus.hidden = false;
+      agentModelsStatus.textContent = `拉取成功，共 ${(result.models || []).length} 个模型`;
+    } catch (e) {
+      // api() 已经弹过一次 toast；这里额外把同一条服务端中文错误原样贴在
+      // 按钮旁边，避免用户错过一闪而过的 toast（设计 4「失败时展示后端返回
+      // 的中文错误」）。
+      agentModelsStatus.hidden = false;
+      agentModelsStatus.classList.add('is-error');
+      agentModelsStatus.textContent = e.message || '拉取模型列表失败';
+    } finally {
+      agentFetchBtn.disabled = false;
+    }
+  });
+
   api('/settings').then((s) => {
     agentEnabled.checked = s.agent_enabled === 'true';
-    if (s.agent_provider) agentProvider.value = s.agent_provider;
+    const provider = s.agent_provider || 'deepseek-official';
+    agentProvider.value = provider;
     if (s.agent_model != null) agentModel.value = s.agent_model;
     if (s.agent_base_url != null) agentBaseUrl.value = s.agent_base_url;
     if (s.agent_api_key_env != null) agentApiKeyEnv.value = s.agent_api_key_env;
+    applyProviderUI(provider);
+    keySnapshot = {
+      configured: !!s.agent_api_key_configured,
+      source: s.agent_api_key_source || 'none',
+      masked: s.agent_api_key_masked || null,
+    };
+    applyKeyUI();
+    // 高级选项默认收起（设计 5）；已经存在一个变量名时自动展开，免得用户
+    // 看不到「输入框被 env 锁死」这件事究竟是为什么。
+    if (agentApiKeyEnv.value.trim()) agentAdvanced.open = true;
     syncAgentCollapse();
-  }).catch(() => { syncAgentCollapse(); /* 读不到就按关闭态展示，不拦着用户填 */ });
+  }).catch(() => { applyKeyUI(); syncAgentCollapse(); /* 读不到就按关闭态展示，不拦着用户填 */ });
 
   agentSave.addEventListener('click', async () => {
     agentSave.disabled = true;
     try {
-      // 关闭时只提交 agent_enabled 一个键——其余四个字段这时已经折叠，大概率
+      // 关闭时只提交 agent_enabled 一个键——其余字段这时已经折叠，大概率
       // 还是空值；服务端对「body 里没出现这个键」完全放行（未涉及的键不校验、
       // 不改写），但对「出现了却是空字符串」会 400（如 agent_model 不能为
       // 空）。不分支的话，「勾选又立刻取消、从没填过字段就点保存」这类最简单
       // 的关闭操作会被一条跟「关闭」本身无关的校验错误拦住。
-      const body = agentEnabled.checked
-        ? {
-            agent_enabled: true,
-            agent_provider: agentProvider.value,
-            agent_model: agentModel.value.trim(),
-            agent_base_url: agentBaseUrl.value.trim(),
-            agent_api_key_env: agentApiKeyEnv.value.trim(),
-          }
-        : { agent_enabled: false };
-      await api('/settings', { method: 'PUT', body });
+      let body;
+      if (agentEnabled.checked) {
+        body = {
+          agent_enabled: true,
+          agent_provider: agentProvider.value,
+          agent_model: currentModelValue(),
+          agent_base_url: agentBaseUrl.value.trim(),
+          agent_api_key_env: agentApiKeyEnv.value.trim(),
+        };
+        // API Key：留空提交表示不修改（设计 2）——不在 body 里出现这个键，
+        // 服务端 validateAgentFields() 对「未触及的键」完全不改写。只有
+        // 输入框未被 env 禁用、且用户确实填了非空值时才带上。
+        const keyInput = agentApiKey.value.trim();
+        if (!agentApiKey.disabled && keyInput) body.agent_api_key = keyInput;
+      } else {
+        body = { agent_enabled: false };
+      }
+      const s = await api('/settings', { method: 'PUT', body });
+      keySnapshot = {
+        configured: !!s.agent_api_key_configured,
+        source: s.agent_api_key_source || 'none',
+        masked: s.agent_api_key_masked || null,
+      };
+      applyKeyUI();
       toast('AI 助理设置已保存');
     } catch (e) {
       toast('保存失败：' + (e.message || e));
