@@ -56,9 +56,15 @@ const STARTABLE_STATUSES = new Set(['stopped', 'error', 'crashed']);
 // 索）——这四个是助理最高频调用的工具，漏标会让律师看到「🔧 read · 写入」
 // 这种误导性的性质标注。write/edit 不在此列——preset 的 sandbox-policy 把它
 // 们钉死 read-only，必然被拒，标「写入」才是对的（见 agent.cordis.yml）。
+// 另外三个（dsh-tool-skill/dsh-tool-ask-user/dsh-tool-todo 的 skill/
+// ask_user_question/todo_write，工具名见各自 lib/index.js 的 name 字段）
+// 都不写案件数据：skill 只读取受信任 skill 定义；ask_user_question 只是向
+// 律师提问、不落任何字段；todo_write 写的是助理会话自己的待办草稿（不进
+// anjian.db 的案件表），三者标「写入」同样是误导。
 const READONLY_TOOLS = new Set([
   'mcp__anqi-local__case_folder_info', 'anqi_case_get', 'anqi_digest',
   'read', 'read_image', 'glob', 'grep',
+  'skill', 'ask_user_question', 'todo_write',
 ]);
 const PROPOSE_TOOL = 'anqi_inbox_propose';
 const MAX_PROMPT_CHARS = 8000;
@@ -283,7 +289,17 @@ export async function mountAgentDrawer(caseId) {
     const es = new EventSource(`/api/cases/${caseId}/agent/events`);
     state.es = es;
 
-    es.addEventListener('status', (e) => applySnapshot(JSON.parse(e.data)));
+    es.addEventListener('status', (e) => {
+      const data = JSON.parse(e.data);
+      // 纵深防御：真实 status 首帧是 supervisor.publicStatus() 的原始投影，
+      // 顶层从不带 origin 字段（origin 只出现在 {origin,data} 包一层的
+      // tool/*、assistant/* 等事件里）。服务端已经把子进程 session.event 撞
+      // 上保留事件名的情形重写成 wire/<type>（见 src/routes/agent.js），这里
+      // 独立于服务端再核验一次：一旦收到的 status 帧顶层带 origin，视为 wire
+      // 一侧的伪造/异常帧，直接丢弃，不喂给 applySnapshot()。
+      if (data.origin) return;
+      applySnapshot(data);
+    });
     es.addEventListener('worker/ready', () => { applyStatus('ready'); appendSystem('AI 助理已就绪'); });
     es.addEventListener('turn/start', () => { applyStatus('running'); });
     es.addEventListener('turn/end', (e) => {
@@ -299,6 +315,11 @@ export async function mountAgentDrawer(caseId) {
     es.addEventListener('worker/exit', (e) => {
       const data = JSON.parse(e.data).data || {};
       applyStatus(data.status, null);
+      // worker 退出后，任何还没收到 tool/result 的 pendingToolCalls 记录都成了
+      // 孤儿（旧 worker 的 callId 命名空间已经结束）——清空，避免残留条目
+      // 无限增长，也避免下次重启后的新 worker 若恰好复用了同一个 callId 字面
+      // 值时被错配到上一任 worker 遗留的工具名。
+      state.pendingToolCalls.clear();
       appendSystem(`AI 助理已停止${data.detail ? '：' + data.detail : ''}`);
     });
     es.addEventListener('assistant/chunk', (e) => {

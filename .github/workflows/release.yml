@@ -101,10 +101,12 @@ jobs:
         # 现形——这里对两个架构的打包产物各做一次机械核验：DSH 的可执行入口
         # 必须真的落在 Contents/Resources/agent-runtime/runtime/node_modules
         # 下，而不是 build.extraResources"复制成功"但内容为空；同时核验每个
-        # 架构自己的 sharp 原生二进制（@img/sharp-darwin-<arch>）确实存在——
-        # 只核验 bin.js/符号链接存在会对上一轮的 x64 sharp 缺失视而不见（两个
-        # 架构都能通过那两条断言，唯独 sharp 崩），这里额外核验的是"跨架构
-        # 补装是否真的生效"，不是重复上面那步。
+        # 架构自己的 sharp/koffi/ripgrep 原生二进制确实存在——只核验目录
+        # （旧版本用 test -d）或 bin.js/符号链接存在会漏检"目录还在、里面的
+        # 原生二进制文件没了"这种半成品（例如 extraResources 复制中断、或
+        # ensure-cross-arch-optional-deps.mjs 补装失败但留下空目录），必须
+        # 直接断言二进制文件本身存在，才是"跨架构补装是否真的生效"的证据，
+        # 不是重复上面那步。
         run: |
           set -euo pipefail
           # 不用关联数组（declare -A）：这个 job 跑在 macos-latest，`run:`
@@ -112,7 +114,10 @@ jobs:
           # 仍是 Apple 出于 GPLv3 许可顾虑锁在的 3.2.57（同一个坑，下面 publish
           # job 的注释也提过），不支持 bash 4 才有的关联数组，`declare -A`
           # 在这个 shell 下会直接 `declare: -A: invalid option` 报错。用
-          # case 语句代替一次性的字面量映射，bash 3.2 完全兼容。
+          # case 语句代替一次性的字面量映射，bash 3.2 完全兼容；下面的
+          # sharp_native 通配符核验同样用 bash 3.2 的默认（非 nullglob）行为
+          # 手工验证过：匹配不到文件时通配符保持字面量，test -f 对着一个不
+          # 存在的字面量路径求值为假，不需要 shopt -s nullglob。
           for outdir in mac-arm64 mac; do
             case "$outdir" in
               mac-arm64) arch=arm64 ;;
@@ -123,6 +128,8 @@ jobs:
             bin="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js"
             link="${resources}/agent-runtime/assets/node_modules"
             sharp_native="${resources}/agent-runtime/runtime/node_modules/@img/sharp-darwin-${arch}"
+            koffi_native="${resources}/agent-runtime/runtime/node_modules/@koromix/koffi-darwin-${arch}"
+            ripgrep_native="${resources}/agent-runtime/runtime/node_modules/@vscode/ripgrep-darwin-${arch}"
             test -f "$bin" || {
               echo "FATAL: $bin 不存在——AI 助理 runtime 依赖未被打包进 ${outdir} 产物"
               exit 1
@@ -131,8 +138,16 @@ jobs:
               echo "FATAL: $link 不是符号链接——build/afterpack-agent-runtime-link.cjs 是否未生效？"
               exit 1
             }
-            test -d "$sharp_native" || {
-              echo "FATAL: $sharp_native 不存在——${outdir}（${arch}）产物里没有匹配架构的 sharp 原生模块，AI 助理常挂插件 attachment-local 一加载就会崩（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
+            test -f "$sharp_native"/lib/sharp-darwin-${arch}-*.node || {
+              echo "FATAL: ${sharp_native}/lib 下没有 sharp-darwin-${arch}-*.node——${outdir}（${arch}）产物里没有匹配架构的 sharp 原生模块，AI 助理常挂插件 attachment-local 一加载就会崩（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
+              exit 1
+            }
+            test -f "$koffi_native/darwin_${arch}/koffi.node" || {
+              echo "FATAL: $koffi_native/darwin_${arch}/koffi.node 不存在——${outdir}（${arch}）产物里没有匹配架构的 koffi 原生模块（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
+              exit 1
+            }
+            test -f "$ripgrep_native/bin/rg" || {
+              echo "FATAL: $ripgrep_native/bin/rg 不存在——${outdir}（${arch}）产物里没有匹配架构的 ripgrep 二进制，dsh-tool-fs-search 会在文件搜索时失败（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
               exit 1
             }
           done

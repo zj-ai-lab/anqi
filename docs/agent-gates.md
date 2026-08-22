@@ -192,8 +192,9 @@
 2. **`write`/`edit` 工具名仍对模型可见**：rc.7 的 `@deepseek-ai/dsh-tool-fs` 不可拆分只读子集，
    只能靠 `sandbox-policy.mode: read-only` + `user-approval.policy: never` 拒绝，
    不是"工具不存在"级别的保证（见 `preset/anqi/agent.cordis.yml` 顶部注释）。
-3. **打包体积**：本轮 bundle 的是全闭包而非 trace-derived 最小闭包，
-   arm64 DMG 从 140,389,719 B 涨到 189,058,624 B（+34.67%），依赖裁剪留给 GA（见 `CHANGES.md`）。
+3. **打包体积**：本轮 bundle 的是全闭包而非 trace-derived 最小闭包，双架构 DMG 均较
+   2.6.0 基线（140,389,719 B）显著增大——arm64 200,356,527 B（+42.71%）、
+   x64 205,187,873 B（+46.16%），依赖裁剪留给 GA（见 `CHANGES.md`）。
 4. **DMG 体积/双架构可跑性无法在纯源码树复核**：`dist-electron/` 不入库，
    相关数字与 `codesign --verify` 结论来自当时的本机构建记录，复核需重跑
    `RELEASING.md` 的本机打包流程或 CI 的 "Verify agent runtime bundled in DMG" 步骤。

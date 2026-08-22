@@ -18,7 +18,7 @@
     "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
     "icon:build": "bash tools/build-icon.sh",
     "electron:dev": "npm run electron:rebuild && electron .",
-    "dist": "npm run electron:rebuild && electron-builder --mac"
+    "dist": "npm run electron:rebuild && node build/ensure-cross-arch-optional-deps.mjs && electron-builder --mac"
   },
   "build": {
     "appId": "asia.fdonglawyer.anjian",

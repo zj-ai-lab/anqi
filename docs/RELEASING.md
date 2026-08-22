@@ -27,13 +27,14 @@ npm run check
 
 ```sh
 (cd src/agent/runtime && npm ci --ignore-scripts)
-node build/ensure-cross-arch-optional-deps.mjs
 npm run dist
 ```
 
-`sharp`/`koffi` 是按宿主 os/cpu 挑选的 `optionalDependencies`——`npm ci` 只装出本机架构那一份原生二进制，但 `build.extraResources` 会把同一棵 `node_modules` 原样复制进 arm64、x64 两个 DMG（不按目标架构筛选）。在 Apple Silicon 机器上本地打包时，若跳过 `node build/ensure-cross-arch-optional-deps.mjs` 这一步，产出的 x64 DMG 里 AI 助理会因为缺 darwin-x64 的 sharp 而在 Intel Mac 上崩溃启动；反之在 Intel 机器上打包会缺 darwin-arm64 一侧。这一步把宿主没装的那一侧原生包按 `package-lock.json` 记录的 resolved+integrity 补装进同一棵 `node_modules`，两侧共存。
+`npm run dist` 现在会自动先跑 `node build/ensure-cross-arch-optional-deps.mjs` 再调用 `electron-builder`（见 `package.json` 的 `scripts.dist`）——这一步不再需要单独记得手动执行：忘了跑 `src/agent/runtime` 的 `npm ci --ignore-scripts` 时，`ensure-cross-arch-optional-deps.mjs` 会直接报错退出并提示原因，不会静默漏装。
 
-`.github/workflows/release.yml` 已经把这些做成显式 CI 步骤（"Install AI 助理 runtime 依赖"→"补装 AI 助理 runtime 的跨架构原生依赖"），并在打包后核验两个架构的 DMG 里都真的含有 DSH 运行时、且各自架构匹配的 sharp 原生模块存在（"Verify agent runtime bundled in DMG"）——不装这些步骤不会让 `electron-builder` 报错，只会让发行版里的 AI 助理变成一个含义不明的 crashed worker（或在另一种架构下静默缺 sharp），所以这条核验是发版门禁的一部分，不是可选诊断。
+`sharp`/`koffi` 是按宿主 os/cpu 挑选的 `optionalDependencies`——`npm ci` 只装出本机架构那一份原生二进制，但 `build.extraResources` 会把同一棵 `node_modules` 原样复制进 arm64、x64 两个 DMG（不按目标架构筛选）。在 Apple Silicon 机器上本地打包时，若这一步没生效，产出的 x64 DMG 里 AI 助理会因为缺 darwin-x64 的 sharp 而在 Intel Mac 上崩溃启动；反之在 Intel 机器上打包会缺 darwin-arm64 一侧。这一步把宿主没装的那一侧原生包按 `package-lock.json` 记录的 resolved+integrity 补装进同一棵 `node_modules`，两侧共存（先解包到临时目录再原子 rename 进最终位置，中途失败会清理半成品，不留下"空目录盖章"却被当成已装过的坑）。
+
+`.github/workflows/release.yml` 仍保留显式 CI 步骤（"Install AI 助理 runtime 依赖"→"补装 AI 助理 runtime 的跨架构原生依赖"）：CI 里的 `npm run dist` 调用会让脚本再跑一次，但脚本本身幂等（已存在的目标目录直接跳过），显式步骤保留是为了在 Actions 日志里单独可见、且失败时定位更快，不是重复功能。打包后核验步骤（"Verify agent runtime bundled in DMG"）确认两个架构的 DMG 里都真的含有 DSH 运行时、且各自架构匹配的 sharp/koffi/ripgrep 原生模块存在——不装这些步骤不会让 `electron-builder` 报错，只会让发行版里的 AI 助理变成一个含义不明的 crashed worker（或在另一种架构下静默缺原生模块），所以这条核验是发版门禁的一部分，不是可选诊断。
 
 必须满足：
 
@@ -89,7 +90,7 @@ git push origin android-vX.Y.Z
 2. `npm ci`，按 Electron ABI 重建 `better-sqlite3`。
 3. 单独 `npm ci --ignore-scripts`（`src/agent/runtime` 目录内）装 AI 助理 runtime 依赖——根 `npm ci` 装不到这棵独立 npm 包根，不装这一步不报错，只会让发行版里的 DSH 子进程找不到 `bin.js` 而崩溃。
 4. `node build/ensure-cross-arch-optional-deps.mjs` 补装 sharp/koffi 缺失的另一侧 macOS 架构原生二进制——CI runner 是 arm64，`npm ci` 只装出 darwin-arm64 一份，不补这一步会让 x64 DMG 的 AI 助理在 Intel Mac 上因加载不到 sharp 而崩溃。
-5. 分别构建 arm64 与 x64 DMG。electron-builder 的 `afterPack` 钩子（`build/afterpack-agent-runtime-link.cjs`）在签名前把 `agent-runtime/assets/node_modules` 符号链接建进两份打包产物；核验步骤确认两个架构的 DMG 里都真的含有 `agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js`、该符号链接，以及各自架构匹配的 `@img/sharp-darwin-<arch>` 原生模块。
+5. 分别构建 arm64 与 x64 DMG（`npm run dist` 内部会自动重跑一次第 4 步的补装脚本，幂等，已装过的架构直接跳过）。electron-builder 的 `afterPack` 钩子（`build/afterpack-agent-runtime-link.cjs`）在签名前把 `agent-runtime/assets/node_modules` 符号链接建进两份打包产物；核验步骤确认两个架构的 DMG 里都真的含有 `agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js`、该符号链接，以及各自架构匹配的 `@img/sharp-darwin-<arch>`（`lib/sharp-darwin-<arch>-*.node`）、`@koromix/koffi-darwin-<arch>`（`darwin_<arch>/koffi.node`）、`@vscode/ripgrep-darwin-<arch>`（`bin/rg`）三个原生二进制文件本身——核验的是文件，不是目录存在，避免"目录还在、二进制没了"的半成品被判定为已装好。
 6. 无 Developer ID 时运行 `build/adhoc-sign.cjs`，确保应用获得本项目自己的 ad-hoc 签名而非 Electron 出厂 linker 签名；配置正式证书时钩子自动跳过。
 7. 为每个 DMG 生成独立 `.sha256`，并校验名称、架构和版本。
 8. 先把 DMG、校验文件和必要的更新元数据上传为 workflow artifact。
@@ -161,7 +162,7 @@ migration 是自托管升级中风险最高的部分：
 - [ ] 公开发布步骤均有 `startsWith(github.ref, 'refs/tags/')` 门
 - [ ] workflow 没有 `pull_request` 或 `pull_request_target` 发布触发器
 - [ ] 手动演练没有创建 Release、推送 GHCR 或连接外部主机
-- [ ] macOS：双架构 DMG、签名状态、首次启动与版本检查通过；AI 助理 runtime 依赖已随包且**各自架构可跑**（`agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js`、`agent-runtime/assets/node_modules` 符号链接、以及对应架构的 `agent-runtime/runtime/node_modules/@img/sharp-darwin-<arch>` 均存在——release.yml 的 "Verify agent runtime bundled in DMG" 步骤已覆盖 bin.js/符号链接/按架构匹配的 sharp 三项，本地手动打包时需自行核对；只核验 bin.js 和符号链接存在**不能**证明该架构真的能跑起来，两个架构各自缺失的原生模块不会让那两项断言失败）
+- [ ] macOS：双架构 DMG、签名状态、首次启动与版本检查通过；AI 助理 runtime 依赖已随包且**各自架构可跑**（`agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js`、`agent-runtime/assets/node_modules` 符号链接、以及对应架构的 `@img/sharp-darwin-<arch>/lib/sharp-darwin-<arch>-*.node`、`@koromix/koffi-darwin-<arch>/darwin_<arch>/koffi.node`、`@vscode/ripgrep-darwin-<arch>/bin/rg` 三个原生二进制文件本身均存在——release.yml 的 "Verify agent runtime bundled in DMG" 步骤已覆盖这五项，核验的都是文件而非目录，本地手动打包时需自行核对；只核验目录或 bin.js/符号链接存在**不能**证明该架构真的能跑起来，目录还在、二进制文件已被裁掉/复制中断的半成品不会让那两项断言失败）
 - [ ] Docker：公开 manifest、版本 tag、digest 与隔离启动冒烟通过
 - [ ] Android（如发布）：APK 签名、包名、版本、深链与文件交互通过
 - [ ] Release 说明包含主要变更、升级注意、已知限制与校验方法

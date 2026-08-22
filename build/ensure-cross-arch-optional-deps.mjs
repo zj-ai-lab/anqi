@@ -108,14 +108,35 @@ console.log(`ensure-cross-arch-optional-deps: 完成，补装 ${installed} 个�
 
 function downloadAndExtract(pkgName, entry, destDir) {
   const tarballPath = path.join(os.tmpdir(), `${pkgName.replace(/[@/]/g, '_')}-${entry.version}.tgz`);
+  // 先解包到 destDir 同级的 staging 目录，成功后再原子 rename 进最终目标——
+  // 不直接 mkdir+解包到 destDir 本身：那样一旦下载/校验通过之后、tar 还没
+  // 跑完就被打断（进程被杀、磁盘满、tar 本身失败），destDir 会以"已创建但
+  // 内容为空或半满"的状态留下来；上面的主循环判断"是否已装过"只用
+  // fs.existsSync(destDir)，会把这个半成品误判成"已装好，跳过"，永久盖住这
+  // 个坑、下次重跑也发现不了。staging 目录选在 destDir 的父目录下（而不是
+  // os.tmpdir()），保证和 destDir 同一文件系统，rename 是原子操作、不会有
+  // 跨文件系统 EXDEV 失败的风险。
+  const stagingDir = path.join(
+    path.dirname(destDir),
+    `.ensure-cross-arch-tmp-${path.basename(destDir)}-${process.pid}`,
+  );
   try {
     const buf = fetchSync(entry.resolved);
     verifyIntegrity(pkgName, buf, entry.integrity);
     fs.writeFileSync(tarballPath, buf);
-    fs.mkdirSync(destDir, { recursive: true });
+    fs.mkdirSync(path.dirname(destDir), { recursive: true }); // scope 目录（如 @img/）可能还不存在
+    fs.rmSync(stagingDir, { recursive: true, force: true }); // 清掉可能残留的上次半成品
+    fs.mkdirSync(stagingDir, { recursive: true });
     // npm 发布的 tarball 统一是单一顶层目录 "package/"，--strip-components=1
     // 与本仓库 build/ 下手工验证过的做法一致。
-    execFileSync('tar', ['-xzf', tarballPath, '-C', destDir, '--strip-components=1'], { stdio: 'inherit' });
+    execFileSync('tar', ['-xzf', tarballPath, '-C', stagingDir, '--strip-components=1'], { stdio: 'inherit' });
+    fs.renameSync(stagingDir, destDir); // 原子改名：destDir 要么整棵完整出现，要么完全不存在
+  } catch (err) {
+    // 无论失败在下载、校验、解包还是最后的 rename 哪一步，都不能让
+    // destDir/stagingDir 留下不完整的目录挡住下次重试——这里主动清理。
+    fs.rmSync(stagingDir, { recursive: true, force: true });
+    fs.rmSync(destDir, { recursive: true, force: true });
+    throw err;
   } finally {
     fs.rmSync(tarballPath, { force: true });
   }
