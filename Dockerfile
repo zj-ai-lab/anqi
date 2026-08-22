@@ -64,13 +64,18 @@ COPY tools ./tools
 # path.join(__dirname, '..', '..', 'data', 'agent-sessions')——__dirname 是
 # /app/src/agent，与本 Dockerfile 的 WORKDIR /app + COPY src ./src 布局完全
 # 对应，算出来正是 /app/data/agent-sessions，天然落在部署者已经持久化挂载
-# 的 /app/data 卷下面，不写进容器可写层的临时空间。真机冒烟会实测断言这一
-# 点（transcript 文件确实出现在挂载卷里）。
+# 的 /app/data 卷下面，不写进容器可写层的临时空间。真机冒烟只实测验证了子
+# 进程环境变量 DSH_SESSION_ROOT=/app/data/agent-sessions 这一步；transcript
+# 文件本身要等第一条真实 turn 才落盘，dummy key 冒烟发不出模型请求，这条
+# 验不了，docker-release.yml 的冒烟步骤也没有 agent-sessions 目录的断言
+# （该步骤只断言 healthz、版本号、runtime/node_modules 存在、
+# require('@deepseek-ai/dsh-base') 成功这四条，见该 workflow 文件）。
 #
 # ---- 镜像体积代价 ----
-# 真机实测（jackie，x86_64 原生构建，2026-08-22）：加这一层之前 275MB，加了
-# 之后 467MB，增加 192MB（+69.8%）——DeepSeek Agent SDK 全家桶 + 其原生模块
-# 的预编译产物，构成与桌面版 extraResources 复制的同一棵 node_modules。
+# 真机实测（amd64 镜像，在 jackie 原生 amd64 硬件上运行验证，2026-08-22）：
+# 加这一层之前 275MB，加了之后 467MB，增加 192MB（+69.8%）——DeepSeek Agent
+# SDK 全家桶 + 其原生模块的预编译产物，构成与桌面版 extraResources 复制的
+# 同一棵 node_modules。
 # AI 助理默认关闭（agent_enabled 设置项默认 false，src/agent/supervisor.js
 # 不会自行拉起任何子进程）——不启用的部署，这些文件只占磁盘、完全不参与
 # 运行、不影响启动时间或内存占用；只有显式在设置里打开 AI 助理、且案件配

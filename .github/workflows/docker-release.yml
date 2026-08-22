@@ -206,13 +206,20 @@ jobs:
           # docker-compose 没钉版本号的现网部署都会静默升级到 beta/rc；
           # :<minor> 对 2.7.0-beta.1 这类版本还会算出 "2.7.0-beta" 这种没人
           # 会去拉、纯属误导的标签。正式版本行为不变，三个标签照旧全推。
+          #
+          # fail-closed：下面判断额外标签的条件写成「显式等于 "false" 才追
+          # 加」，而不是「不等于 "true" 就追加」——上游 build 任务的
+          # is_prerelease 输出万一因故为空或异常值，前者会保守地只推
+          # :<version>（正式版漏推 :latest/:minor，人工一眼能看出、补推即
+          # 可），后者会把这种异常状态误判成正式版直接推 :latest，把预发行
+          # 版污染成现网默认拉取的稳定版——两种误判代价不对等，必须选前者。
           if [ "$IS_PRERELEASE" = "true" ]; then
             echo "预发行版本 ${VERSION}：只推 :${VERSION}，跳过 :${MINOR} 与 :latest"
           fi
           {
             echo "tags<<TAGS_EOF"
             echo "ghcr.io/zj-ai-lab/anqi:${VERSION}"
-            if [ "$IS_PRERELEASE" != "true" ]; then
+            if [ "$IS_PRERELEASE" = "false" ]; then
               echo "ghcr.io/zj-ai-lab/anqi:${MINOR}"
               echo "ghcr.io/zj-ai-lab/anqi:latest"
             fi
