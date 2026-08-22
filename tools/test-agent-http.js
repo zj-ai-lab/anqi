@@ -142,7 +142,10 @@ try {
   {
     const { status, data } = await call('GET', '/api/agent/status');
     assert.equal(status, 200);
-    assert.deepEqual(data, { status: 'disabled', enabled: false, error: null, configured: null, worker: null });
+    assert.deepEqual(data, {
+      status: 'disabled', enabled: false, error: null, configured: null, worker: null,
+      apiKey: { configured: false, keySource: 'none' },
+    });
   }
 
   // ---- 打开白名单五键，GET status 不带 case_id → stopped/enabled，不查 worker ----
@@ -157,6 +160,10 @@ try {
     assert.equal(data.enabled, true);
     assert.deepEqual(data.configured, { provider: 'deepseek-official', model: 'test-model' });
     assert.equal(data.worker, null);
+    // apiKeyEnv 指向的变量在本测试进程里没有值，也没有已存的加密 key——
+    // apiKey.configured 必须诚实反映"当前其实拉不到 key"，不能因为
+    // enabled=true 就冒充已配置。
+    assert.deepEqual(data.apiKey, { configured: false, keySource: 'none' });
   }
 
   // ---- GET status?case_id=不存在 → 404；非法 case_id → 400 ----

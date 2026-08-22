@@ -41,7 +41,15 @@
 //     任何模型可达的 accept API。
 import { Router } from 'express';
 import { db, audit } from '../db.js';
-import { loadAgentConfig } from '../agent/config.js';
+import {
+  AGENT_SETTINGS_KEYS,
+  ALLOWED_PROVIDERS,
+  agentKeyStatus,
+  loadAgentConfig,
+  resolveAgentApiKey,
+  validateBaseURL,
+} from '../agent/config.js';
+import { fetchProviderModels, modelsErrorToHttpStatus } from '../agent/models-client.js';
 
 // 一次 prompt 的文本上限：不是纯粹的展示限制,也是成本/滥用防线——案件事实
 // 本身已经通过 anqi-owned MCP 工具传给模型,用户手打的这一句话没有理由超过
@@ -99,7 +107,10 @@ function buildQuestionAnswer(pendingQuestions, rawAnswers) {
   return { answers };
 }
 
-export function createAgentRouter(supervisor) {
+// fetchModels 是 fetchProviderModels() 的依赖注入点（同 AgentSupervisor 的
+// spawnFn 一个风格）：生产环境用真实网络实现，测试可以注入假实现验证路由层
+// 自己的职责（校验/取值优先级/错误映射/脱敏），不必每次都发起真实网络调用。
+export function createAgentRouter(supervisor, { fetchModels = fetchProviderModels } = {}) {
   const r = Router();
 
   // 只读:配置层可用性 + (可选)某案件当前 worker 状态。不带 case_id 时只反映
@@ -109,12 +120,22 @@ export function createAgentRouter(supervisor) {
   r.get('/agent/status', (req, res) => {
     const config = loadAgentConfig();
     if (!config.enabled) {
-      return res.json({ status: 'disabled', enabled: false, error: config.error || null, configured: null, worker: null });
+      // enabled=false 时 agentKeyStatus() 本身也会短路成
+      // {configured:false, keySource:'none'}（与 loadAgentConfig() 同一条
+      // 红线），这里直接复用同一份判断，不重新发明。
+      return res.json({
+        status: 'disabled', enabled: false, error: config.error || null, configured: null, worker: null,
+        apiKey: { configured: false, keySource: 'none' },
+      });
     }
     const configured = { provider: config.provider, model: config.model };
+    // key 状态供 UI 展示"当前用的是环境变量还是本机保存的 key"——只回布尔
+    // +来源枚举，从不含 key 值本身（agentKeyStatus() 内部实现同样保证这一
+    // 点）。
+    const apiKey = agentKeyStatus();
     const caseIdRaw = req.query.case_id;
     if (caseIdRaw === undefined || caseIdRaw === '') {
-      return res.json({ status: 'stopped', enabled: true, error: null, configured, worker: null });
+      return res.json({ status: 'stopped', enabled: true, error: null, configured, worker: null, apiKey });
     }
     const caseId = Number(caseIdRaw);
     if (!Number.isInteger(caseId) || caseId <= 0) return res.status(400).json({ error: 'case_id 非法' });
@@ -123,7 +144,68 @@ export function createAgentRouter(supervisor) {
     // 下发安全投影(publicStatus),不带 sessionId/cwd/pid——见 supervisor.js
     // publicStatus() 的注释。
     const worker = supervisor.publicStatus(caseId);
-    res.json({ status: worker.status, enabled: true, error: null, configured, worker });
+    res.json({ status: worker.status, enabled: true, error: null, configured, worker, apiKey });
+  });
+
+  // POST /api/agent/models——设置页"拉取该 key 可用的模型列表"这一步的
+  // 服务端实现（设计 4）。刻意不经过 config.enabled 门：这是一个"保存前
+  // 先测试 provider/baseURL/key 是否真的能用"的配置期工具，用户可能还没
+  // 点击启用开关就已经在填资料、需要看到模型下拉框，不应该被"还没启用"
+  // 挡住；它不 spawn 任何子进程、不碰任何案件数据，只对外发起一次只读的
+  // GET 请求，风险面与"是否已启用 AI 助理"无关。
+  r.post('/agent/models', async (req, res) => {
+    const body = req.body || {};
+    const provider = String(body.provider ?? '').trim();
+    if (!ALLOWED_PROVIDERS.has(provider)) {
+      return res.status(400).json({ error: `provider 必须是 ${[...ALLOWED_PROVIDERS].join(' 或 ')}` });
+    }
+
+    // baseURL 必须过与保存时同一套安全校验（协议、credential-free、内网/
+    // 回环拦截、deepseek-official 官方域钉死）——这一步是防 SSRF 的关键闸
+    // 门,不能因为这是"只是拉个列表"的辅助端点就绕过。
+    const baseURLResult = validateBaseURL(body.baseURL, provider);
+    if (!baseURLResult.ok) {
+      return res.status(400).json({ error: baseURLResult.error });
+    }
+    const baseURL = baseURLResult.normalized;
+
+    // apiKey 省略时,用已保存的/环境变量的(取值优先级链与 loadAgentConfig()
+    // 同源,见 resolveAgentApiKey());body.apiKey 只在类型是非空字符串时才
+    // 采用——用户在"改 baseURL/model 但没改 key"这种场景下重新拉取列表,
+    // 前端没有理由把已经存在服务端的 key 再传一遍。
+    let apiKey;
+    let apiKeySource;
+    if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
+      apiKey = body.apiKey.trim();
+      apiKeySource = 'request';
+    } else {
+      const apiKeyEnvRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(AGENT_SETTINGS_KEYS.apiKeyEnv);
+      const apiKeyEnv = apiKeyEnvRow ? String(apiKeyEnvRow.value ?? '').trim() : '';
+      const resolved = resolveAgentApiKey({ apiKeyEnv });
+      apiKey = resolved.value;
+      apiKeySource = resolved.source;
+    }
+    if (!apiKey) {
+      return res.status(400).json({ error: '未提供 API Key，且未找到已保存的 key', code: 'api_key_missing' });
+    }
+
+    let result;
+    try {
+      result = await fetchModels({ baseURL, apiKey });
+    } catch (error) {
+      // fetchProviderModels() 的所有错误分支都带 .code（见
+      // src/agent/models-client.js），message 本身已经是脱敏过的中文提
+      // 示——这里只做 code → HTTP 状态码映射 + 审计，绝不把 error 本身之外
+      // 的任何东西（尤其 apiKey）拼进审计详情。
+      const httpStatus = modelsErrorToHttpStatus(error.code);
+      audit(req.actor, 'agent-models-fetch-fail', 'agent-models', null, `provider=${provider} reason=${error.code || 'unknown'}`);
+      return res.status(httpStatus).json({ error: error.message, code: error.code || 'unknown_error' });
+    }
+
+    // 审计只记 provider/来源/数量——绝不含 apiKey、绝不含 baseURL 完整字符
+    // 串以外的上游原始响应体。
+    audit(req.actor, 'agent-models-fetch', 'agent-models', null, `provider=${provider} key_source=${apiKeySource} count=${result.models.length}`);
+    res.json({ models: result.models });
   });
 
   r.post('/cases/:id/agent/start', async (req, res) => {

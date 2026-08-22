@@ -9,7 +9,7 @@ import { eventTypes, stageTemplates, procedures } from '../lib/vocab.js';
 import { deriveForEvent, rulesSummary } from '../lib/engine.js';
 import { llmReady } from '../lib/llm.js';
 import { releaseDueSnoozes } from '../lib/recommendations.js';
-import { agentReady } from '../agent/config.js';
+import { agentKeyStatus, agentReady } from '../agent/config.js';
 
 const r = Router();
 
@@ -36,6 +36,7 @@ r.get('/meta', (req, res) => {
 
 r.get('/counts', (req, res) => {
   releaseDueSnoozes();
+  const keyStatus = agentKeyStatus();
   res.json({
     version: VERSION,
     inbox_pending: db.prepare("SELECT COUNT(*) c FROM inbox WHERE status = 'pending'").get().c,
@@ -43,11 +44,18 @@ r.get('/counts', (req, res) => {
     // 快录条搭这趟顺风车做特性探测：没配 key 就不渲染「整理」按钮，
     // 免得页面上摆一个点了必失败的控件（零额外请求——nav.js 本来就要拉 counts）
     llm: llmReady(),
-    // AI 助理 sidecar 同一种特性探测模式：agent_enabled 且 apiKeyEnv 指向的
-    // 环境变量确实有值才算"可用"，前端下阶段据此决定是否渲染案件 assistant
-    // drawer 入口；这里只回答布尔值，不返回 provider/model/apiKeyEnv 等任何
-    // 配置细节（那些细节走 GET /api/agent/status，且同样不含 key 值）。
+    // AI 助理 sidecar 同一种特性探测模式：agent_enabled 且解析出的 key（env
+    // 优先、界面存储兜底，见 src/agent/config.js resolveAgentApiKey()）确实
+    // 存在才算"可用"，前端下阶段据此决定是否渲染案件 assistant drawer 入
+    // 口；这里只回答布尔值，不返回 provider/model/apiKeyEnv 等任何配置细节
+    // （那些细节走 GET /api/agent/status，且同样不含 key 值）。
     agent: agentReady(),
+    // 设计任务书新增：UI 需要知道"没配置"和"配置来自哪里"这两件事，才能
+    // 分别渲染"去设置页配置"引导 与"当前用的是环境变量/本机保存的 key"这
+    // 类提示；agentKeyStatus() 本身在 enabled=false 时就短路成
+    // {configured:false, keySource:'none'}，与上面 agent:false 语义一致。
+    agent_key_configured: keyStatus.configured,
+    agent_key_source: keyStatus.keySource,
   });
 });
 
