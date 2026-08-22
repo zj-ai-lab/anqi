@@ -347,9 +347,18 @@ export function getStoredApiKey() {
 // 保存开启）的时候也能解析出当前已经填好的 key；enabled 门是 supervisor
 // 启动子进程/agentReady() 特性探测各自的职责，不是"key 到底存不存在"这件
 // 事本身的前提。
+//
+// 格式/保留名校验在这里再做一遍（而不是只信任调用方已经校验过）：
+// loadAgentConfig() 是唯一"写侧强制过 isReservedEnvName()"的路径，但
+// src/routes/agent.js 与 src/routes/settings.js 里另有两处消费者直接裸读
+// settings 表的 agent_api_key_env 行、手搓 {apiKeyEnv} 传进来，跳过了那层
+// 校验（历史存量行、被恢复的备份、或直接改库都能让这一行绕过 PUT 时的校
+// 验）。探针实测过：把该行直接置成 anqi 自己的 ANJIAN_INTERNAL_KEY，走这
+// 两个消费者的路径都会把内部密钥当模型 key 读出来。把校验下沉到这里，让
+// 所有调用方自动继承，不必要求每个新调用方都记得自己重复一遍。
 export function resolveAgentApiKey(config) {
   const apiKeyEnv = config?.apiKeyEnv ? String(config.apiKeyEnv) : '';
-  if (apiKeyEnv) {
+  if (apiKeyEnv && ENV_NAME_RE.test(apiKeyEnv) && !isReservedEnvName(apiKeyEnv)) {
     const fromEnv = process.env[apiKeyEnv];
     if (fromEnv) return { value: fromEnv, source: 'env' };
   }

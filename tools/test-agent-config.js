@@ -244,6 +244,29 @@ assert.deepEqual(
 assert.deepEqual(agentKeyStatus(), { configured: true, keySource: 'env' });
 delete process.env.TEST_AGENT_CONFIG_ENV_KEY;
 
+// 15.5) 【红线回归】resolveAgentApiKey() 自身必须复检格式/保留名——不能只
+//      依赖调用方（loadAgentConfig() 那一条路）先校验过。src/routes/agent.js
+//      与 src/routes/settings.js 都有裸读 settings 表 agent_api_key_env 行、
+//      手搓 {apiKeyEnv} 直接传给 resolveAgentApiKey() 的消费者，跳过了
+//      loadAgentConfig() 内部那层 isReservedEnvName() 校验；探针曾实测把
+//      该行直接置成 ANJIAN_INTERNAL_KEY，这两个消费者都会把 anqi 自己的
+//      内部密钥当模型 key 读出来。这里直接构造调用方可能传入的裸 config
+//      对象（不经过 loadAgentConfig()），断言 resolveAgentApiKey() 本身
+//      就会拒绝格式非法/保留名的 apiKeyEnv，回落到 stored（若有）或 none，
+//      绝不读取该保留变量的值。
+process.env.ANJIAN_INTERNAL_KEY = 'anqi-internal-key-must-never-leak';
+assert.deepEqual(
+  resolveAgentApiKey({ apiKeyEnv: 'ANJIAN_INTERNAL_KEY' }),
+  { value: 'sk-stored-only', source: 'stored' },
+  'apiKeyEnv 是保留名时，resolveAgentApiKey() 自己必须拒绝读取该环境变量，回落到 stored'
+);
+assert.deepEqual(
+  resolveAgentApiKey({ apiKeyEnv: 'not a valid env name' }),
+  { value: 'sk-stored-only', source: 'stored' },
+  'apiKeyEnv 格式非法时同样必须被 resolveAgentApiKey() 自己拒绝，不当成变量名去读 process.env'
+);
+delete process.env.ANJIAN_INTERNAL_KEY;
+
 // 16) 密文被篡改/主密钥换了都必须安全失败成 null，不抛到调用方炸掉整个
 //     loadAgentConfig()/agentKeyStatus() 调用链。
 setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, '');
