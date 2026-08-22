@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.7.0-beta.2** | 未发布（工作树 2026-08-23） | AI 助理设置面易用性改造（服务端）：界面直接填 API key（AES-256-GCM 静态加密存储）、供应商预设自动带出 baseURL、新增 `POST /api/agent/models` 拉取可用模型列表；apiKeyEnv 退居可选高级项，env 优先/本机保存兜底的取值链保证既有 Docker/桌面部署零改动 |
 | **2.7.0-beta.1** | 未发布（工作树 2026-08-22） | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |
@@ -60,6 +61,36 @@
 | **0.1.0** | 2026-07-11 | P0 电子台账：SQLite、REST、Web UI 与 CLI |
 
 ---
+
+## 未发布 → 2.7.0-beta.2 — AI 助理设置面易用性改造 · 服务端（分支 `feat/agent-sidecar`，尚未合并 `main`）
+
+**状态：`feat/agent-sidecar` 分支上功能迭代阶段，本条目只覆盖服务端改造，前端设置页 UI 尚未跟进；尚未合并 `main`。**
+
+**背景**：beta.1 的设置面要求用户先在系统里设好环境变量、再把变量名填进界面——这对公开版用户不可用。本轮目标：只填一个 API key → 选一个供应商（baseURL 自动带出）→ 拉取该 key 可用的模型列表 → 下拉选一个 → 保存。
+
+### 功能
+
+- **界面直接填 key，AES-256-GCM 静态加密落库**：新增 `src/lib/secret-box.js`——加密主密钥优先取 env `ANJIAN_SECRET`（须至少 32 字节 UTF-8 熵，摘要成 32 字节 key，不足直接拒绝），否则用数据目录下的 `secret.key`（首次自动生成 32 随机字节、写盘 `mode:0o600` 后再显式 `chmodSync` 一次钉死权限位，父目录已存在时不改其权限）。密文格式 `v1:<nonce base64>:<tag base64>:<密文 base64>`，GCM 认证加密——密钥错误或密文被篡改时 `decryptSecret()` 直接抛错，不会安静吐出乱码明文。
+- **取值优先级链（关键）**：`src/agent/config.js` 新增 `resolveAgentApiKey(config)`——`agent_api_key_env` 指向的环境变量若存在且非空 → 用它，`source:'env'`（保证现有 Docker/桌面部署零改动继续工作）；否则取界面存的加密 key（`getStoredApiKey()`，解密失败/格式非法一律安全失败为 `null`，不抛出）；两者都没有 → `source:'none'`。`agentReady()`/新增的 `agentKeyStatus()` 均基于这条链，`enabled=false` 时仍在任何 key 解析之前短路（与既有红线同一条判断）。
+- **`agent_api_key_env` 退居可选高级项**：`loadAgentConfig()`/`PUT /api/settings` 的校验从"必须是合法环境变量名"改为"留空则跳过校验、非空仍必须合法且不得是保留名/前缀"——不再是 `enabled` 判定的必要条件，`provider`/`model`/`baseURL` 仍然必需。
+- **`PUT /api/settings` 新增 `agent_api_key`**（明文入参，落库前加密）：空字符串是显式"清空已存 key"的信号；超过 4096 字符拒绝；类型非字符串拒绝。GET/PUT 响应体不再带出存储键 `agent_api_key_encrypted`（密文本身也不回显），改为三个计算字段 `agent_api_key_configured`（布尔）/`agent_api_key_source`（`env`\|`stored`\|`none`）/`agent_api_key_masked`（如 `…abcd`，只留末 4 位）——全程不经过 `agent_enabled` 门，配置期（尚未点启用开关）也能看到"我刚存的 key 有没有被认出来"。
+- **`src/agent/supervisor.js` 的子进程 credential 注入改用同一条取值链**：`_startWorker()` 用 `resolveAgentApiKey(config)` 替换原来直接读 `process.env[config.apiKeyEnv]`；子进程里存放 key 值的环境变量名改为**固定的 provider 专属名**（新增 `PROVIDER_CANONICAL_KEY_ENV`：`deepseek-official→DEEPSEEK_API_KEY`、`openai-completions→OPENAI_API_KEY`，与 `anqi.cordis.yml` 的 `DSH_API_KEY_ENV` 默认值一致），不再随用户是否填了 `apiKeyEnv`、也不再随 key 来源（env/stored）而变化——`apiKeyEnv` 现在只控制"取值链第一环去读宿主哪个环境变量名"，与"子进程里这个变量叫什么"是两件独立的事。脱敏层（`redactor([apiKeyValue, ...])`）按实际解析出的 key 值构造，无论来源如何都被同等覆盖，无需额外改动。
+- **新增 `POST /api/agent/models`**（`apiAuth`，刻意不经过 `agent_enabled` 门——这是"保存前先测试 key"的配置期工具）：入参 `{provider, baseURL, apiKey?}`；`baseURL` 复用与保存设置同一套 `validateBaseURL()`（协议/凭据/内网回环/deepseek-official 官方域，SSRF 防线不因为这是"辅助端点"而放松）；`apiKey` 省略时走上述取值链（请求体 > env > 已存加密 key）。网络层拆到独立模块 `src/agent/models-client.js`（`fetchProviderModels()`）：15s 超时、2MB 响应体上限（逐块读流累计字节数中途掐断，不信任 `Content-Length`）、解析 OpenAI 兼容格式（容忍 `{data:[{id,...}]}` 与裸数组两种形状）；上游 401/403→"API Key 无效或无权限"、404→"未提供 /models 接口"、其它非 2xx/网络错误/超时/畸形 JSON/无法识别的形状均映射为不含 key 值、不含上游原始响应体的中文错误。路由通过依赖注入点 `createAgentRouter(supervisor, {fetchModels})` 接线（默认真实实现，同 `AgentSupervisor` 的 `spawnFn` 注入风格），便于测试。
+- **`/api/counts` 与 `GET /api/agent/status` 新增 key 状态字段**：`counts` 新增 `agent_key_configured`/`agent_key_source`（既有 `agent` 布尔字段不变）；`/agent/status` 新增 `apiKey:{configured, keySource}`。均只回布尔/枚举，从不含 key 值。
+
+### 测试
+
+- `tools/test-secret-box.js`：往返、错误密钥解不开、畸形密文安全失败、`secret.key` 首次生成权限位 0o600 且幂等复用、`ANJIAN_SECRET` 熵校验与派生确定性、掩码函数边界。
+- `tools/test-agent-config.js` 新增取值优先级链场景（env 优先于 stored、两者皆无为 none、密文篡改安全失败、`enabled=false` 时短路不检查已存 key）。
+- `tools/test-agent-models-client.js`：真起本地 http 假服务器验证 `fetchProviderModels()` 网络层——两种 OpenAI 兼容格式解析、401/404/其它非 2xx/畸形 JSON/无法识别形状/响应体过大/超时/连接被拒，逐一映射到预期错误码，且错误消息不透传上游原始响应体（探针用会回显 key 片段的假 401 响应体验证过）。
+- `tools/test-agent-models-http.js`：路由层黑盒测试（注入假 `fetchModels`）——provider/baseURL 校验失败时确认从未调用 `fetchModels`、apiKey 取值优先级（请求体>env>已存）、错误码→HTTP 状态映射、审计与响应体逐一确认不含任何一个测试用明文 key。
+- `tools/test-agent-settings.js`/`tools/test-agent-http.js` 同步更新：`agent_api_key_env` 留空的新允许行为、`agent_api_key` 的加密落库/掩码回显/清空、`/agent/status` 新增 `apiKey` 字段的形状。
+- `tools/check.sh` 增至 43 步（详见 [agent-gates.md](agent-gates.md)）。
+
+### 已知边界（非本轮范围）
+
+- 前端设置页 UI（供应商下拉、key 输入框、"拉取模型列表"按钮、高级选项折叠）尚未实现，本轮只完成服务端接口；`PROVIDER_CANONICAL_KEY_ENV` 目前只覆盖已有的两个 provider 枚举值，新增 provider 时需要同步补充。
+- 数据结构新增一个 settings 键 `agent_api_key_encrypted`（无 migration，`settings` 是既有 key-value 表）；未配置时该键不存在，不影响任何既有功能。
 
 ## 未发布 → 2.7.0-beta.1 — AI 助理 sidecar（分支 `feat/agent-sidecar`，尚未合并 `main`）
 
