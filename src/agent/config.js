@@ -71,6 +71,27 @@ function ipv4FromMappedHex(rest) {
   return [nums[0] >> 8, nums[0] & 0xff, nums[1] >> 8, nums[1] & 0xff].join('.');
 }
 
+// 把一个已经不含端口/zone-id 的 IPv6 地址字符串展开成 8 个十六进制组
+// （处理 `::` 压缩记号）；格式非法（分段数对不上）返回 null。WHATWG URL
+// 解析器在归一化 hostname 时,会把内嵌的 IPv4 点分十进制形式（无论是
+// ::ffff:a.b.c.d 还是已废弃的 ::a.b.c.d）转换成纯十六进制表示后再按
+// RFC 5952 压缩,所以到这里时已经不会再出现字面的点——下面据此统一展开、
+// 统一判断,不需要再单独处理带点的中间形态。
+function expandIPv6Groups(addr) {
+  const doubleColonParts = addr.split('::');
+  if (doubleColonParts.length > 2) return null;
+  if (doubleColonParts.length === 1) {
+    const groups = addr.split(':');
+    return groups.length === 8 ? groups : null;
+  }
+  const [headRaw, tailRaw] = doubleColonParts;
+  const head = headRaw ? headRaw.split(':') : [];
+  const tail = tailRaw ? tailRaw.split(':') : [];
+  const missing = 8 - head.length - tail.length;
+  if (missing < 0) return null;
+  return [...head, ...Array(missing).fill('0'), ...tail];
+}
+
 function isPrivateOrLoopbackHost(hostname) {
   let lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   // 尾点 FQDN（如 "localhost."、"api.localhost."）——WHATWG URL 会原样保留
@@ -96,10 +117,28 @@ function isPrivateOrLoopbackHost(hostname) {
   // ALLOW——之前只挡了裸 'localhost' 和 *.local，没覆盖这个同样常见、同样
   // 指回本机的后缀）。
   if (lower.endsWith('.localhost')) return true;
+  // 云厂商元数据服务主机名——不解析成回环/内网字面量，但会被云环境的
+  // resolver 指向 169.254.169.254 这类元数据端点（AWS/Azure 直接用 IP，
+  // GCP 提供了这个专门的主机名）；探针实测 http://metadata.google.internal/v1
+  // 被前面的纯 IP/字面量判断放行——如果 anqi 本身部署在 GCP 上，这就是一条
+  // 现成的元数据 SSRF（可读到实例凭据）。metadata.goog 是同一服务的另一个
+  // 域名别名，一并挡上；*.internal 是 GCP/多家云厂商约定的内部专用后缀，
+  // 同样不应该被允许当作 baseURL 的目标。
+  if (lower === 'metadata.google.internal' || lower === 'metadata.goog' || lower.endsWith('.metadata.goog')) return true;
+  if (lower.endsWith('.internal')) return true;
   if (/^127\./.test(lower)) return true;
+  // 0.0.0.0/8（"this network"，RFC 791/1122）——探针实测 http://0.1.2.3/v1
+  // 被放行；这段地址在多数系统里会被内核当作到本机的路由处理，等价于回环。
+  if (/^0\./.test(lower)) return true;
   if (/^10\./.test(lower)) return true;
   if (/^192\.168\./.test(lower)) return true;
   if (/^169\.254\./.test(lower)) return true;
+  // 198.18.0.0/15（RFC 2544 网络设备基准测试专用段，198.18.0.0-198.19.255.255）
+  // ——不路由到公网，探针实测 http://198.18.0.1/v1 被放行；同一批"特殊用途
+  // 地址registry"里的段，与上面几条一并堵上，理由相同（不是真正可达的公网
+  // 地址，允许它没有正当理由，反而可能撞到宿主环境里恰好用这段做内部测试
+  // 网络的服务）。
+  if (/^198\.(18|19)\./.test(lower)) return true;
   // CGNAT 100.64.0.0/10（100.64.0.0 - 100.127.255.255）——常见于云厂商/隧道
   // 内网出口，不拦会让 baseURL 指到同一 CGNAT 网段内的其它内部服务。
   const cgnatMatch = /^100\.(\d{1,3})\./.exec(lower);
@@ -124,6 +163,24 @@ function isPrivateOrLoopbackHost(hostname) {
   // 拦掉与上面的链路本地一并兜底，避免只挡了一半 fe80::/10 就留下相邻这一
   // 段没挡。
   if (/^fe[cdef][0-9a-f]{0,2}:/.test(lower)) return true;
+  // IPv4-compatible IPv6（::a.b.c.d，RFC 4291 已弃用形态，前 96 位全 0、末
+  // 32 位是内嵌 IPv4）——与上面已经处理的 IPv4-mapped（::ffff:a.b.c.d，第 6
+  // 组固定 ffff）不同，这种地址第 6 组是 0。WHATWG URL 解析器会把它归一化
+  // 成纯十六进制压缩形式（探针实测 http://[::127.0.0.1]/v1 被归一化成
+  // [::7f00:1]，绕开了前面所有纯 IPv4 正则，但地址本身依然是 127.0.0.1）。
+  // 只在不是 `::ffff:` 开头时才走这条分支，避免与上面的 IPv4-mapped 判断
+  // 重复展开。
+  if (lower.startsWith('::') && !lower.startsWith('::ffff:')) {
+    const groups = expandIPv6Groups(lower);
+    if (groups && groups.length === 8 && groups.slice(0, 6).every((g) => /^0{0,4}$/.test(g))) {
+      const hi = parseInt(groups[6], 16);
+      const lo = parseInt(groups[7], 16);
+      if (!Number.isNaN(hi) && !Number.isNaN(lo)) {
+        const embeddedIPv4 = [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
+        if (isPrivateOrLoopbackHost(embeddedIPv4)) return true;
+      }
+    }
+  }
   return false;
 }
 

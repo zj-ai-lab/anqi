@@ -178,6 +178,34 @@ for (const host of [
 setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://100.128.0.1/');
 assert.equal(loadAgentConfig().enabled, true, 'CGNAT 段之外的 100.128.0.1 不应该被误伤');
 
+// 13.5) 【红线回归】黑名单进一步补漏——云元数据主机名/*.internal 后缀、
+//      IPv4-compatible IPv6（::a.b.c.d，与已经处理的 ::ffff:a.b.c.d 不同）、
+//      0.0.0.0/8、RFC 2544 基准测试段 198.18.0.0/15。探针逐条实测过这五类
+//      在补丁前均被 ALLOW。
+for (const host of [
+  'http://metadata.google.internal/v1', // GCP 元数据主机名——解析到 169.254.169.254
+  'http://metadata.goog/v1', // 同一服务的别名域名
+  'http://foo.metadata.goog/v1',
+  'http://foo.internal/v1', // GCP/多家云厂商约定的内部专用后缀
+  'http://[::127.0.0.1]/v1', // IPv4-compatible IPv6（弃用形态），归一化后是 [::7f00:1]
+  'http://[::0.1.2.3]/v1', // 同上，嵌入的是非回环但仍属 0.0.0.0/8 的地址
+  'http://0.1.2.3/v1', // 0.0.0.0/8（"this network"）
+  'http://0.0.0.1/v1',
+  'http://198.18.0.1/v1', // RFC 2544 基准测试段起始
+  'http://198.19.255.255/v1', // 段末尾
+]) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（黑名单补漏）`);
+}
+// 边界之外的地址必须仍然放行，确认没有误伤：198.18.0.0/15 段紧邻两侧的
+// 198.17.255.255 与 198.20.0.0 都是合法公网地址；2001:db8::1 是不满足
+// IPv4-compatible 展开条件的普通公网 IPv6，不应该被新加的展开逻辑误伤。
+for (const host of ['http://198.17.255.255/v1', 'http://198.20.0.0/v1', 'http://[2001:db8::1]/v1']) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  assert.equal(loadAgentConfig().enabled, true, `baseURL=${host} 不应该被误伤`);
+}
+
 // 14) apiKeyEnv 现在是可选高级项：留空且没有已存加密 key 时，enabled 判定
 //     本身仍然是 true（provider/model/baseURL 齐全就够）——"有没有可用的
 //     key"是 resolveAgentApiKey()/agentReady() 单独的职责，不是 enabled 门
