@@ -23,6 +23,7 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       minor: ${{ steps.version.outputs.minor }}
+      is_prerelease: ${{ steps.version.outputs.is_prerelease }}
     steps:
       - name: Require dry-run for manual dispatch
         if: github.event_name == 'workflow_dispatch'
@@ -50,6 +51,19 @@ jobs:
           fi
           echo "version=$PKG_VER" >> "$GITHUB_OUTPUT"
           echo "minor=${PKG_VER%.*}" >> "$GITHUB_OUTPUT"
+          # 预发行判定：与 release.yml「Publish GitHub Release assets」步骤
+          # 同一条正则（语义化版本 MAJOR.MINOR.PATCH 之后紧跟一个 "-"，例如
+          # 2.7.0-beta.1）——预发行版本只推 :<version> 一个标签，绝不能碰
+          # :latest / :<minor>，否则会把 beta/rc 当稳定版推给所有拉 latest
+          # 的现网部署。对 2.7.0-beta.1 这类版本，"minor" 输出（$PKG_VER%.*
+          # 只切掉最后一个点后的段）还会算出 "2.7.0-beta" 这种没有意义的
+          # 诡异标签，预发行分支下这个 minor 输出本身就不会被使用。
+          is_prerelease=false
+          if [[ "$PKG_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-.+ ]]; then
+            is_prerelease=true
+            echo "版本 $PKG_VER 带预发行段，本次发布只推 :$PKG_VER 一个标签"
+          fi
+          echo "is_prerelease=$is_prerelease" >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v4
@@ -109,6 +123,21 @@ jobs:
           IMAGE_VERSION=$(docker exec anqi-smoke node -p "require('/app/package.json').version")
           [ "$IMAGE_VERSION" = "$VERSION" ]
 
+          # AI 助理 runtime 依赖的机械回归断言：防止 Dockerfile 将来再退化成
+          # 「COPY src ./src 带进源码、但从不装 src/agent/runtime 的
+          # node_modules」——这条断言曾经是本次改动要修的坑本身，见 Dockerfile
+          # 里 "AI 助理（DSH sidecar）运行时依赖" 那一层的注释。两条都要过：
+          # 目录真的存在，且其中一个真实依赖能被 require() 加载（不是空目录
+          # 或者装错了架构的原生模块）。
+          docker exec anqi-smoke test -d /app/src/agent/runtime/node_modules || {
+            echo "FATAL: /app/src/agent/runtime/node_modules 不存在——AI 助理 runtime 依赖没有被装进镜像"
+            exit 1
+          }
+          docker exec -w /app/src/agent/runtime anqi-smoke node -e "require('@deepseek-ai/dsh-base/package.json'); console.log('dsh-base OK')" || {
+            echo "FATAL: 镜像里的 @deepseek-ai/dsh-base 无法 require()——runtime 依赖装了但加载不了（架构不匹配或安装不完整）"
+            exit 1
+          }
+
       - name: Build multi-arch OCI dry-run archive
         if: github.event_name == 'workflow_dispatch'
         uses: docker/build-push-action@v7
@@ -162,6 +191,34 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ github.token }}
 
+      - name: Resolve publish tags
+        id: tags
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+          MINOR: ${{ needs.build.outputs.minor }}
+          IS_PRERELEASE: ${{ needs.build.outputs.is_prerelease }}
+        run: |
+          set -euo pipefail
+          # 预发行版本（is_prerelease，判定见 build 任务的「Resolve and verify
+          # version」步骤）只推 :<version> 一个标签——绝不能碰 :latest 或
+          # :<minor>：一旦推了 :latest，任何 `docker pull anqi:latest` 或
+          # docker-compose 没钉版本号的现网部署都会静默升级到 beta/rc；
+          # :<minor> 对 2.7.0-beta.1 这类版本还会算出 "2.7.0-beta" 这种没人
+          # 会去拉、纯属误导的标签。正式版本行为不变，三个标签照旧全推。
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            echo "预发行版本 ${VERSION}：只推 :${VERSION}，跳过 :${MINOR} 与 :latest"
+          fi
+          {
+            echo "tags<<TAGS_EOF"
+            echo "ghcr.io/zj-ai-lab/anqi:${VERSION}"
+            if [ "$IS_PRERELEASE" != "true" ]; then
+              echo "ghcr.io/zj-ai-lab/anqi:${MINOR}"
+              echo "ghcr.io/zj-ai-lab/anqi:latest"
+            fi
+            echo "TAGS_EOF"
+          } >> "$GITHUB_OUTPUT"
+
       - name: Build and push multi-arch image
         id: push
         if: startsWith(github.ref, 'refs/tags/')
@@ -170,10 +227,7 @@ jobs:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: |
-            ghcr.io/zj-ai-lab/anqi:${{ needs.build.outputs.version }}
-            ghcr.io/zj-ai-lab/anqi:${{ needs.build.outputs.minor }}
-            ghcr.io/zj-ai-lab/anqi:latest
+          tags: ${{ steps.tags.outputs.tags }}
           labels: |
             org.opencontainers.image.source=https://github.com/zj-ai-lab/anqi
             org.opencontainers.image.version=${{ needs.build.outputs.version }}

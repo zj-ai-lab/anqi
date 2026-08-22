@@ -1,0 +1,30 @@
+# docker build 的 context 不受 .gitignore 约束（只有本文件生效）——之前仓库
+# 根本没有 .dockerignore，任何本机已跑过 `npm install` / `(cd src/agent/runtime
+# && npm ci)` 的工作树在 `docker build .` 时会把宿主机架构的 node_modules
+# 整棵塞进 build context。Dockerfile 里 `COPY src ./src` 发生在我们自己受控的
+# `npm ci`（装 linux 容器架构的 src/agent/runtime/node_modules）**之后**，
+# 如果不排除，这条 COPY 会用宿主机架构（例如本机 macOS arm64）的 node_modules
+# 覆盖掉刚装好的 linux 版本——原生模块（koffi/node-pty 等）架构不匹配，AI
+# 助理子进程会直接崩溃且报错信息与"没装依赖"完全不同，很难排查。
+node_modules/
+src/agent/runtime/node_modules/
+/src/agent/assets/node_modules
+
+# 运行时数据与密钥：绝不应该出现在镜像里，即便本机不小心留了这些文件。
+data/
+*.db
+.env
+
+# 与镜像运行无关的产物/元数据，不必浪费 context 传输时间。
+# 注意：不排除 *.png——public/assets/anjian-*.png 是运行时真正会被
+# server.js 提供访问的静态资源（PWA 图标等），跟 .gitignore 里那条只为拦
+# 「未入库的临时截图」的规则场景不同，不能照抄。
+.git/
+dist-electron/
+.DS_Store
+.playwright-mcp/
+.workbuddy/
+docs/design-refs/
+.agents/
+.claude/
+.zcode/
