@@ -22,7 +22,7 @@ const {
   assert.equal(typeof ciphertext, 'string');
   assert.match(ciphertext, /^v1:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$/);
   assert.equal(decryptSecret(ciphertext, key), plaintext);
-  console.log('  [1/6] 往返：ok');
+  console.log('  [1/7] 往返：ok');
 }
 
 // ---- 2) 错误密钥解不开：GCM 认证失败必须抛错，不能吐出乱码明文 ----
@@ -31,7 +31,7 @@ const {
   const wrongKey = Buffer.alloc(32, 2);
   const ciphertext = encryptSecret('secret-value', key);
   assert.throws(() => decryptSecret(ciphertext, wrongKey), 'wrongKey 必须解不开');
-  console.log('  [2/6] 错误密钥解不开：ok');
+  console.log('  [2/7] 错误密钥解不开：ok');
 }
 
 // ---- 3) 密文格式非法：分段数不对 / 版本前缀不对 / base64 解不出来，都必须
@@ -41,7 +41,7 @@ const {
   for (const bad of ['', 'not-even-colons', 'v2:aa:bb:cc', 'v1:aa:bb', 'v1:not-base64!!!:bb:cc', 'v1:::']) {
     assert.throws(() => decryptSecret(bad, key), `畸形密文应该抛错: ${JSON.stringify(bad)}`);
   }
-  console.log('  [3/6] 畸形密文安全失败：ok');
+  console.log('  [3/7] 畸形密文安全失败：ok');
 }
 
 // ---- 4) 每次加密用不同 nonce：同一明文两次加密，密文必须不同（防止 nonce
@@ -53,7 +53,7 @@ const {
   assert.notEqual(a, b, '同一明文两次加密的密文不应该相同（nonce 必须随机）');
   assert.equal(decryptSecret(a, key), 'same-plaintext');
   assert.equal(decryptSecret(b, key), 'same-plaintext');
-  console.log('  [4/6] nonce 随机性：ok');
+  console.log('  [4/7] nonce 随机性：ok');
 }
 
 // ---- 5) secret.key 首次生成：权限位必须是 0o600，且往返可用；第二次调用
@@ -76,7 +76,44 @@ const {
   assert.equal(decryptSecret(ciphertext, key2), 'round-trip-via-file-key');
 
   fs.rmSync(scratch, { recursive: true, force: true });
-  console.log('  [5/6] secret.key 首次生成权限位 0o600 + 幂等复用：ok');
+  console.log('  [5/7] secret.key 首次生成权限位 0o600 + 幂等复用：ok');
+}
+
+// ---- 5.5) 【红线回归】secret.key 首次生成的 TOCTOU 竞态：多个进程并发触发
+//      首次生成时，必须只有一份 key 真正落地，不能出现"后写者用自己生成的
+//      随机字节覆盖先写者"——覆盖之后，用先写者那把 key 加密过的历史数据
+//      会安静地解不开（GCM 校验失败，getStoredApiKey() 返回 null，不抛错、
+//      不落审计）。真实 TOCTOU 需要跨进程并发才能复现（同一事件循环里的
+//      同步代码不存在竞态窗口），这里真的并发起若干个独立 Node 子进程去抢
+//      同一个 secret.key 的首次生成。 ----
+{
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-secret-box-race-'));
+  const dbPath = path.join(scratch, 'anjian.db');
+  const keyPath = secretKeyPath({ DB_PATH: dbPath });
+  assert.equal(fs.existsSync(keyPath), false, '并发测试前 secret.key 不应该已经存在');
+
+  const { execFile } = await import('node:child_process');
+  const { fileURLToPath: toPath, pathToFileURL } = await import('node:url');
+  const secretBoxURL = pathToFileURL(path.join(path.dirname(toPath(import.meta.url)), '..', 'src', 'lib', 'secret-box.js')).href;
+  const script = `
+    import(${JSON.stringify(secretBoxURL)}).then(({ resolveMasterKey }) => {
+      process.stdout.write(resolveMasterKey({ DB_PATH: ${JSON.stringify(dbPath)} }).toString('hex'));
+    });
+  `;
+  const CONCURRENCY = 6;
+  const results = await Promise.all(
+    Array.from({ length: CONCURRENCY }, () => new Promise((resolve, reject) => {
+      execFile(process.execPath, ['--input-type=module', '-e', script], (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout.trim());
+      });
+    }))
+  );
+  const distinctKeys = new Set(results);
+  assert.equal(distinctKeys.size, 1, `${CONCURRENCY} 个并发首次生成的进程必须只产生 1 把 key，实际产生了 ${distinctKeys.size} 把`);
+
+  fs.rmSync(scratch, { recursive: true, force: true });
+  console.log('  [5.5/7] secret.key 首次生成并发安全（写临时文件+linkSync 原子提交，不被后写者覆盖）：ok');
 }
 
 // ---- 6) ANJIAN_SECRET：熵不足必须拒绝；熵足够时优先于 secret.key 生效，
@@ -102,7 +139,7 @@ const {
   assert.equal(maskSecret(''), '*');
 
   fs.rmSync(scratch, { recursive: true, force: true });
-  console.log('  [6/6] ANJIAN_SECRET 熵校验 + 派生确定性 + 掩码：ok');
+  console.log('  [6/7] ANJIAN_SECRET 熵校验 + 派生确定性 + 掩码：ok');
 }
 
 console.log('secret-box 自检全部通过');

@@ -52,21 +52,59 @@ function deriveKeyFromPassphrase(passphrase) {
   return createHash('sha256').update(passphrase, 'utf8').digest();
 }
 
+function assertKeyLength(buf, filePath) {
+  if (buf.length !== KEY_BYTES) {
+    throw new Error(`secret.key 长度非法（期望 ${KEY_BYTES} 字节，实际 ${buf.length} 字节）：${filePath}`);
+  }
+  return buf;
+}
+
 // 不存在就生成；存在就读出来校验长度（防御性——文件被外部篡改/截断成非
 // 32 字节时，明确报错而不是把错误长度的 buffer 直接喂给 createCipheriv
 // 抛出一条更难懂的 node:crypto 内部错误）。
+//
+// 首次生成必须对"其它并发进程"呈现原子——不能先 existsSync() 判断再
+// writeFileSync()：两步之间存在竞态窗口，多个进程/请求并发触发首次生成时
+// （探针实测 6 个并发进程会拿到 2 把不同的 key），后写入的进程会用自己生成
+// 的随机字节覆盖掉先写入的那份；一旦先写入者已经用它加密过 agent_api_key，
+// 覆盖后 getStoredApiKey() 会因为 GCM 校验失败而安静地 return null——不抛
+// 错、不落审计，用户只会看到"未配置"，看不出真实原因是 secret.key 被别的
+// 进程重新生成过。
+//
+// 直接对最终路径 `writeFileSync(..., {flag:'wx'})` 看似原子（open() 的
+// O_CREAT|O_EXCL），但 open() 创建空文件与随后写入 32 字节内容是两个独立
+// 系统调用——中间存在一个可被其它进程窥见的窗口：本文件的回归测试
+// （tools/test-secret-box.js 场景 5.5）真实并发跑起时，就有子进程在这个
+// 窗口内 readFileSync() 读到了 0 字节的文件，直接把下面 assertKeyLength()
+// 的长度校验炸穿。改成"写到同目录下的临时文件、写完整之后再 linkSync 到
+// 最终路径"：linkSync 只有一个系统调用——目标不存在则创建、已存在则整体
+// 失败（EEXIST），不存在"目标已出现但内容还没写完"这种中间态，因为被链接
+// 的临时文件在 link 之前已经完整写入并落盘，final 路径这个目录项一旦出现
+// 就已经指向一个内容完整的 inode。
 function loadOrCreateKeyFile(filePath) {
   if (fs.existsSync(filePath)) {
-    const buf = fs.readFileSync(filePath);
-    if (buf.length !== KEY_BYTES) {
-      throw new Error(`secret.key 长度非法（期望 ${KEY_BYTES} 字节，实际 ${buf.length} 字节）：${filePath}`);
-    }
-    return buf;
+    return assertKeyLength(fs.readFileSync(filePath), filePath);
   }
   // 只在目录缺失时才创建；已存在的父目录权限原样不动。
-  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  const dir = path.dirname(filePath);
+  fs.mkdirSync(dir, { recursive: true });
   const key = randomBytes(KEY_BYTES);
-  fs.writeFileSync(filePath, key, { mode: 0o600 });
+  const tmpPath = path.join(dir, `.${SECRET_KEY_FILENAME}.tmp-${randomBytes(8).toString('hex')}`);
+  fs.writeFileSync(tmpPath, key, { mode: 0o600 });
+  try {
+    fs.linkSync(tmpPath, filePath);
+  } catch (error) {
+    if (error && error.code === 'EEXIST') {
+      // 另一个进程已经抢先创建：回读它的内容，不覆盖。
+      return assertKeyLength(fs.readFileSync(filePath), filePath);
+    }
+    throw error;
+  } finally {
+    fs.rmSync(tmpPath, { force: true });
+  }
+  // writeFileSync 的 mode 参数会被进程 umask 修正，不能保证最终位恰好是
+  // 0o600，补一次显式 chmod 才能把这件事钉死，不依赖调用环境的 umask 恰好
+  // 是 022。linkSync 出的这份共享同一个 inode，chmod 对它同样生效。
   fs.chmodSync(filePath, 0o600);
   return key;
 }
