@@ -204,6 +204,18 @@ export function validateBaseURL(baseURLRaw, provider) {
   if (parsed.username || parsed.password) {
     return { ok: false, error: 'baseURL 不得包含凭据（userinfo）' };
   }
+  // 不接受查询参数/片段：src/agent/models-client.js 用字符串拼接
+  // `${baseURL}/models` 构造上游 URL，而不是 `new URL('models', base)`——
+  // 带 `?`/`#` 的 baseURL 会把 `/models` 后缀拼进错误位置（探针实测：
+  // 以 '/v1#frag' 结尾时 `/models` 后缀被静默吞掉，实际请求变成
+  // `GET /v1`；以 '/v1?token=abc' 结尾时变成 `GET /v1?token=abc/models`）。
+  // 这类 baseURL 恰好能通过下面的所有校验、被原样存进
+  // agent_base_url（连同 query/fragment 一起），于是 DSH 运行时也会继承
+  // 同一个坏值。直接在这里拒绝，比在 models-client.js 里改用更宽容的 URL
+  // 拼接更安全——baseURL 本来就不应该带查询参数或片段。
+  if (parsed.search || parsed.hash) {
+    return { ok: false, error: 'baseURL 不得包含查询参数（?）或片段（#）' };
+  }
   if (isPrivateOrLoopbackHost(parsed.hostname)) {
     return { ok: false, error: 'baseURL 不得指向内网/回环地址' };
   }

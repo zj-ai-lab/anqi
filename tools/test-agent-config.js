@@ -231,6 +231,20 @@ setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://192.168.1.50:8080/v1');
 assert.equal(loadAgentConfig().enabled, false, '内网地址仍然按内网/回环规则拒绝');
 assert.doesNotMatch(loadAgentConfig().error, /https/, '内网地址被拒绝的原因应该是内网/回环，不是缺 https');
 
+// 13.7) 【红线回归】baseURL 不接受查询参数/片段——src/agent/models-client.js
+//      用字符串拼接 `${baseURL}/models` 构造上游 URL，带 ? 或 # 的 baseURL
+//      会把 /models 后缀拼进错误位置（探针实测：'/v1#frag' 结尾时 /models
+//      后缀被静默吞掉，'/v1?token=abc' 结尾时变成 '/v1?token=abc/models'）。
+for (const host of ['https://api.example.com/v1#frag', 'https://api.example.com/v1?token=abc']) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 带查询参数/片段必须被拒绝`);
+  assert.match(rejected.error, /查询参数|片段/, `baseURL=${host} 的拒绝原因应该提到查询参数/片段`);
+}
+// 不带查询参数/片段的普通路径必须仍然放行。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://api.example.com/v1');
+assert.equal(loadAgentConfig().enabled, true, '不带查询参数/片段的 baseURL 不应该被误伤');
+
 // 14) apiKeyEnv 现在是可选高级项：留空且没有已存加密 key 时，enabled 判定
 //     本身仍然是 true（provider/model/baseURL 齐全就够）——"有没有可用的
 //     key"是 resolveAgentApiKey()/agentReady() 单独的职责，不是 enabled 门
