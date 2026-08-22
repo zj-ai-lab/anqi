@@ -22,11 +22,30 @@ import {
 //
 // 设置侧联动（设计稿 §1「enabled=false 必须在……spawn 子进程之前短路返回」
 // 与门禁 2/10「关掉即不存在」的另一半）：这批 PUT 一旦把 agent_* 五键落库成
-// 一份 config.enabled 为假的状态（不管是用户显式把 agent_enabled 关掉，还是
-// 把 provider/model/apiKeyEnv 改成非法值导致 loadAgentConfig() 判定不可
-// 用），必须同时终止所有已经在跑的 live worker——否则「设置页关掉开关」与
-// 「worker 真的停下来」是两件不同步的事，编排方人工验收正是在这条缝隙上实测
-// 复现的红线（已启动的 DSH 子进程在关掉开关 14 分钟后仍在跑）。
+// 一份 config.enabled 为假的状态，必须同时终止所有已经在跑的 live worker——
+// 否则「设置页关掉开关」与「worker 真的停下来」是两件不同步的事，编排方人工
+// 验收正是在这条缝隙上实测复现的红线（已启动的 DSH 子进程在关掉开关 14 分钟
+// 后仍在跑）。触发这条收尾的绝大多数情况是用户显式把 agent_enabled 关掉；
+// provider/model/apiKeyEnv 三个字段本身走的是与 loadAgentConfig() 完全同源
+// 的格式/枚举校验（见下方 validateAgentFields），格式不合法的值在这里已经
+// 400 拒绝、根本不会落库，所以"落库成功但 loadAgentConfig() 判它不可用"这条
+// 路径几乎不会由这三个字段的本次改动直接触发——唯一现实的窄口子是：数据库里
+// 已经存在一份历史上就不自洽的存量态（例如上一次改了 provider 但 base_url
+// 早已对新 provider 非法），而本次 PUT 只碰了其中某个 agent_* 键、没有同时
+// 碰 agent_base_url/agent_provider（因此不会走下面对 baseURL 的
+// 重新校验分支），落库后重读到的仍是那份历史非法态。下面统一用同一份
+// loadAgentConfig() 复查，不区分具体是哪种情况触发的——这里只负责兜底，不
+// 假设"改 provider/model/apiKeyEnv 通常会让 enabled 变假"（它通常不会，
+// apiKeyEnv 尤其如此：loadAgentConfig() 只校验变量名格式与保留名，从不读取
+// process.env[apiKeyEnv] 是否真的存在，那是 agentReady() 的职责）。
+//
+// 范围边界（已知、非本轮红线，留作后续跟进）：这条联动只在配置变成
+// disabled 时才收敛 live worker；配置仍然 enabled 的改动（例如把
+// agent_model 从 A 改成 B）不会重建或重启 live worker——PUT 本身会 200、
+// GET /api/settings 会显示新值，但已经在跑的 worker 是拿着 spawn 那一刻的
+// 旧值继续跑的，"设置页显示的模型"与"worker 实际在用的模型"会静默不一致，
+// 直到该 worker 因为别的原因（案件关闭、进程重启等）自然回收。这与「关掉即
+// 不存在」是同一条 settings↔supervisor 缝隙的另一半，但不在本轮任务范围内。
 //
 // 本文件因此改成工厂函数 createSettingsRouter(supervisor)——与
 // src/routes/agent.js 的 createAgentRouter(supervisor) 同一种接线方式：
@@ -145,16 +164,31 @@ export function createSettingsRouter(supervisor) {
     // agent 字段（姓名/电话等六个抬头字段）的普通保存不应该白白多算一次
     // loadAgentConfig()/stopAll() 开销，也没有必要（不可能因为改了电话号码
     // 就让 config.enabled 变化）。落库之后立刻用同一份 loadAgentConfig()
-    // 重新读一遍最终生效的配置——不只看这次 body 里的 agent_enabled 是不是
-    // false：把 provider/model/apiKeyEnv 改成白名单校验能通过、但
-    // loadAgentConfig() 运行时判定不可用的值（例如 apiKeyEnv 改成一个和当前
-    // provider 不搭的名字导致后续 spawn 必然失败——现有校验不拦这种"值合法
-    // 但语义上配不齐"的组合），同样等价于「不可用」，同样必须停掉所有 live
-    // worker，不能只在用户显式点了开关这一种情况下才收尾。
+    // 重新读一遍最终生效的配置，不只单独检查这次 body 里的 agent_enabled 是
+    // 不是 false——这样写是为了不假设"关掉"只能通过那一个字段发生，覆盖住
+    // 顶部注释里提到的历史存量态窄口子（本次 PUT 没碰 base_url/provider，
+    // 但重读到的是一份历史上就已经对当前 provider 非法的 base_url）。这**不**
+    // 是在说 provider/model/apiKeyEnv 本身的改动通常会让 enabled 变假：这三
+    // 个字段在上面 validateAgentFields() 里已经和 loadAgentConfig() 走同一套
+    // 格式/枚举/保留名校验，格式不合法的值本次 PUT 早就 400 拒绝、根本落不了
+    // 库；尤其 apiKeyEnv，loadAgentConfig() 只校验变量名格式，从不检查
+    // process.env[apiKeyEnv] 是否真的有值（那是 agentReady() 的职责），所以
+    // 把它改成一个当前环境里并不存在的变量名并不会触发这里的 stopAll()。
     if (touchesAnyAgentKey) {
       const config = loadAgentConfig();
       if (!config.enabled && supervisor && typeof supervisor.stopAll === 'function') {
         const reason = config.error ? `disabled-by-settings:${config.error}` : 'disabled-by-settings';
+        // 这里是同步 await：这次 PUT 的响应要等 stopAll() 真正跑完才返回，
+        // 是刻意的取舍——响应到达即代表 worker 真的停了，前端不需要再轮询
+        // 确认，回归测试也不用为"设置已落库但 worker 还在收尾"这种时序补
+        // 竞态断言。代价是响应时长绑定在 stop() 流程上：单个 worker 最坏
+        // 情况是 30s 的 shutdown RPC 超时（见下方 `_request(..., 30_000)`）
+        // 加 10s 的退出等待（`timeoutPromise(10_000, ...)`），约 40s 上界；
+        // 多 worker 走 `Promise.allSettled` 并行等待，不会线性叠加。真实
+        // DSH 子进程实测只要 26–151ms 就能完成 shutdown 握手，所以这个上界
+        // 目前不是实际问题，但前端 `public/js/api.js` 的 fetch 调用没有设
+        // 客户端超时——真遇到卡死的 worker，UI 上会表现为"保存设置"长时间
+        // 无响应而不是明确报错，值得知道。
         try {
           await supervisor.stopAll(reason);
         } catch (error) {

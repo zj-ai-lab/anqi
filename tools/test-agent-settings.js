@@ -27,6 +27,43 @@ import http from 'node:http';
 import express from 'express';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+
+// ---- server.js 必须把「同一个」agentSupervisor 实例接进 createAgentRouter
+//      与 createSettingsRouter ----
+// 复审点出：settings↔supervisor 联动修复里真正让「关闭开关后 live worker
+// 被杀」这条红线成立的那一行——server.js 里 `createSettingsRouter(agentSupervisor)`
+// 这处 DI 接线——此前零机械覆盖。人工把它改成 `createSettingsRouter()`（漏
+// 传参数）之后，本文件下方"设置侧联动"场景依旧全绿：那段测试自建了一个独
+// 立 liveApp、自己手动 `createSettingsRouter(agentSupervisor)`，永远看不到
+// server.js 真正怎么接线；真起服务器复测则会看到红线原样复发（子进程在关
+// 闭开关后依然存活）。这里照抄 tools/test-electron-backend-env.js [3/3] 的
+// 做法——对 server.js 源码做一次静态正则核验，而不是真的 fork 一次带真实
+// DB_PATH/登录凭据的完整进程：createAgentRouter 与 createSettingsRouter 必
+// 须被同一个标识符调用，且该标识符必须来自 `new AgentSupervisor(`——三处任
+// 一处改名/漏传/换成两个不同实例，这里都会现形。
+{
+  const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+  const serverSrc = fs.readFileSync(path.join(REPO_ROOT, 'server.js'), 'utf8');
+
+  const supervisorCtorMatch = serverSrc.match(/const\s+(\w+)\s*=\s*new\s+AgentSupervisor\s*\(/);
+  assert.ok(supervisorCtorMatch, 'server.js 必须有一行 `const xxx = new AgentSupervisor(...)` ——全进程唯一的 supervisor 实例');
+  const supervisorVar = supervisorCtorMatch[1];
+
+  const agentRouterMatch = serverSrc.match(/createAgentRouter\s*\(\s*(\w+)\s*\)/);
+  assert.ok(agentRouterMatch, 'server.js 必须调用 createAgentRouter(...) 接线 agent 路由');
+  assert.equal(agentRouterMatch[1], supervisorVar, `createAgentRouter() 必须传入 ${supervisorVar}（那个唯一的 AgentSupervisor 实例），实际传的是 "${agentRouterMatch[1]}"`);
+
+  const settingsRouterMatch = serverSrc.match(/createSettingsRouter\s*\(\s*(\w*)\s*\)/);
+  assert.ok(settingsRouterMatch, 'server.js 必须调用 createSettingsRouter(...) 接线 settings 路由');
+  assert.equal(
+    settingsRouterMatch[1], supervisorVar,
+    `createSettingsRouter() 必须传入与 createAgentRouter 相同的 ${supervisorVar} 实例，实际传的是 "${settingsRouterMatch[1] || '(空)'}"——` +
+    '漏传或传了另一个实例都会让 PUT /api/settings 关闭开关时找不到/管不到真正在跑的 live worker，编排方实测复现过的红线（关闭开关 14 分钟后 DSH 子进程仍在跑）会原样复发，而本文件下方"设置侧联动"场景因为自建了一个独立 liveApp、自己手动接线，抓不住这一类回归'
+  );
+
+  console.log('  [0/*] server.js 接线核验：createAgentRouter/createSettingsRouter 共用同一个 AgentSupervisor 实例：ok');
+}
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-settings-'));
 process.env.DB_PATH = path.join(scratch, 'agent-settings.db');

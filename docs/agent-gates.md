@@ -99,9 +99,10 @@
   四个端点各自独立补上路由层的前置 `loadAgentConfig()` 检查（`events` 此前已有，未改动）；
   `src/routes/settings.js` 改造成工厂函数 `createSettingsRouter(supervisor)`（与
   `src/routes/agent.js` 的 `createAgentRouter(supervisor)` 同一种 `server.js` 注入接线），
-  `PUT /api/settings` 一旦让 `agent_*` 落库后的 `loadAgentConfig().enabled` 为假（不论是
-  显式关开关，还是把 `provider`/`model`/`apiKeyEnv` 改成失效组合），立刻
-  `await supervisor.stopAll('disabled-by-settings')`，走正常 `stop()` 的
+  `PUT /api/settings` 一旦让 `agent_*` 落库后的 `loadAgentConfig().enabled` 为假——
+  绝大多数是用户显式关开关，另有一个很窄的存量态口子（本次 PUT 未触碰
+  `base_url`/`provider`，但重读到的是一份历史上就已对现 provider 非法的
+  `base_url`）——立刻 `await supervisor.stopAll('disabled-by-settings')`，走正常 `stop()` 的
   shutdown→SIGTERM 收尾流程，落 `agent-stopped` 终态审计。修复过程中还额外发现并修了一个
   相关的审计措辞 bug：`_stopWorker()` 在子进程于 shutdown 握手期间就协作退出（完全正常的
   时序）时，`_handleExit()` 可能抢在 `_stopWorker()` 自己那句 `_finalizeWorker()` 之前落
@@ -118,8 +119,22 @@
   `src/agent/supervisor.js`/`src/routes/agent.js`/`src/routes/settings.js`，新测试必须
   变红"的对照实验：结果分别是 `AssertionError`（`start()` 命中既存 live worker 仍返回
   `'ready'` 而非期望的 `'disabled'`）、`AssertionError`（HTTP `start` 端点仍返回 200 而非
-  期望的 409）、`TypeError: createSettingsRouter is not a function`（旧版 `settings.js`
-  没有这个导出）——三处均按预期变红，恢复修复后全部转绿。
+  期望的 409）、`AssertionError: PUT 关闭 agent_enabled 之后，live worker 必须真正离开
+  ready/running`（`false !== true`——外科式删掉 `settings.js` 里 `loadAgentConfig()` +
+  `stopAll()` 那段联动逻辑、保留工厂函数导出不变时的实测结果；比更早版本引用过的
+  `TypeError: createSettingsRouter is not a function` 更强，因为后者只证明导出形状变了，
+  证不了联动逻辑本身有没有被守住）——三处均按预期变红，恢复修复后全部转绿。
+  另有一处**编排方复审发现的独立缺口**：让症状真正消失的那一行 DI 接线——`server.js` 把
+  `createSettingsRouter(agentSupervisor)` 与 `createAgentRouter(agentSupervisor)` 接到
+  同一个 supervisor 实例上——此前零机械覆盖；复审把它改成 `createSettingsRouter()`（漏传
+  参数）后，上面三份回归全部原样保持 GREEN，真起服务器复测则红线原样复发（live worker
+  在关闭开关后依然存活）。原因是 `test-agent-settings.js` 的"设置侧联动"场景自建一个独立
+  `liveApp`、自己手动 `createSettingsRouter(agentSupervisor)`，永远看不到 `server.js` 那
+  一侧的接线。修复：照抄门禁 3 `tools/test-electron-backend-env.js` 对 `server.js` 做静态
+  正则核验的既定模式，在 `test-agent-settings.js` 顶部新增一段核验——`createAgentRouter`
+  与 `createSettingsRouter` 必须被同一个、且来自 `new AgentSupervisor(...)` 的标识符调用；
+  对照实验：把 `server.js` 该行改回漏传参数，这段新增核验立即 `AssertionError`（"必须传入
+  与 createAgentRouter 相同的 agentSupervisor 实例，实际传的是 (空)"），恢复后转绿。
 
 ## 门禁 3 · 每个 worker 的 session、真实 `cwd` 和 case 权限不可被 prompt 改写
 
@@ -373,8 +388,11 @@
   `src/routes/settings.js` 的 `PUT /api/settings` 现在会在 `agent_*` 落库后
   `loadAgentConfig().enabled` 为假时，同步 `await supervisor.stopAll('disabled-by-settings')`，
   「关掉即不存在」现在覆盖"运行中被关掉"这一种情形，不再只对"从未启动过"成立。
-  机械回归同门禁 2：`tools/test-agent-settings.js` "设置侧联动"区块，含"还原修复前
-  `settings.js` 必须变红"的对照实验（`TypeError: createSettingsRouter is not a function`）。
+  机械回归同门禁 2：`tools/test-agent-settings.js` "设置侧联动"区块，含"外科式删掉
+  `settings.js` 里 `loadAgentConfig()`+`stopAll()` 联动、保留工厂函数导出不变时必须变红"
+  的对照实验（`AssertionError: PUT 关闭 agent_enabled 之后，live worker 必须真正离开
+  ready/running`），以及守住 `server.js` 那一行 DI 接线本身的静态核验（同一文件顶部
+  `[0/*]` 区块）。
 
 ---
 

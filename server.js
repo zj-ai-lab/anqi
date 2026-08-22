@@ -60,9 +60,9 @@ const agentSupervisor = new AgentSupervisor({
 });
 const agentRouter = createAgentRouter(agentSupervisor);
 // settingsRouter 同样是工厂函数、同样注入这一个 agentSupervisor 实例——
-// 设置页把 agent_enabled 关掉（或把 provider/model/apiKeyEnv 改成失效组合）
-// 时，PUT /api/settings 需要能直接调用 agentSupervisor.stopAll() 终止所有
-// live worker（见 src/routes/settings.js 顶部注释「设置侧联动」）。不让
+// 设置页把 agent_enabled 显式关掉时，PUT /api/settings 需要能直接调用
+// agentSupervisor.stopAll() 终止所有 live worker（见 src/routes/settings.js
+// 顶部注释「设置侧联动」，包含极窄的存量态触发场景与不覆盖的范围）。不让
 // settings.js 自己 import supervisor.js 去 new 一个或引用某个模块级单例，
 // 避免出现"两份 supervisor 各管一半 worker"或反向循环依赖——server.js 是
 // 唯一同时持有 agentSupervisor 构造权和两个路由挂载权的地方，接线方式与
