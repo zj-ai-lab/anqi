@@ -55,7 +55,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectory } from '../lib/secure-files.js';
-import { loadAgentConfig } from './config.js';
+import { loadAgentConfig, resolveAgentApiKey } from './config.js';
 import { bindSession, unbindSession } from './session-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -382,8 +382,14 @@ function buildSpawnEnv({ config, apiKeyValue, internalKeyEnv, internalKeyValue, 
     // 的宿主环境顶掉本仓库的组合。
     DSH_CORDIS_CONFIG: CORDIS_CONFIG,
     DSH_PROVIDER_KIND: config.provider,
-    DSH_API_KEY_ENV: config.apiKeyEnv,
-    [config.apiKeyEnv]: apiKeyValue,
+    // 子进程里存放 key 值的变量名固定为 provider 对应的名字
+    // （config.canonicalKeyEnv，见 src/agent/config.js 的
+    // PROVIDER_CANONICAL_KEY_ENV），与用户是否填了 apiKeyEnv 这个可选高级
+    // 项、以及 key 最终来自 env 还是界面存储都无关——apiKeyEnv 只控制"取值
+    // 优先级链的第一环去哪个宿主环境变量名读"（resolveAgentApiKey() 的职
+    // 责），不再是"子进程里这个变量叫什么"。
+    DSH_API_KEY_ENV: config.canonicalKeyEnv,
+    [config.canonicalKeyEnv]: apiKeyValue,
     DSH_BASE_URL: config.baseURL,
     DSH_MODEL: config.model,
     DSH_CWD: caseCwd,
@@ -840,7 +846,12 @@ export class AgentSupervisor {
       audit(this.actor, 'agent-start-skip', 'agent-worker', caseId, config.error ? `disabled:${config.error}` : 'disabled');
       return { status: 'disabled', caseId, error: config.error };
     }
-    const apiKeyValue = process.env[config.apiKeyEnv];
+    // 取值优先级链（config.js resolveAgentApiKey() 的注释）：apiKeyEnv 指向
+    // 的宿主环境变量优先，否则回落到界面存的加密 key；两者都没有才是真正的
+    // credential_missing。keySource 目前只用于将来可能的可观测性用途，
+    // supervisor 自身的行为不因来源不同而分叉——无论 env 还是 stored，拿到
+    // 的都只是"这一次要注入子进程的 key 值"这一个字符串。
+    const { value: apiKeyValue, source: apiKeySource } = resolveAgentApiKey(config);
     if (!apiKeyValue) {
       audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'credential_missing');
       return { status: 'error', caseId, error: 'credential_missing' };
@@ -902,6 +913,9 @@ export class AgentSupervisor {
     const worker = new Worker(caseId, caseRow.name, sessionId, (event) => this._dispatch(caseId, event));
     worker.provider = config.provider;
     worker.model = config.model;
+    // 只做内部可观测性记录（供以后排障/审计参考，从不对外 HTTP/SSE 暴露）：
+    // 这次注入子进程的 key 到底是从宿主环境变量读的，还是界面存的加密 key。
+    worker.apiKeySource = apiKeySource;
     worker.cwd = dirContext.caseRoot;
     worker.skillsRootTmp = materializedSkillsRoot;
     worker.redact = redactor([apiKeyValue, internalKeyValue]);
