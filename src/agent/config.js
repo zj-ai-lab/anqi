@@ -19,6 +19,7 @@
 //     §5）；apiKeyEnv 除了合法环境变量名格式，还必须排除 anqi 自身会用到的
 //     保留前缀/名称——见下面 isReservedEnvName 的注释。
 import { db } from '../db.js';
+import { decryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
 
 // 以下几个常量/函数均导出：src/routes/settings.js 的 agent_* 白名单 PUT 校验
 // 与这里的 loadAgentConfig() 必须共用同一套规则（provider 枚举、apiKeyEnv
@@ -163,6 +164,22 @@ export const AGENT_SETTINGS_KEYS = Object.freeze({
   baseURL: 'agent_base_url',
   model: 'agent_model',
   apiKeyEnv: 'agent_api_key_env',
+  // 界面填的 key 落库前用 src/lib/secret-box.js 加密后存在这一键——本文件
+  // 与 settings.js 都不直接读它拼进 SELECT/PUT 白名单响应体（那样会把密文
+  // 回显出去，虽然密文本身不是明文，但没有正当理由顺手带出去）；只有下面
+  // 的 getStoredApiKey() 会读它、解密、并且只把解密结果留在内存里用一次。
+  apiKeyEncrypted: 'agent_api_key_encrypted',
+});
+
+// provider → 子进程里存放 key 值的固定环境变量名（设计稿 §3「DSH 侧变量名
+// 固定为 provider 对应的名字」）。用户可选填的 apiKeyEnv 只控制"从宿主环境
+// 的哪个变量名读取 key 值"这一件事（取值优先级链的第一环，见
+// resolveAgentApiKey()）；不管 key 最终来自哪个来源（宿主环境变量、还是
+// 界面填的加密存储），注入子进程时一律用这里固定的 provider 专属变量名，
+// 与 src/agent/assets/anqi.cordis.yml 里 DSH_API_KEY_ENV 的默认值一一对应。
+export const PROVIDER_CANONICAL_KEY_ENV = Object.freeze({
+  'deepseek-official': 'DEEPSEEK_API_KEY',
+  'openai-completions': 'OPENAI_API_KEY',
 });
 
 const settingRow = db.prepare('SELECT value FROM settings WHERE key = ?');
@@ -194,12 +211,18 @@ export function loadAgentConfig() {
   const model = readSetting(AGENT_SETTINGS_KEYS.model).trim();
   if (!model) return { enabled: false, error: 'model 未设置' };
 
+  // apiKeyEnv 现在是可选的高级选项（任务书设计 5）：公开版用户走「界面填 key
+  // →加密存储」这条路，压根不需要碰环境变量；只有留空时才不校验格式——一旦
+  // 填了非空值，仍然必须是合法环境变量名、且不是 anqi 自身的保留名/前缀，
+  // 校验尺度与此前完全一致，不因为"现在是可选的"就顺带放松格式要求。
   const apiKeyEnv = readSetting(AGENT_SETTINGS_KEYS.apiKeyEnv).trim();
-  if (!ENV_NAME_RE.test(apiKeyEnv)) {
-    return { enabled: false, error: 'apiKeyEnv 必须是合法的环境变量名（不是 key 本身）' };
-  }
-  if (isReservedEnvName(apiKeyEnv)) {
-    return { enabled: false, error: 'apiKeyEnv 不得使用 anqi 自身的保留变量名/前缀' };
+  if (apiKeyEnv) {
+    if (!ENV_NAME_RE.test(apiKeyEnv)) {
+      return { enabled: false, error: 'apiKeyEnv 必须是合法的环境变量名（不是 key 本身）' };
+    }
+    if (isReservedEnvName(apiKeyEnv)) {
+      return { enabled: false, error: 'apiKeyEnv 不得使用 anqi 自身的保留变量名/前缀' };
+    }
   }
 
   const baseURLResult = validateBaseURL(readSetting(AGENT_SETTINGS_KEYS.baseURL), provider);
@@ -216,16 +239,76 @@ export function loadAgentConfig() {
     baseURL: parsed.toString().replace(/\/$/, ''),
     model,
     apiKeyEnv,
+    // 子进程里固定要用的变量名——与 apiKeyEnv（"从宿主环境的哪个变量名读
+    // 取"）是两个独立概念，见 PROVIDER_CANONICAL_KEY_ENV 顶部注释。
+    canonicalKeyEnv: PROVIDER_CANONICAL_KEY_ENV[provider],
   };
 }
 
+// 读取界面存的加密 key 并解密。找不到该键、值为空串、密文格式非法、或主密
+// 钥解不开（密钥被换过/密文被篡改）——一律返回 null，不抛出、不让调用方
+// 的其它逻辑因为一条读不出来的历史存量密文而崩溃；这是"取值链"里"env 优先，
+// 界面存储兜底，都没有则不可用"这条设计里"兜底"必须能安全失败的那一半。
+// 从不把解密失败的具体原因（哪一步错）透出给调用方以外的任何地方——本函数
+// 本身也绝不 console.log/audit 解密出来的明文。
+export function getStoredApiKey() {
+  const encrypted = readSetting(AGENT_SETTINGS_KEYS.apiKeyEncrypted);
+  if (!encrypted) return null;
+  try {
+    const key = resolveMasterKey();
+    const plaintext = decryptSecret(encrypted, key);
+    return plaintext || null;
+  } catch {
+    return null;
+  }
+}
+
+// 取值优先级链（任务书 §3，关键，别搞反）：
+//   1) config.apiKeyEnv 指向的环境变量若存在且非空 → 用它，source='env'
+//      （保证现有 Docker/桌面部署零改动继续工作：老用户本来就是设好环境变量
+//      再把变量名填进界面，这条路径必须原样保留、且优先级最高）。
+//   2) 否则界面存的加密 key（getStoredApiKey()）→ source='stored'。
+//   3) 两者都没有 → value:null, source:'none'。
+// 不做 config.enabled 判断——调用方（POST /api/agent/models 这类"保存前先
+// 测试 key"的场景）需要在 agent_enabled 还是 false（用户正在填资料、还没点
+// 保存开启）的时候也能解析出当前已经填好的 key；enabled 门是 supervisor
+// 启动子进程/agentReady() 特性探测各自的职责，不是"key 到底存不存在"这件
+// 事本身的前提。
+export function resolveAgentApiKey(config) {
+  const apiKeyEnv = config?.apiKeyEnv ? String(config.apiKeyEnv) : '';
+  if (apiKeyEnv) {
+    const fromEnv = process.env[apiKeyEnv];
+    if (fromEnv) return { value: fromEnv, source: 'env' };
+  }
+  const stored = getStoredApiKey();
+  if (stored) return { value: stored, source: 'stored' };
+  return { value: null, source: 'none' };
+}
+
+// /api/counts 与 /api/agent/status 共用：只回答"当前 key 是否可用、来自
+// 哪里"，从不返回 key 本身或其掩码（掩码展示是 GET /api/settings 单独的
+// 职责，见 settings.js）。enabled=false 时直接判 none/false，保持与
+// agentReady() 一致的对外语义——"未启用"与"启用但没配 key"在这里都是不
+// 可用，只是 keySource 会诚实反映"即使填了 key 也没被读到"这件事对已保存
+// 配置无意义（enabled=false 分支根本不检查是否存在已存 key）。
+export function agentKeyStatus() {
+  const config = loadAgentConfig();
+  if (!config.enabled) return { configured: false, keySource: 'none' };
+  const { value, source } = resolveAgentApiKey(config);
+  return { configured: !!value, keySource: source };
+}
+
+export { maskSecret };
+
 // /api/counts 的特性探测用——与 src/lib/llm.js 的 llmReady() 同一种模式：
-// 只回答"当前是否可用"这一个布尔值，供前端决定要不要渲染入口按钮，绝不
-// 把 apiKeyEnv 指向的实际 key 值透出去（这里只做 `!!process.env[name]` 存在性
-// 判断，从不读取、缓存或返回该值本身）。enabled=false 或白名单字段本身非法
-// 时，跟 loadAgentConfig() 一样直接判 false，不单独再报错误详情。
+// 只回答"当前是否可用"这一个布尔值，供前端决定要不要渲染入口按钮，绝不把
+// 实际 key 值透出去（resolveAgentApiKey() 内部只做存在性判断/一次性解密，
+// 这里只取它的布尔结果）。enabled=false 或白名单字段本身非法时，跟
+// loadAgentConfig() 一样直接判 false，不单独再报错误详情。key 现在有两个
+// 可能来源（env 优先、界面存储兜底，见 resolveAgentApiKey() 顶部注释）——
+// agentReady() 不关心具体来源，只关心"有没有"。
 export function agentReady() {
   const config = loadAgentConfig();
   if (!config.enabled) return false;
-  return !!process.env[config.apiKeyEnv];
+  return !!resolveAgentApiKey(config).value;
 }

@@ -15,7 +15,15 @@ const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-config-'));
 process.env.DB_PATH = path.join(scratch, 'agent-config.db');
 
 const { db } = await import('../src/db.js');
-const { AGENT_SETTINGS_KEYS, loadAgentConfig } = await import('../src/agent/config.js');
+const {
+  AGENT_SETTINGS_KEYS,
+  loadAgentConfig,
+  resolveAgentApiKey,
+  getStoredApiKey,
+  agentKeyStatus,
+  PROVIDER_CANONICAL_KEY_ENV,
+} = await import('../src/agent/config.js');
+const { encryptSecret, resolveMasterKey } = await import('../src/lib/secret-box.js');
 
 function setSetting(key, value) {
   db.prepare(
@@ -170,5 +178,57 @@ for (const host of [
 setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://100.128.0.1/');
 assert.equal(loadAgentConfig().enabled, true, 'CGNAT 段之外的 100.128.0.1 不应该被误伤');
 
+// 14) apiKeyEnv 现在是可选高级项：留空且没有已存加密 key 时，enabled 判定
+//     本身仍然是 true（provider/model/baseURL 齐全就够）——"有没有可用的
+//     key"是 resolveAgentApiKey()/agentReady() 单独的职责，不是 enabled 门
+//     的一部分（否则用户只填了 key、还没点开关时，界面上连"model 是否合
+//     法"这类反馈都拿不到）。
 clearAgentSettings();
+setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://api.deepseek.com');
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, '');
+result = loadAgentConfig();
+assert.equal(result.enabled, true, 'apiKeyEnv 留空不应该让 enabled 判定失败');
+assert.equal(result.apiKeyEnv, '');
+assert.equal(result.canonicalKeyEnv, PROVIDER_CANONICAL_KEY_ENV['deepseek-official'], 'canonicalKeyEnv 必须是 provider 固定名，与用户是否填 apiKeyEnv 无关');
+
+// 15) 取值优先级链：env 优先于已存加密 key；两者都没有则 none。
+delete process.env.TEST_AGENT_CONFIG_ENV_KEY;
+db.prepare('DELETE FROM settings WHERE key = ?').run(AGENT_SETTINGS_KEYS.apiKeyEncrypted);
+assert.equal(getStoredApiKey(), null, '没有落库过加密 key 时 getStoredApiKey() 必须是 null');
+assert.deepEqual(resolveAgentApiKey(result), { value: null, source: 'none' }, '两个来源都没有时必须是 none');
+assert.deepEqual(agentKeyStatus(), { configured: false, keySource: 'none' });
+
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEncrypted, encryptSecret('sk-stored-only', resolveMasterKey()));
+result = loadAgentConfig();
+assert.deepEqual(resolveAgentApiKey(result), { value: 'sk-stored-only', source: 'stored' }, '只存了加密 key 时必须走 stored 分支');
+assert.deepEqual(agentKeyStatus(), { configured: true, keySource: 'stored' });
+
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_AGENT_CONFIG_ENV_KEY');
+process.env.TEST_AGENT_CONFIG_ENV_KEY = 'sk-from-env';
+result = loadAgentConfig();
+assert.deepEqual(
+  resolveAgentApiKey(result), { value: 'sk-from-env', source: 'env' },
+  'env 与已存加密 key 同时存在时，env 必须优先——保证现有 Docker/桌面部署零改动继续工作'
+);
+assert.deepEqual(agentKeyStatus(), { configured: true, keySource: 'env' });
+delete process.env.TEST_AGENT_CONFIG_ENV_KEY;
+
+// 16) 密文被篡改/主密钥换了都必须安全失败成 null，不抛到调用方炸掉整个
+//     loadAgentConfig()/agentKeyStatus() 调用链。
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, '');
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEncrypted, 'v1:not-a-real-nonce:not-a-real-tag:not-a-real-ciphertext');
+assert.equal(getStoredApiKey(), null, '格式非法的密文必须安全失败为 null，不能抛出');
+assert.deepEqual(agentKeyStatus(), { configured: false, keySource: 'none' });
+
+// 17) enabled=false 时 agentKeyStatus() 必须直接判 none/false，不检查是否
+//     存在已存 key（与 loadAgentConfig() 的短路是同一条红线）。
+setSetting(AGENT_SETTINGS_KEYS.apiKeyEncrypted, encryptSecret('sk-should-not-matter', resolveMasterKey()));
+setSetting(AGENT_SETTINGS_KEYS.enabled, 'false');
+assert.deepEqual(agentKeyStatus(), { configured: false, keySource: 'none' }, 'enabled=false 时即使有已存 key 也必须判 none/false');
+
+clearAgentSettings();
+db.prepare('DELETE FROM settings WHERE key = ?').run(AGENT_SETTINGS_KEYS.apiKeyEncrypted);
 console.log('agent config 自检全部通过');
