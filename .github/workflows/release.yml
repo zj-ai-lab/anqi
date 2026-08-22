@@ -73,6 +73,25 @@ jobs:
         working-directory: src/agent/runtime
         run: npm ci --ignore-scripts
 
+      - name: 补装 AI 助理 runtime 的跨架构原生依赖
+        # sharp/koffi 是按宿主 os/cpu 挑选的 optionalDependencies——上一步的
+        # npm ci 跑在 macos-latest（arm64）runner 上，只装出 darwin-arm64 的
+        # 原生二进制。但 build.extraResources 把这同一棵 node_modules 原样
+        # 复制进 arm64、x64 两个 DMG（electron-builder 不按目标架构筛选
+        # extraResources），x64 DMG 里因此没有 darwin-x64 的 sharp/koffi——
+        # AI 助理常挂插件 attachment-local 顶层 `import sharp`（非懒加载），
+        # Intel Mac 用户一开启 AI 助理就崩：
+        # `Error: Could not load the "sharp" module using the darwin-x64
+        # runtime`（本仓库审查记录里用真实 x64 Helper + Rosetta 复现过）。
+        # 这一步把宿主 npm ci 没装的那一侧原生包按 package-lock.json 记录的
+        # resolved tarball URL + integrity 摘要补装进同一棵 node_modules，
+        # 两侧共存——sharp/koffi 运行时都是按 process.platform/process.arch
+        # 挑选对应二进制（见 build/ensure-cross-arch-optional-deps.mjs 顶部
+        # 注释与本机实测），共存不会造成加载歧义，也不依赖 `npm install
+        # --os= --cpu=`（实测那条路径会把两个架构当同一虚拟 slot 的互斥变体，
+        # 装一个会删掉另一个，无法共存）。
+        run: node build/ensure-cross-arch-optional-deps.mjs
+
       - name: Build arm64 and x64 DMGs
         run: npm run dist -- --publish never
 
@@ -81,18 +100,39 @@ jobs:
         # （见 tools/test-pack-manifest.js 顶部大段注释）只有真正打包才会
         # 现形——这里对两个架构的打包产物各做一次机械核验：DSH 的可执行入口
         # 必须真的落在 Contents/Resources/agent-runtime/runtime/node_modules
-        # 下，而不是 build.extraResources"复制成功"但内容为空。
+        # 下，而不是 build.extraResources"复制成功"但内容为空；同时核验每个
+        # 架构自己的 sharp 原生二进制（@img/sharp-darwin-<arch>）确实存在——
+        # 只核验 bin.js/符号链接存在会对上一轮的 x64 sharp 缺失视而不见（两个
+        # 架构都能通过那两条断言，唯独 sharp 崩），这里额外核验的是"跨架构
+        # 补装是否真的生效"，不是重复上面那步。
         run: |
           set -euo pipefail
+          # 不用关联数组（declare -A）：这个 job 跑在 macos-latest，`run:`
+          # 步骤未显式声明 shell 时走系统 /bin/bash——GitHub 的 macOS 镜像至今
+          # 仍是 Apple 出于 GPLv3 许可顾虑锁在的 3.2.57（同一个坑，下面 publish
+          # job 的注释也提过），不支持 bash 4 才有的关联数组，`declare -A`
+          # 在这个 shell 下会直接 `declare: -A: invalid option` 报错。用
+          # case 语句代替一次性的字面量映射，bash 3.2 完全兼容。
           for outdir in mac-arm64 mac; do
-            bin="dist-electron/${outdir}/案齐.app/Contents/Resources/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js"
-            link="dist-electron/${outdir}/案齐.app/Contents/Resources/agent-runtime/assets/node_modules"
+            case "$outdir" in
+              mac-arm64) arch=arm64 ;;
+              mac) arch=x64 ;;
+              *) echo "FATAL: 未知的 outdir $outdir"; exit 1 ;;
+            esac
+            resources="dist-electron/${outdir}/案齐.app/Contents/Resources"
+            bin="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js"
+            link="${resources}/agent-runtime/assets/node_modules"
+            sharp_native="${resources}/agent-runtime/runtime/node_modules/@img/sharp-darwin-${arch}"
             test -f "$bin" || {
               echo "FATAL: $bin 不存在——AI 助理 runtime 依赖未被打包进 ${outdir} 产物"
               exit 1
             }
             test -L "$link" || {
               echo "FATAL: $link 不是符号链接——build/afterpack-agent-runtime-link.cjs 是否未生效？"
+              exit 1
+            }
+            test -d "$sharp_native" || {
+              echo "FATAL: $sharp_native 不存在——${outdir}（${arch}）产物里没有匹配架构的 sharp 原生模块，AI 助理常挂插件 attachment-local 一加载就会崩（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
               exit 1
             }
           done

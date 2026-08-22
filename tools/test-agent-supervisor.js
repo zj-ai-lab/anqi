@@ -17,7 +17,12 @@
 // 退出）、worker.error 必须兜底 redact、重复 start() 必须返回实时快照而不是
 // 冻结的旧值、_expirePendingInteractions 必须真正应答子进程而不是只清表、
 // assets/node_modules 必须由 supervisor 运行时确保（缺失自动补、意外目录拒绝
-// 覆盖）。
+// 覆盖）。场景 23 是修复轮的回归：wire 侧事件 type 撞上宿主保留名必须被重写
+// 成 wire/<type>，不能冒充宿主发出的审批待办卡片。场景 24 补齐 R2 打包
+// 完整性坑修复的自动化护栏：AGENT_DIR_IS_PACKAGED 分支（打包模式下
+// ensureAssetsNodeModulesLink() 必须只读校验、绝不写入已签名资源树）此前只
+// 有一次性手工实测背书，这里用"设置 process.resourcesPath 后带独立 query
+// 重新加载 supervisor.js"在同一进程里真正实例化打包分支来验证。
 //
 // DB_PATH 隔离到临时文件：这个脚本会插入案件行、写 agent_* 设置，绝不能碰
 // 仓库真实的 data/anjian.db——否则跑一次自检就会在真实设置表里把
@@ -190,6 +195,17 @@ function neverSpawn() {
   return () => { throw new Error('spawnFn must not be called for this scenario'); };
 }
 
+// status() 对外只吐固定字面量错误码（例如 'runtime_link_invalid'），具体原因
+// 只落进 audit_log.detail（见 src/db.js 的 audit()）——场景 24 需要区分"链接
+// 缺失"和"链接指向错误"这两条都返回同一个字面量的分支，直接查最近一条即可，
+// 不需要额外的测试专用出口。
+function latestAuditDetail(caseId) {
+  const row = db.prepare(
+    `SELECT detail FROM audit_log WHERE entity = 'agent-worker' AND entity_id = ? ORDER BY id DESC LIMIT 1`
+  ).get(caseId);
+  return row?.detail ?? '';
+}
+
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-supervisor-'));
 const filesRoot = path.join(scratch, 'files');
 fs.mkdirSync(filesRoot, { recursive: true });
@@ -207,7 +223,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'disabled', 'enabled 非 true 时必须返回 disabled');
   assert.equal(supervisor.workers.has(caseId), false, 'disabled 短路不应该创建 worker 记录');
-  console.log('  [1/23] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
+  console.log('  [1/24] enabled=false 短路：ok（未触碰 credential/cwd/spawn）');
 }
 
 // ---- 场景 2：enabled=true 但案件夹越出 ANJIAN_FILES_ROOT（不存在/未对应）----
@@ -231,7 +247,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'case_folder_missing');
   assert.equal(supervisor.workers.has(caseId) === false || supervisor.workers.get(caseId)?.status === 'error', true);
-  console.log('  [2/23] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [2/24] 案件夹不存在：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // ---- 场景 3：案件夹是 symlink（越权手法之一）----
@@ -255,7 +271,7 @@ fs.mkdirSync(filesRoot, { recursive: true });
   const result = await supervisor.start(caseId);
   assert.equal(result.status, 'error');
   assert.equal(result.error, 'cwd_invalid');
-  console.log('  [3/23] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
+  console.log('  [3/24] 案件夹是 symlink：ok（cwd 校验拒绝，未 spawn）');
 }
 
 // 场景 4-11 共用：起一个用 FakeChild 顶替真实 DSH 子进程的 worker。
@@ -326,7 +342,7 @@ async function startFakeWorker(opts) {
   assert.equal(becameNotLive, true, '超时后 worker 必须离开 ready/running（被终止）');
   const wasKilledOrShutdown = await waitUntil(() => child.killed || child.exitCode !== null);
   assert.equal(wasKilledOrShutdown, true, '超时后必须真正终止子进程（kill 或 shutdown→exit），不能只是 status 回 ready');
-  console.log('  [4/23] turn 超时：ok（真正终止了 worker，不是只改 status）');
+  console.log('  [4/24] turn 超时：ok（真正终止了 worker，不是只改 status）');
 }
 
 // ---- 场景 5：首个 turn 的 MCP 门禁失败不能被同一 worker 的下一个 turn 绕过 ----
@@ -350,7 +366,7 @@ async function startFakeWorker(opts) {
   // firstTurnChecked=true"的免检资格——再 prompt 只会因为 worker 不在跑而被拒。
   assert.equal(worker.firstTurnChecked, false, 'firstTurnChecked 不应该在失败时被置 true');
   await assert.rejects(supervisor.prompt(caseId, '第二个 turn 想蹭免检'), /worker is not running/);
-  console.log('  [5/23] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
+  console.log('  [5/24] 首个 turn MCP 门禁失败：ok（未被置位免检，worker 已终止）');
 }
 
 // ---- 场景 6：跨 session 的反向请求必须原地拒绝，不进 pendingInteractions ----
@@ -389,7 +405,7 @@ async function startFakeWorker(opts) {
   // 自检脚本进程退出，它 start() 时拷出的那份 0700 临时 skill 目录也就永远
   // 不会被 _finalizeWorker 清理，每跑一次自检就永久残留一个。
   await supervisor.stop(caseId, 'test cleanup: 场景 6 收尾');
-  console.log('  [6/23] 跨 session 反向请求：ok（原地拒绝，未入表）');
+  console.log('  [6/24] 跨 session 反向请求：ok（原地拒绝，未入表）');
 }
 
 // ---- 场景 7：listPendingInteractions() 必须脱敏，不能原样吐出 toolName ----
@@ -420,7 +436,7 @@ async function startFakeWorker(opts) {
   assert.equal(pending[0].toolName.includes(FAKE_KEY), false, 'listPendingInteractions 不能原样吐出 key 值');
   assert.equal(pending[0].toolName.includes('[REDACTED]'), true, 'toolName 必须被 redact 过');
   await supervisor.stop(caseId, 'test cleanup');
-  console.log('  [7/23] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
+  console.log('  [7/24] listPendingInteractions 脱敏：ok（未泄漏 key 值）');
 }
 
 // ---- 场景 7b：publicStatus() 必须一并投影 pendingInteractions（含题面文字），
@@ -477,7 +493,7 @@ async function startFakeWorker(opts) {
   assert.equal(liveEvent.data.questions[0].question.includes(FAKE_KEY), false, '实时广播里的题面文字同样必须脱敏');
 
   await supervisor.stop(caseId, 'test cleanup: 场景 7b 收尾');
-  console.log('  [7b/23] publicStatus() 投影 pendingInteractions + interaction/pending 携带题面：ok（抽屉可以只靠 SSE 渲染问题表单）');
+  console.log('  [7b/24] publicStatus() 投影 pendingInteractions + interaction/pending 携带题面：ok（抽屉可以只靠 SSE 渲染问题表单）');
 }
 
 // ---- 场景 8：session/preflight 的返回值必须被宿主逐字段核验 ----
@@ -502,7 +518,7 @@ async function startFakeWorker(opts) {
   assert.match(status.error || '', /startup_failed/, 'error 字段必须体现是启动序列失败');
   const childKilled = await waitUntil(() => worker.child.killed || worker.child.exitCode !== null);
   assert.equal(childKilled, true, 'preflight 门禁失败后必须终止子进程，不能泄漏');
-  console.log('  [8/23] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
+  console.log('  [8/24] session/preflight 宿主侧核验：ok（不完整的 tools/skills 快照被拒绝，未放行到 ready）');
 }
 
 // ---- 场景 9：turn 失败必须立即离开 LIVE 状态，不给已排队的下一个 turn 留 ----
@@ -559,7 +575,7 @@ async function startFakeWorker(opts) {
   const outcome3 = await turn3Settled;
   assert.equal(outcome3.ok, false, 'turn3 不能被静默 resolve——worker 必须已经离开 LIVE 状态');
   assert.equal(promptCount, 2, 'turn3 不应该真的发出 session/prompt（worker 应在排队时已判定不再存活）');
-  console.log('  [9/23] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
+  console.log('  [9/24] turn 失败立即离开 LIVE 状态：ok（排队的下一个 turn 未被抢跑放行）');
 }
 
 // ---- 场景 10：turn 失败瞬间必须清空 pendingInteractions，approval 不能在 ----
@@ -607,7 +623,7 @@ async function startFakeWorker(opts) {
   const result = supervisor.resolveApproval(caseId, interactionId, 'allowed-once');
   assert.equal(result.ok, false, 'turn 判失败后必须立即 fail-closed，approval 不能再被放行');
   assert.deepEqual(supervisor.listPendingInteractions(caseId), [], 'pendingInteractions 必须已经清空');
-  console.log('  [10/23] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
+  console.log('  [10/24] turn 失败瞬间清空 pendingInteractions：ok（shutdown 往返窗口内 approval 仍 fail-closed）');
 }
 
 // ---- 场景 11：supervisor 必须真的接线 session-registry 的 bind/unbind ----
@@ -624,7 +640,7 @@ async function startFakeWorker(opts) {
   assert.equal(caseIdForSession(worker.sessionId), caseId, 'start() 之后必须能通过 session-registry 反查到绑定的 caseId');
   await supervisor.stop(caseId, 'test cleanup: 场景 11 收尾');
   assert.equal(caseIdForSession(worker.sessionId), null, 'worker 终态收尾之后 session-registry 里的绑定必须被注销');
-  console.log('  [11/23] supervisor 接线 session-registry：ok（start 绑定、终态收尾注销）');
+  console.log('  [11/24] supervisor 接线 session-registry：ok（start 绑定、终态收尾注销）');
 }
 
 // ---- 场景 12：onEvent() 与 worker 生命周期解耦（登记在 supervisor 层，不
@@ -686,7 +702,7 @@ async function startFakeWorker(opts) {
 
   unsubscribe();
   await supervisor.stop(caseId, 'test cleanup: 场景 12 收尾');
-  console.log('  [12/23] onEvent() 与 worker 生命周期解耦：ok（提前订阅 + 跨重启订阅均生效）');
+  console.log('  [12/24] onEvent() 与 worker 生命周期解耦：ok（提前订阅 + 跨重启订阅均生效）');
 }
 
 // ---- 场景 13：setInternalBaseURL() 生效于新 spawn；forceKillAll() 兜底强杀 ----
@@ -740,7 +756,7 @@ async function startFakeWorker(opts) {
   const killed = await waitUntil(() => child.exitCode !== null);
   assert.equal(killed, true, 'forceKillAll() 之后子进程必须真的退出');
   assert.equal(child.lastKillSignal, 'SIGKILL', 'forceKillAll() 必须发送 SIGKILL，不是走 graceful shutdown 往返');
-  console.log('  [13/23] setInternalBaseURL()/forceKillAll()：ok（新 spawn 用纠正后的 base URL；兜底强杀真的杀）');
+  console.log('  [13/24] setInternalBaseURL()/forceKillAll()：ok（新 spawn 用纠正后的 base URL；兜底强杀真的杀）');
 }
 
 // ---- 场景 14：首 turn 中途出现 reason:'change' 的 request/header 不能覆盖 ----
@@ -784,7 +800,7 @@ async function startFakeWorker(opts) {
   const outcome = await settle(supervisor.prompt(caseId, '首 turn 中途出现 change header'));
   assert.equal(outcome.ok, true, '首 turn 中途追加的 change header 不应该覆盖 initial 快照、误判门禁 4 失败');
   await supervisor.stop(caseId, 'test cleanup: 场景 14 收尾');
-  console.log('  [14/23] request/header change 不覆盖 initial 快照：ok（门禁 4 仍按 initial 判定）');
+  console.log('  [14/24] request/header change 不覆盖 initial 快照：ok（门禁 4 仍按 initial 判定）');
 }
 
 // ---- 场景 15：子进程 stdio 管道故障不能崩宿主 ----
@@ -812,7 +828,7 @@ async function startFakeWorker(opts) {
   );
   const stdinTerminal = await waitUntil(() => supervisorStdin.status(caseIdStdin).status === 'crashed');
   assert.equal(stdinTerminal, true, 'stdin 故障之后 worker 必须被真正收尾成 crashed');
-  console.log('  [15/23] stdio 管道故障不崩宿主：ok（stderr/stdin 的 error 事件均被接住并落终态）');
+  console.log('  [15/24] stdio 管道故障不崩宿主：ok（stderr/stdin 的 error 事件均被接住并落终态）');
 }
 
 // ---- 场景 16：redactDeep 的数组元素数上限 ----
@@ -840,7 +856,7 @@ async function startFakeWorker(opts) {
   const redactedBytes = Buffer.byteLength(JSON.stringify(redacted), 'utf8');
   assert.ok(redactedBytes < originalBytes / 10, `折叠后的字节数（${redactedBytes}）应该远小于原始输入（${originalBytes}），不能只做了逐叶子限长`);
   assert.ok(redacted.items.length < originalItemCount, '保留的元素个数必须明显少于原始数组长度');
-  console.log('  [16/23] redactDeep 数组元素数上限：ok（字节预算独立生效的证明见场景 16b）');
+  console.log('  [16/24] redactDeep 数组元素数上限：ok（字节预算独立生效的证明见场景 16b）');
   await supervisor.stop(caseId, 'test cleanup: 场景 16 收尾');
 }
 
@@ -887,7 +903,7 @@ async function startFakeWorker(opts) {
   const rowKeys = Object.keys(redacted).filter((k) => k.startsWith('row'));
   assert.ok(rowKeys.length < keyCount, `字节预算必须提前打断对象的 key 遍历：保留的 row* key 数（${rowKeys.length}）应该明显少于原始 keyCount（${keyCount}），否则说明数字叶子确实零消耗预算、条目数上限单独就够不着这个结构`);
   assert.ok(Object.prototype.hasOwnProperty.call(redacted, '[truncated]'), '必须能找到对象层面的 "[truncated]" 汇总 key，证明是字节预算中途打断了 key 遍历（而不是条目数上限——keyCount 恰好等于上限，条目数上限本身不会产生这条汇总 key）');
-  console.log('  [16b/23] redactDeep 字节预算独立于条目数上限：ok（宽而浅的数字叶子结构也会被字节预算拦下）');
+  console.log('  [16b/24] redactDeep 字节预算独立于条目数上限：ok（宽而浅的数字叶子结构也会被字节预算拦下）');
   await supervisor.stop(caseId, 'test cleanup: 场景 16b 收尾');
 }
 
@@ -914,7 +930,7 @@ async function startFakeWorker(opts) {
   assert.ok(Object.keys(redacted).some((k) => k === '[REDACTED]'), '顶层"key 本身等于 secret"的那一条，脱敏后的 key 必须是 [REDACTED]');
   assert.ok(Object.keys(redacted.nested).some((k) => k.includes('[REDACTED]')), '嵌套对象里"key 包含 secret 子串"的那一条，脱敏后的 key 必须替换掉 secret 子串');
   assert.equal(redacted.nested.note, '[REDACTED]', 'value 侧原有的脱敏行为不能被这次修复破坏');
-  console.log('  [16c/23] redactDeep 脱敏对象 key 名：ok（key 侧不再是绕过脱敏的旁路）');
+  console.log('  [16c/24] redactDeep 脱敏对象 key 名：ok（key 侧不再是绕过脱敏的旁路）');
   await supervisor.stop(caseId, 'test cleanup: 场景 16c 收尾');
 }
 
@@ -963,7 +979,7 @@ async function startFakeWorker(opts) {
     redactedBytes < budgetBytes * 2,
     `深度超限占位符计费后，折叠输出（${redactedBytes} 字节）必须被限制在预算量级附近（< ${budgetBytes * 2} 字节），不能重演修复前 472,390 字节那种指数级放大`,
   );
-  console.log(`  [16d/23] redactDeep 深度超限/预算耗尽占位符计入预算：ok（占位符 ${maxDepthMarkerCount}/${totalLeaves} 个叶子后即被预算拦下，${originalBytes}→${redactedBytes} 字节）`);
+  console.log(`  [16d/24] redactDeep 深度超限/预算耗尽占位符计入预算：ok（占位符 ${maxDepthMarkerCount}/${totalLeaves} 个叶子后即被预算拦下，${originalBytes}→${redactedBytes} 字节）`);
   await supervisor.stop(caseId, 'test cleanup: 场景 16d 收尾');
 }
 
@@ -1005,7 +1021,7 @@ async function startFakeWorker(opts) {
   const serialized = JSON.stringify(redacted);
   const truncatedMarkerCount = (serialized.match(/\[truncated \d+ items\]/g) || []).length;
   assert.ok(truncatedMarkerCount > 0, '预算必须至少在某一层数组触发一次 "[truncated N items]" 截断标记，证明是字节预算（而非条目数上限）拦下了这棵树——条目数上限本身在这个形状里从未超限');
-  console.log(`  [16e/23] redactDeep 空容器叶子计入字节预算：ok（8,000,000 个空数组叶子被拦到 ${redactedBytes} 字节，截断标记 ${truncatedMarkerCount} 处）`);
+  console.log(`  [16e/24] redactDeep 空容器叶子计入字节预算：ok（8,000,000 个空数组叶子被拦到 ${redactedBytes} 字节，截断标记 ${truncatedMarkerCount} 处）`);
   await supervisor.stop(caseId, 'test cleanup: 场景 16e 收尾');
 }
 
@@ -1083,7 +1099,7 @@ async function startFakeWorker(opts) {
   // handlers（shutdown 依然是那个故意 unref 的 300ms 延迟应答），没有保活
   // 轮询的话这次 await 也会真的永远挂起。
   await settle(supervisor.stop(caseId, 'test cleanup: 场景 17 收尾'));
-  console.log('  [17/23] "stopping" 态阻止重复 spawn：ok（start() 等在飞 stop() 落定才重新 spawn）');
+  console.log('  [17/24] "stopping" 态阻止重复 spawn：ok（start() 等在飞 stop() 落定才重新 spawn）');
 }
 
 // ---- 场景 17b：'stopping' 窗口内并发多次 start() 必须只重新 spawn 一次 ----
@@ -1179,7 +1195,7 @@ async function startFakeWorker(opts) {
   assert.equal(status3.status, 'ready');
 
   await settle(supervisor.stop(caseId, 'test cleanup: 场景 17b 收尾'));
-  console.log('  [17b/23] "stopping" 窗口内并发 start() 防重复 spawn：ok（互斥表让两次并发调用只跑一次真正的启动序列，无孤儿 worker）');
+  console.log('  [17b/24] "stopping" 窗口内并发 start() 防重复 spawn：ok（互斥表让两次并发调用只跑一次真正的启动序列，无孤儿 worker）');
 }
 
 // ---- 场景 18：_handleFatal 必须真正 kill + 落终态，即使子进程卡死不退出 ----
@@ -1199,7 +1215,7 @@ async function startFakeWorker(opts) {
   assert.equal(becameCrashed, true, '即使子进程卡死不退出，_handleFatal 也必须真正落 crashed 终态');
   assert.equal(child.killed, true, '仍存活的子进程必须先被尝试 SIGTERM');
   assert.equal(worker.skillsRootTmp, null, '终态落定后必须已经清理 0700 临时 skill 目录');
-  console.log('  [18/23] _handleFatal 收尾兜底：ok（卡死不退出的子进程也会被落 crashed 且清理临时目录）');
+  console.log('  [18/24] _handleFatal 收尾兜底：ok（卡死不退出的子进程也会被落 crashed 且清理临时目录）');
 }
 
 // ---- 场景 19：worker.error 必须兜底 redact，不能有任何路径绕过 ----
@@ -1215,7 +1231,7 @@ async function startFakeWorker(opts) {
   const status = supervisor.status(caseId);
   assert.equal(status.error.includes(FAKE_KEY), false, 'status().error 不能包含 key 明文');
   assert.equal(status.error.includes('[REDACTED]'), true, 'status().error 必须体现已经被 redact 过');
-  console.log('  [19/23] worker.error 兜底 redact：ok（未泄漏 key 值）');
+  console.log('  [19/24] worker.error 兜底 redact：ok（未泄漏 key 值）');
 }
 
 // ---- 场景 20：重复 start() 必须返回实时快照，不是冻结的旧 ready 快照 ----
@@ -1240,7 +1256,7 @@ async function startFakeWorker(opts) {
   const reopened = await supervisor.start(caseId);
   assert.equal(reopened.status, 'running', '重复 start() 必须反映当下真实状态，不能返回启动刚成功那一刻冻结的 ready 快照');
   await supervisor.stop(caseId, 'test cleanup: 场景 20 收尾');
-  console.log('  [20/23] start() 重复调用返回实时快照：ok（不是冻结的旧 ready 快照）');
+  console.log('  [20/24] start() 重复调用返回实时快照：ok（不是冻结的旧 ready 快照）');
 }
 
 // ---- 场景 21：_expirePendingInteractions 必须真正应答子进程，不能只清表 ----
@@ -1299,7 +1315,7 @@ async function startFakeWorker(opts) {
   // 定，脚本进程先退出了"这个时序竞态）。join 同一个在飞 stop()、真正等它
   // 落定，一次性堵死这条竞态。
   await settle(supervisor.stop(caseId, 'test cleanup: 场景 21 收尾'));
-  console.log('  [21/23] _expirePendingInteractions 真正应答子进程：ok（approval unavailable / question error）');
+  console.log('  [21/24] _expirePendingInteractions 真正应答子进程：ok（approval unavailable / question error）');
 }
 
 // ---- 场景 22：assets/node_modules 由 supervisor 运行时确保 ----
@@ -1381,7 +1397,7 @@ async function startFakeWorker(opts) {
   } finally {
     restoreAssetsLink();
   }
-  console.log('  [22/23] assets/node_modules 运行时确保：ok（缺失自动补链接；意外目录拒绝覆盖）');
+  console.log('  [22/24] assets/node_modules 运行时确保：ok（缺失自动补链接；意外目录拒绝覆盖）');
 }
 
 // ---- 场景 23：wire 侧事件 type 撞上宿主保留名必须被重写成 wire/<type> ----
@@ -1480,7 +1496,136 @@ async function startFakeWorker(opts) {
 
   unsubscribe();
   await supervisor.stop(caseId, 'test cleanup: 场景 23 收尾');
-  console.log('  [23/23] wire 事件 type 撞名隔离：ok（保留名被重写成 wire/<type>，含 status，origin 区分 supervisor/wire）');
+  console.log('  [23/24] wire 事件 type 撞名隔离：ok（保留名被重写成 wire/<type>，含 status，origin 区分 supervisor/wire）');
+}
+
+// ---- 场景 24：打包模式下 ensureAssetsNodeModulesLink() 必须只读校验、绝不
+// 写入已签名资源树 ----
+// 场景 22 只覆盖了 dev 模式分支（AGENT_DIR_IS_PACKAGED === false：缺失自动
+// 补链接、意外目录拒绝覆盖）。AGENT_DIR_IS_PACKAGED 是模块顶层根据
+// process.resourcesPath 在 import 时算出来的一次性常量（见 supervisor.js 的
+// resolveAgentSubdir()/ASSETS_DIR），不是运行时可翻转的开关——tools/
+// check.sh 的其余 36 步全部跑在 process.resourcesPath 为 undefined 的裸
+// node 进程里，从未真正练到过打包分支；这条分支此前只在真实 electron-builder
+// 打包 + 手工冒烟里验证过（见 docs/CHANGES.md 的「打包完整性坑」记录），没有
+// 任何一步 `npm run check` 会在它出现回归时报错。
+//
+// 这里用"设置 process.resourcesPath 后用带独立 query 的 dynamic import 重新
+// 加载 supervisor.js"来在同一个测试进程里真正实例化打包分支（query 不同→
+// Node ESM 视为独立模块实例→顶层的 resolveAgentSubdir()/ASSETS_DIR/
+// AGENT_DIR_IS_PACKAGED 会用当时的 process.resourcesPath 重新计算一次）；
+// src/db.js、src/agent/session-registry.js 等无 query 的深层依赖仍解析到与
+// 本文件顶部相同的单例，不会产生第二份 db 连接。三个子场景分别对应
+// ensureAssetsNodeModulesLink() 打包分支的三条路径：
+//   A. 链接缺失 → 必须报错，且不得在 assets 目录下创建任何东西；
+//   B. 链接存在但指向错误目标 → 必须报错，且不得原地纠正；
+//   C. 链接存在且指向正确，但 assets 目录本身只读（chmod 0555）→ 必须放行
+//      （校验通过、流程继续到 spawnFn），证明这条路径全程没有尝试任何写
+//      操作——如果代码曾经手滑改回"运行时自愈"，对一个只读目录写入会直接
+//      产生 EACCES，而不是这里断言的 spawn_failed 标记错误。
+{
+  const packagedRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-packaged-'));
+  const agentRuntimeDir = path.join(packagedRoot, 'agent-runtime');
+  const assetsDir = path.join(agentRuntimeDir, 'assets');
+  const runtimeNodeModulesDir = path.join(agentRuntimeDir, 'runtime', 'node_modules');
+  const assetsLinkPath = path.join(assetsDir, 'node_modules');
+  fs.mkdirSync(assetsDir, { recursive: true });
+  fs.mkdirSync(runtimeNodeModulesDir, { recursive: true });
+  // verifyTrustedSkillsRoot()（start() 里排在 ensureAssetsNodeModulesLink() 之
+  // 前的步骤 3）要求 assets/skills/<REQUIRED_SKILL_NAME>/SKILL.md 真实存在，
+  // 不然 start() 会先因 skills_root_invalid 短路，永远到不了本场景真正要测
+  // 的只读校验分支。
+  const skillDir = path.join(assetsDir, 'skills', REQUIRED_SKILL_NAME);
+  fs.mkdirSync(skillDir, { recursive: true });
+  fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# 自检占位 skill\n');
+
+  const originalResourcesPath = process.resourcesPath;
+  const spawnReachedMarker = new Error('scenario-24-spawn-reached-marker');
+  const spawnFnReached = () => { throw spawnReachedMarker; };
+
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+
+  try {
+    // 子场景 A：链接缺失。
+    process.resourcesPath = packagedRoot;
+    const { AgentSupervisor: AgentSupervisorPackagedA } = await import(
+      new URL('../src/agent/supervisor.js?scenario24-packaged-a', import.meta.url)
+    );
+    const caseNameA = `自检案-打包只读-链接缺失-${Math.random().toString(36).slice(2)}`;
+    const caseIdA = insertCase(caseNameA);
+    fs.mkdirSync(path.join(filesRoot, caseNameA));
+    const supervisorA = new AgentSupervisorPackagedA({ filesRoot, spawnFn: neverSpawn() });
+    const statusA = await supervisorA.start(caseIdA);
+    assert.equal(statusA.status, 'error', '打包模式下链接缺失必须拒绝启动');
+    // status() 对外只吐字面量 'runtime_link_invalid'（不含具体原因，见
+    // start() 的 catch 分支），详细诊断只落进 audit_log.detail——直接查表，
+    // 确认这条错误确实来自"链接缺失"而不是其它同样返回这个字面量的路径。
+    assert.equal(statusA.error, 'runtime_link_invalid', `期望 runtime_link_invalid，实际 "${statusA.error}"`);
+    assert.match(latestAuditDetail(caseIdA), /缺少 agent-runtime\/assets\/node_modules 链接/, '审计详情必须指向构建期钩子而不是尝试运行时自愈');
+    assert.equal(fs.existsSync(assetsLinkPath), false, '打包分支绝不能在 assets 目录下补建任何链接——缺失就是缺失，留给构建期钩子处理');
+
+    // 子场景 B：链接存在但指向错误目标。
+    const wrongTarget = path.join(packagedRoot, 'not-the-runtime-node-modules');
+    fs.mkdirSync(wrongTarget, { recursive: true });
+    fs.symlinkSync(wrongTarget, assetsLinkPath, 'dir');
+    const { AgentSupervisor: AgentSupervisorPackagedB } = await import(
+      new URL('../src/agent/supervisor.js?scenario24-packaged-b', import.meta.url)
+    );
+    const caseNameB = `自检案-打包只读-链接指错-${Math.random().toString(36).slice(2)}`;
+    const caseIdB = insertCase(caseNameB);
+    fs.mkdirSync(path.join(filesRoot, caseNameB));
+    const supervisorB = new AgentSupervisorPackagedB({ filesRoot, spawnFn: neverSpawn() });
+    const statusB = await supervisorB.start(caseIdB);
+    assert.equal(statusB.status, 'error', '打包模式下链接指向错误目标必须拒绝启动');
+    assert.equal(statusB.error, 'runtime_link_invalid', `期望 runtime_link_invalid，实际 "${statusB.error}"`);
+    // audit_log.detail 在落库前会被截到 200 字符（见 start() 的 catch 分支），
+    // 这条分支的诊断信息前缀带着打包临时目录的绝对路径，"与期望的...不一致"
+    // 那半句常常正好被截掉——只断言在截断前就已经出现的"指向"二字，既足以
+    // 区分"链接指向错误"与场景 A"链接缺失"（后者的文案是"缺少...链接"，
+    // 不含"指向"），又不依赖临时目录路径长度的偶然性。
+    assert.match(latestAuditDetail(caseIdB), /指向/, '审计详情必须点明"指向"（证明确实走的是"链接指向错误目标"这条分支，不是碰巧同一个字面量的另一条路径）');
+    assert.equal(
+      fs.readlinkSync(assetsLinkPath), wrongTarget,
+      '打包分支绝不能原地纠正一条指错的链接——只读校验发现问题后应该报错，不是静默修复'
+    );
+
+    // 子场景 C：链接存在且指向正确，assets 目录本身只读（chmod 0555）。
+    fs.rmSync(assetsLinkPath, { force: true });
+    fs.symlinkSync(runtimeNodeModulesDir, assetsLinkPath, 'dir');
+    fs.chmodSync(assetsDir, 0o555);
+    const { AgentSupervisor: AgentSupervisorPackagedC } = await import(
+      new URL('../src/agent/supervisor.js?scenario24-packaged-c', import.meta.url)
+    );
+    const caseNameC = `自检案-打包只读-校验通过-${Math.random().toString(36).slice(2)}`;
+    const caseIdC = insertCase(caseNameC);
+    fs.mkdirSync(path.join(filesRoot, caseNameC));
+    const supervisorC = new AgentSupervisorPackagedC({ filesRoot, spawnFn: spawnFnReached });
+    const statusC = await supervisorC.start(caseIdC);
+    // 校验通过后流程继续到 spawnFn（本场景故意让它抛一个标记错误，只是为了
+    // 证明控制流真的走到了这一步）——如果 ensureAssetsNodeModulesLink() 曾经
+    // 手滑对只读目录尝试写入，这里会得到一个 EACCES 相关的 runtime_link_invalid
+    // 错误，而不是 spawn_failed 标记。
+    assert.equal(statusC.status, 'error', '本子场景用抛错的 spawnFn 让流程停在 spawn 之前，不代表校验失败');
+    assert.equal(
+      statusC.error, `spawn_failed:${spawnReachedMarker.message}`,
+      `校验必须放行到 spawnFn（本身只读、不写入只读的 assets 目录）——实际错误 "${statusC.error}"`
+    );
+  } finally {
+    fs.chmodSync(assetsDir, 0o755);
+    // originalResourcesPath 在普通 node 进程里通常是 undefined（属性本来就
+    // 不存在）——用 delete 还原成"属性不存在"，而不是"属性存在但值为
+    // undefined"，避免给后续任何代码留下一个本不该出现的 own property。
+    if (originalResourcesPath === undefined) delete process.resourcesPath;
+    else process.resourcesPath = originalResourcesPath;
+    fs.rmSync(packagedRoot, { recursive: true, force: true });
+  }
+  console.log('  [24/24] 打包模式 assets/node_modules 只读校验：ok（缺失/指错均拒绝且不写入，只读目录下校验通过仍能放行到 spawn）');
 }
 
 clearAgentSettings();
