@@ -92,6 +92,18 @@ const profileJs = fs.readFileSync(path.join(ROOT, 'public/js/profile.js'), 'utf8
   assert.match(profileJs, /body:\s*\{\s*agent_api_key:\s*''\s*\}/, '清除按钮必须显式 PUT agent_api_key:\'\'（后端既有的清空信号，不是新协议）');
   assert.match(profileJs, /agentApiKeyClear\.hidden = keySnapshot\.source !== 'stored'/, '清除按钮只应该在 source===\'stored\' 时展示——env 态输入框本身禁用、none 态没有可清除的东西');
   say('profile.js：provider 联动 / key 三态 / 拉取模型请求 / 保存时留空不覆盖 / 清除已保存 key 按钮，五条逻辑均命中');
+
+  // 【2026-08-23 三次复审新增】POST /api/agent/models 收紧到"openai-completions
+  // 一律要求显式 apiKey"之后（c40b042），前端必须跟着同步：(1) env 来源 +
+  // openai-completions 时输入框不能再被无差别禁用；(2) 输入框为空且 provider
+  // 不是 deepseek-official 时拉取按钮必须置灰 + 就地提示，而不是先发一次注定
+  // 400 的请求。以下静态断言锚定这两条逻辑确实存在，不只是口头修复。
+  assert.match(profileJs, /envLocksInput\s*=\s*keySnapshot\.source === 'env'\s*&&\s*provider === 'deepseek-official'/, 'env 态禁用输入框必须收窄到只对 deepseek-official 生效——openai-completions 下该 provider 的用户需要一次性输入口子');
+  assert.match(profileJs, /function updateFetchGate/, '必须有一个统一的「拉取模型」按钮置灰/提示同步函数');
+  assert.match(profileJs, /needsExplicitKey\s*=\s*provider !== 'deepseek-official'/, '必须识别"该 provider 需要显式 key"这条条件（与后端 api_key_required_for_custom_provider 同源）');
+  assert.match(profileJs, /agentFetchBtn\.disabled\s*=\s*blocked/, '条件成立时必须真的把「拉取可用模型」按钮置灰,不能只是弹一次性提示');
+  assert.match(profileJs, /agentApiKey\.addEventListener\('input', updateFetchGate\)/, '输入框内容变化必须实时重算按钮可用性,不能只在页面加载/保存时算一次');
+  say('profile.js：openai-completions 下 env 来源不再无差别禁用输入框 + 拉取按钮按 provider/输入实时置灰，两条可用性回归修复均命中');
 }
 
 // ---- c：起真实 server.js，验证 settings 掩码往返在真实进程里成立 ----

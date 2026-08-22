@@ -156,7 +156,13 @@ if (agentEnabled && agentFields && agentSave) {
     agentBaseUrl.readOnly = isOfficial;
     agentBaseUrlNote.hidden = !isOfficial;
   }
-  agentProvider.addEventListener('change', () => applyProviderUI(agentProvider.value));
+  agentProvider.addEventListener('change', () => {
+    applyProviderUI(agentProvider.value);
+    // 【2026-08-23 三次复审修复】切换 provider 必须重新算一遍 key 输入框
+    // 的禁用态——见下面 applyKeyUI() 里 envLocksInput 的注释：这条规则现在
+    // 跟 provider 有关，不能只在设置页首次加载时算一次。
+    applyKeyUI();
+  });
 
   // API Key 输入框的三种展示态（设计 2/3，keySource 三取值 env/stored/none，
   // 见 resolveAgentApiKey()）：env 时界面填写不生效、直接禁用输入框；stored
@@ -172,10 +178,29 @@ if (agentEnabled && agentFields && agentSave) {
     // 的效果（即使底层可能还有一份被 env 遮住的历史存量密文，那是另一个更
     // 罕见的边界，这个按钮不覆盖）；none 态没有可清除的东西。
     agentApiKeyClear.hidden = keySnapshot.source !== 'stored';
-    if (keySnapshot.source === 'env') {
+    const provider = agentProvider.value;
+    // 【2026-08-23 三次复审修复·可用性回归】此前不论 provider 是什么，
+    // source==='env' 一律禁用输入框——但 POST /api/agent/models 对
+    // openai-completions 从不提供"留空回落到 env/已存 key"这条路径（baseURL
+    // 客户端可写，红线见 src/routes/agent.js 顶部注释），只有 deepseek-
+    // official 才允许省略 apiKey。也就是说 openai-completions + env 来源
+    // 这个组合下，如果继续禁用输入框，用户在这个 provider 下就永远没有任何
+    // 入口能填出"仅用于本次测试拉取、不保证持久化"的一次性 key——「拉取
+    // 可用模型」这个按钮对这类用户 100% 是死胡同（复审探针实测复现）。所以
+        // 禁用输入框这条规则现在只在 deepseek-official 下才成立（它本来就
+    // 允许留空回落，禁用输入框只是如实说明"这里填了也不会覆盖运行时生效的
+    // 那份 env key"）。
+    const envLocksInput = keySnapshot.source === 'env' && provider === 'deepseek-official';
+    if (envLocksInput) {
       agentApiKey.disabled = true;
       agentApiKey.placeholder = '由环境变量提供';
       agentApiKeyNote.textContent = '当前由环境变量提供，界面填写不会覆盖。';
+    } else if (keySnapshot.source === 'env') {
+      // openai-completions + env：输入框必须可用，如实说明"填了也不会覆盖
+      // 运行时生效的 env key，只用于这次拉取模型测试"。
+      agentApiKey.disabled = false;
+      agentApiKey.placeholder = '仅用于本次拉取模型测试，不影响运行时生效的环境变量 key';
+      agentApiKeyNote.textContent = '当前运行时由环境变量提供 key；该供应商拉取模型必须显式填写一次 key（不会保存、也不会覆盖环境变量，仅用于本次测试）。';
     } else if (keySnapshot.configured) {
       agentApiKey.disabled = false;
       agentApiKey.placeholder = `已保存（末四位 ${keySnapshot.masked || ''}）`;
@@ -185,6 +210,7 @@ if (agentEnabled && agentFields && agentSave) {
       agentApiKey.placeholder = 'sk-…';
       agentApiKeyNote.textContent = '尚未配置。保存在本机数据库并加密；能拿到数据目录的人可以解出来。';
     }
+    updateFetchGate();
   }
 
   // 「清除已保存的 key」（2026-08-23 复审新增）：此前界面只有「留空提交表示
@@ -247,16 +273,58 @@ if (agentEnabled && agentFields && agentSave) {
     return agentModelSelectWrap.hidden ? agentModel.value.trim() : agentModelSelect.value.trim();
   }
 
+  // 【2026-08-23 三次复审新增】POST /api/agent/models 对 openai-completions
+  // 一律要求请求体显式带 apiKey（不提供任何"留空回落"，见 src/routes/agent.js
+  // 顶部注释与错误码 api_key_required_for_custom_provider）；只有
+  // deepseek-official 才允许留空回落到已保存/环境变量的 key。此前前端没有
+  // 跟着这条红线收紧同步调整,导致"已保存 key/env 来源 key + openai-
+  // completions"这两条最常见的路径点「拉取可用模型」必然先打一次注定 400
+  // 的请求（复审探针实测复现）。这里在请求发出之前就地拦截、把按钮置灰,
+  // 不再依赖等服务端拒绝之后才提示。
+  //
+  // gateHintShown 用来区分"当前显示的是本函数自己写的这条门禁提示"还是
+  // "一次真实拉取的成功/失败结果"——只有前者允许在条件解除时被本函数清掉,
+  // 避免"用户刚看到拉取成功的提示,切换一下 provider 又切回来,提示却被
+  // 无条件抹掉"这种误伤。
+  let gateHintShown = false;
+  function updateFetchGate() {
+    const provider = agentProvider.value;
+    const needsExplicitKey = provider !== 'deepseek-official';
+    const hasKeyInput = agentApiKey.value.trim().length > 0;
+    const blocked = needsExplicitKey && !hasKeyInput;
+    agentFetchBtn.disabled = blocked;
+    if (blocked) {
+      agentModelsStatus.hidden = false;
+      agentModelsStatus.classList.remove('is-error');
+      agentModelsStatus.textContent = '该供应商的 baseURL 可由界面随时修改，出于安全考虑拉取模型前必须先在上方填写一次 API Key（不会自动使用已保存/环境变量里的 key，也不会因为这次填写而覆盖它们，除非你另外点击保存）。';
+      gateHintShown = true;
+    } else if (gateHintShown) {
+      agentModelsStatus.hidden = true;
+      gateHintShown = false;
+    }
+  }
+  agentApiKey.addEventListener('input', updateFetchGate);
+
   agentFetchBtn.addEventListener('click', async () => {
+    const provider = agentProvider.value;
+    const keyInput = agentApiKey.value.trim();
+    if (provider !== 'deepseek-official' && !keyInput) {
+      // 双保险：正常情况下这里应该已经被 updateFetchGate() 置灰、点不到；
+      // 这一行只防御"按钮状态与实际输入不同步"的边界（例如浏览器自动填充
+      // 触发的变更没有派发 input 事件）。
+      updateFetchGate();
+      return;
+    }
     agentFetchBtn.disabled = true;
     agentModelsStatus.hidden = true;
     agentModelsStatus.classList.remove('is-error');
+    gateHintShown = false;
     try {
-      const body = { provider: agentProvider.value, baseURL: agentBaseUrl.value.trim() };
-      const keyInput = agentApiKey.value.trim();
-      // 已填了新 key 就带上；留空则不传，服务端按取值优先级链回落到
-      // 已保存/环境变量的 key（POST /api/agent/models 与 loadAgentConfig()
-      // 同源，见 src/routes/agent.js 顶部注释）。
+      const body = { provider, baseURL: agentBaseUrl.value.trim() };
+      // deepseek-official 下留空表示回落到已保存/环境变量的 key（与
+      // loadAgentConfig() 同源，见 src/routes/agent.js 顶部注释）；
+      // openai-completions 下上面的判断已经保证 keyInput 非空，这里两个
+      // provider 共用同一行逻辑即可。
       if (keyInput) body.apiKey = keyInput;
       const result = await api('/agent/models', { method: 'POST', body });
       const preferValue = currentModelValue();
@@ -271,7 +339,10 @@ if (agentEnabled && agentFields && agentSave) {
       agentModelsStatus.classList.add('is-error');
       agentModelsStatus.textContent = e.message || '拉取模型列表失败';
     } finally {
-      agentFetchBtn.disabled = false;
+      // 不是无条件 disabled = false——如果此时仍然满足"该 provider 需要
+      // 显式 key 但输入框恰好又是空的"（例如用户在请求进行中把刚才填的
+      // key 清空了），必须继续保持置灰，不能无条件解锁。
+      updateFetchGate();
     }
   });
 
