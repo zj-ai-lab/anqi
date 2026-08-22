@@ -43,6 +43,14 @@ class FakeSupervisor {
     // 完全不触碰 worker 状态，这个计数器让"没调用过 publicStatus()"成为一条
     // 可断言的事实，而不是靠"没看到 ready 帧"间接推断。
     this.publicStatusCalls = 0;
+    // 同一类证据，覆盖 start/cancel/interactions 三个端点：disabled 时路由层
+    // 必须在调用 supervisor 对应方法之前就短路返回 4xx，这几个计数器让"压根
+    // 没调用过 supervisor.start()/cancelTurn()/findInteractionOwner()"成为
+    // 可断言的事实，而不是靠"返回值恰好是 409"间接推断——万一路由层先调用
+    // 了 supervisor 方法、再根据其结果决定要不要覆盖成 409，这里也能拆穿。
+    this.startCalls = 0;
+    this.cancelCalls = 0;
+    this.findInteractionOwnerCalls = 0;
   }
   status() { return this.statusResult; }
   // 真实 supervisor 的安全投影(见 src/agent/supervisor.js publicStatus())：
@@ -63,6 +71,7 @@ class FakeSupervisor {
     return ['starting', 'ready', 'running'].includes((this.statusResult || {}).status);
   }
   async start() {
+    this.startCalls += 1;
     if (this.startThrows) throw this.startThrows;
     return this.startResult;
   }
@@ -70,7 +79,10 @@ class FakeSupervisor {
     this.promptCalls.push({ caseId, text });
     return { turnId: 1 };
   }
-  cancelTurn() { return this.cancelResult; }
+  cancelTurn() {
+    this.cancelCalls += 1;
+    return this.cancelResult;
+  }
   onEvent(caseId, listener) {
     if (!this.listeners.has(caseId)) this.listeners.set(caseId, new Set());
     this.listeners.get(caseId).add(listener);
@@ -79,7 +91,10 @@ class FakeSupervisor {
   emit(caseId, event) {
     for (const fn of this.listeners.get(caseId) || []) fn(event);
   }
-  findInteractionOwner() { return this.interactionOwner; }
+  findInteractionOwner() {
+    this.findInteractionOwnerCalls += 1;
+    return this.interactionOwner;
+  }
   resolveApproval(caseId, interactionId, outcome) {
     this.lastApproval = { caseId, interactionId, outcome };
     return this.approvalResult;
@@ -406,7 +421,61 @@ try {
     upsertSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
   }
 
-  console.log('agent HTTP 路由测试全部通过：状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅/enabled=false 短路');
+  // ---- disabled 时 start/prompt/cancel/interactions-answer 必须各自独立
+  //      fail-closed：明确的 4xx（agent_disabled），且压根不调用
+  //      supervisor 对应的方法——不是"调用了但被结果覆盖成 409" ----
+  // 编排方人工验收发现的运行时缺口：此前只有 GET /api/agent/status 与 SSE
+  // 首帧在 enabled=false 时会短路，start/prompt/cancel/answer 要么完全不查
+  // loadAgentConfig()（prompt/cancel/answer），要么只在 supervisor 内部间接
+  // 查、且命中既存 live worker 时那条检查还形同虚设（start）——一条已经受理
+  // 的 prompt 的审计时间戳因此能晚于关闭开关的 settings 更新时间戳，start
+  // 命中既存 worker 时甚至会返回 200/ready。这里对四个端点逐一验证：不仅
+  // HTTP 状态码是 409/agent_disabled，supervisor 侧对应的方法调用计数也必须
+  // 是 0——证明路由层是在调用 supervisor 之前就短路，不是调用之后再改写。
+  {
+    upsertSetting(AGENT_SETTINGS_KEYS.enabled, 'false');
+    supervisor.startCalls = 0;
+    supervisor.promptCalls = [];
+    supervisor.cancelCalls = 0;
+    supervisor.findInteractionOwnerCalls = 0;
+    // 让"如果路由层没查配置就会放行"这件事有可观测的差异：这几个字段都设
+    // 成"看起来一切正常"的值，如果 disabled 检查被绕过，下面的断言会因为
+    // 拿到 200/202 而不是 409 从而暴露出来。
+    supervisor.startResult = { status: 'ready', caseId };
+    supervisor.statusResult = { status: 'ready', caseId };
+    supervisor.cancelResult = true;
+    supervisor.interactionOwner = { caseId, record: { type: 'approval' } };
+    supervisor.approvalResult = { ok: true };
+
+    {
+      const { status, data } = await call('POST', `/api/cases/${caseId}/agent/start`);
+      assert.equal(status, 409, 'disabled 时 start 必须 409，不能因为命中既存 live worker 就返回 200');
+      assert.equal(data.code, 'agent_disabled');
+      assert.equal(supervisor.startCalls, 0, 'disabled 时路由层不应该调用 supervisor.start()');
+    }
+    {
+      const { status, data } = await call('POST', `/api/cases/${caseId}/agent/prompt`, { text: '设置已经被关掉，这句话不该被受理' });
+      assert.equal(status, 409, 'disabled 时 prompt 必须 409');
+      assert.equal(data.code, 'agent_disabled');
+      assert.equal(supervisor.promptCalls.length, 0, 'disabled 时路由层不应该调用 supervisor.prompt()，不能产生任何子进程写入');
+    }
+    {
+      const { status, data } = await call('POST', `/api/cases/${caseId}/agent/cancel`);
+      assert.equal(status, 409, 'disabled 时 cancel 必须 409');
+      assert.equal(data.code, 'agent_disabled');
+      assert.equal(supervisor.cancelCalls, 0, 'disabled 时路由层不应该调用 supervisor.cancelTurn()');
+    }
+    {
+      const { status, data } = await call('POST', '/api/agent/interactions/appr-disabled/answer', { outcome: 'allowed-once' });
+      assert.equal(status, 409, 'disabled 时 interactions/:id/answer 必须 409');
+      assert.equal(data.code, 'agent_disabled');
+      assert.equal(supervisor.findInteractionOwnerCalls, 0, 'disabled 时路由层不应该调用 supervisor.findInteractionOwner()，甚至不应该走到反查这一步');
+    }
+
+    upsertSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  }
+
+  console.log('agent HTTP 路由测试全部通过：状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅/enabled=false 短路 + start/prompt/cancel/answer 四端点 disabled fail-closed');
 } finally {
   server.close();
   fs.rmSync(scratch, { recursive: true, force: true });

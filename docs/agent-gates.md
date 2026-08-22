@@ -79,6 +79,47 @@
   DSH 子进程数量在关闭前后保持不变（仍只有另一案早先在 `enabled=true` 下启动的那一个，
   本案零 spawn），且该唯一存活子进程本身没有任何新增 TCP 连接。
   证据：`/private/tmp/.../scratchpad/wf-logs/gates/g2-enabled-false.log`。
+- ⚠️ **[结构缺口 → 已修复]（2026-08-22 复审轮，编排方人工验收发现，非模型驱动）**——
+  上面这条动态证据只验证了"**从未启动过** worker 的案件，关闭开关后 start() 拒绝"这一种
+  情形；没有覆盖"**worker 已经在跑，用户才把开关关掉**"这一种更常见的实际使用顺序。
+  编排方在验收里用真实 DSH 子进程复现了三处独立的运行时缺口：
+  1. 设置页把「启用 AI 助理」关掉并保存后，已经启动的 per-case worker **继续存活**——
+     实测子进程在关闭开关 **14 分钟后仍在跑**，仍持有模型连接；`src/routes/settings.js`
+     此前只落库 `agent_*` 键，从不触碰 `AgentSupervisor`。
+  2. `POST /api/cases/:id/agent/prompt` 在这段时间里仍返回 202 并被受理——审计日志里
+     `agent-prompt` 的时间戳晚于 `settings` 的 `update` 时间戳；`src/routes/agent.js` 的
+     prompt 路由此前完全不查 `loadAgentConfig()`，只看 `supervisor.isLive()`。
+  3. `POST /api/cases/:id/agent/start` 命中这个既存 live worker 时返回 `200 {status:'ready'}`
+     ——`src/agent/supervisor.js` 的 `start()` 顶部只判断"是否存在一个 `LIVE_STATUSES`
+     里的 worker"，命中就直接返回它的旧状态快照，压根不看 `loadAgentConfig()`；与本条目
+     上面"`disabled/error` 两种失败态映射成明确的 4xx/5xx，不吞成 200"的既有断言直接矛盾。
+  **处置**：`supervisor.start()` 命中既存 live worker 分支、`supervisor.prompt()` 均补上
+  对 `loadAgentConfig()` 的重新检查（disabled 时真正 `stop()` 掉那个 worker，不是原样复用/
+  忽略）；`src/routes/agent.js` 的 `start`/`prompt`/`cancel`/`agent/interactions/:id/answer`
+  四个端点各自独立补上路由层的前置 `loadAgentConfig()` 检查（`events` 此前已有，未改动）；
+  `src/routes/settings.js` 改造成工厂函数 `createSettingsRouter(supervisor)`（与
+  `src/routes/agent.js` 的 `createAgentRouter(supervisor)` 同一种 `server.js` 注入接线），
+  `PUT /api/settings` 一旦让 `agent_*` 落库后的 `loadAgentConfig().enabled` 为假（不论是
+  显式关开关，还是把 `provider`/`model`/`apiKeyEnv` 改成失效组合），立刻
+  `await supervisor.stopAll('disabled-by-settings')`，走正常 `stop()` 的
+  shutdown→SIGTERM 收尾流程，落 `agent-stopped` 终态审计。修复过程中还额外发现并修了一个
+  相关的审计措辞 bug：`_stopWorker()` 在子进程于 shutdown 握手期间就协作退出（完全正常的
+  时序）时，`_handleExit()` 可能抢在 `_stopWorker()` 自己那句 `_finalizeWorker()` 之前落
+  终态，把调用方传入的有意义 reason（如 `'disabled-by-settings'`）顶替成一句不知道由头的
+  通用 `"exit code=0 signal=none"`；现在 `_stopWorker()` 先把 reason 记在
+  `worker._pendingStopReason` 上，`_handleExit()` 干净退出时优先采用它。
+  **机械回归**（`tools/test-agent-supervisor.js` 场景 25/26、`tools/test-agent-http.js`
+  disabled fail-closed 区块、`tools/test-agent-settings.js` "设置侧联动"区块，均在
+  check 第 31/35/36 步）：worker ready 后把 `agent_enabled` 置 false → 子进程被真正终止
+  + 状态落 `stopped` 终态 + audit 有 `agent-stopped`/`disabled-by-settings` 行；disabled
+  期间 `start`/`prompt`/`cancel`/`answer` 各自 409 `agent_disabled` 且 supervisor 对应
+  方法调用计数为 0（未产生子进程）；`events` 首帧 `disabled` 且不挂载 worker 监听
+  （沿用既有覆盖，未回归）。三份新增/改造的回归均做过"还原本轮修复前的 `server.js`/
+  `src/agent/supervisor.js`/`src/routes/agent.js`/`src/routes/settings.js`，新测试必须
+  变红"的对照实验：结果分别是 `AssertionError`（`start()` 命中既存 live worker 仍返回
+  `'ready'` 而非期望的 `'disabled'`）、`AssertionError`（HTTP `start` 端点仍返回 200 而非
+  期望的 409）、`TypeError: createSettingsRouter is not a function`（旧版 `settings.js`
+  没有这个导出）——三处均按预期变红，恢复修复后全部转绿。
 
 ## 门禁 3 · 每个 worker 的 session、真实 `cwd` 和 case 权限不可被 prompt 改写
 
@@ -321,6 +362,19 @@
   **ALL GREEN ✅**（exit code 0）。
   证据：`/private/tmp/.../scratchpad/wf-logs/gates/g10-shutdown-mainline.log`
   （`g10-digest-disabled.json`、`g10-inbox-disabled.json`、`g10-check.log`）。
+- ⚠️ **[结构缺口 → 已修复]（2026-08-22 复审轮，编排方人工验收发现，非模型驱动）**——
+  上面那条动态证据把 `agent_enabled` 切回 `false` 时，环境里**没有任何存活的本案 worker**
+  （本案从未启动过），因此只验证了"关闭开关不影响主线只读投影"，没有验证"关闭开关这个
+  动作本身，对一个正在运行的 worker 有没有产生任何副作用"——本条目标题里的
+  「关闭 sidecar 不改变现有主线行为」原本隐含的前提是"sidecar 真的被关掉了"，而修复前
+  `PUT /api/settings` 只落库、从不触碰 `AgentSupervisor`，一个已经启动的 worker 在关闭
+  开关之后会继续运行（详见门禁 2 补记的三处运行时缺口）——`case_id` 投影例外之类的"零改动"
+  讨论都建立在"sidecar 已经不存在"这个未经验证的假设上。**处置**：见门禁 2 补记——
+  `src/routes/settings.js` 的 `PUT /api/settings` 现在会在 `agent_*` 落库后
+  `loadAgentConfig().enabled` 为假时，同步 `await supervisor.stopAll('disabled-by-settings')`，
+  「关掉即不存在」现在覆盖"运行中被关掉"这一种情形，不再只对"从未启动过"成立。
+  机械回归同门禁 2：`tools/test-agent-settings.js` "设置侧联动"区块，含"还原修复前
+  `settings.js` 必须变红"的对照实验（`TypeError: createSettingsRouter is not a function`）。
 
 ---
 

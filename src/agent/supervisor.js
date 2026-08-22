@@ -16,7 +16,14 @@
 // 红线（任务书 + 设计稿 §1/§3/§4，本文件必须满足）：
 //   - enabled=false 必须在读 credential、初始化 MCP、spawn 子进程之前短路——
 //     start() 第一步就是 loadAgentConfig()，不通过直接返回，不碰 process.env
-//     里的 apiKeyEnv、不碰案件目录、不 spawn。
+//     里的 apiKeyEnv、不碰案件目录、不 spawn。「关掉即不存在」同样覆盖「已经
+//     启动过」的 worker：start() 复用既有 live worker 之前、prompt() 真正写
+//     turn 之前都会重新查一遍这份配置，disabled 时不管 worker 是否早就
+//     ready，一律当成不存在处理并触发真正的 stop()（落终态、reason
+//     'disabled-by-settings'）——不是这一版才加的补丁式判断，是与顶部
+//     spawn 前短路同一条红线的两处必要延伸（编排方人工验收发现的运行时缺
+//     口，此前只验证过"从未启动过"，没覆盖"运行中被关掉"，见
+//     docs/agent-gates.md 门禁 2/10 补记）。
 //   - 案件夹必须在 ANJIAN_FILES_ROOT 下且与 case.name 精确对应、禁 symlink——
 //     直接复用 src/lib/secure-files.js 的 resolveCaseDirectory()（files.js/
 //     fees.js 已经在用的同一份实现），不重新发明一套路径校验。
@@ -754,6 +761,24 @@ export class AgentSupervisor {
   async start(caseId) {
     const existing = this.workers.get(caseId);
     if (existing && LIVE_STATUSES.has(existing.status)) {
+      // 复用之前必须重新检查配置——不能假设"这个 worker 曾经启动成功过"等价
+      // 于"现在仍然 enabled"：用户随时可能已经在设置页把开关关掉，这时候
+      // 即使还有一个仍然存活的 worker，也必须当成"根本不存在"处理（设计稿
+      // §1 门禁 2/10：「关掉即不存在」）。此前这里不看当下配置就直接复用旧
+      // worker、原样返回它的 ready 状态——这正是编排方人工验收实测复现的运行
+      // 时缺口（docs/agent-gates.md 门禁 2/10 补记）：POST .../agent/start 在
+      // enabled=false 之后仍然对一个存活 worker 返回 200/ready，与该路由自己
+      // 注释里「disabled/error 两种失败态映射成明确的 4xx/5xx，不吞成 200」互
+      // 相矛盾。现在先查配置，disabled 就走真正的 stop() 流程终止这个存活
+      // worker（落可审计的终态，reason 标 'disabled-by-settings'，与设置页
+      // 联动关闭走的是同一条收尾路径），再返回 disabled——不是"假装没有
+      // worker"，是真的让它停下来。
+      const config = this.loadConfigFn();
+      if (!config.enabled) {
+        audit(this.actor, 'agent-start-skip', 'agent-worker', caseId, config.error ? `disabled:${config.error}` : 'disabled');
+        await this.stop(caseId, config.error ? `disabled-by-settings:${config.error}` : 'disabled-by-settings');
+        return { status: 'disabled', caseId, error: config.error };
+      }
       // 重复打开 drawer：复用同一个 worker，不重复 spawn。
       //
       // existing.readyPromise 是 _runStartupSequence 那次调用产生的、早就已
@@ -954,6 +979,23 @@ export class AgentSupervisor {
 
   // ---- turn 执行：串行 + 可取消 ----
   async prompt(caseId, text) {
+    // 不信任调用方（src/routes/agent.js 的 prompt 路由）已经检查过
+    // enabled——路由层的检查与这里的调用之间隔着一次事件循环轮转，理论上
+    // 存在"路由层查的时候还 enabled，supervisor 真正执行时设置已经被改成
+    // disabled"的竞态窗口；这里作为第二道闸门再查一次同一份 loadConfigFn()。
+    // disabled 时不仅拒绝这次 prompt，如果这个 case 恰好还有一个 live
+    // worker（例如设置刚被改、settings 路由触发的 stopAll 还没跑完），顺手
+    // 把它也停掉——不能让"配置已经 disabled，但 worker 还在,只是没人再往它
+    // stdin 里写新 turn"这种半死不活的状态无限期停留。
+    const config = this.loadConfigFn();
+    if (!config.enabled) {
+      if (this.workers.has(caseId) && LIVE_STATUSES.has(this.workers.get(caseId).status)) {
+        this.stop(caseId, config.error ? `disabled-by-settings:${config.error}` : 'disabled-by-settings').catch(() => {});
+      }
+      const error = new Error('agent is disabled');
+      error.code = 'agent_disabled';
+      throw error;
+    }
     const worker = this.workers.get(caseId);
     if (!worker || !LIVE_STATUSES.has(worker.status)) {
       const error = new Error('worker is not running');
@@ -1167,6 +1209,20 @@ export class AgentSupervisor {
   }
 
   async _stopWorker(worker, reason) {
+    // 记这次 stop() 意图的 reason，供 _handleExit 在"子进程比 _stopWorker
+    // 自己更快落终态"时顶替掉它那句通用的 "exit code=X signal=Y" 文案——
+    // 见下方 _handleExit 顶部注释：真实子进程收到 shutdown RPC 之后，通常是
+    // 先把响应写回 stdout、再真正终止进程，这中间往往要跨一次事件循环；
+    // _stopWorker 下面那段"等 exit 事件"的分支本身就是一次真正会让出控制权
+    // 的 await，子进程恰好在这个窗口里退出时，'exit' 事件会先于本函数自己
+    // 走到最后一行 _finalizeWorker() 之前触发——这是"先应答再退出"这种完全
+    // 正常的协作式关闭时序的必然结果，不是什么罕见异常路径。_finalizeWorker
+    // 本身"第一次调用为准"的幂等设计没有问题（避免重复审计），问题是"谁先
+    // 到达"不该决定审计详情用哪句话：调用方传进来的 reason（例如
+    // 'disabled-by-settings'、'cancelled by ...'、'turn_failed:...'）远比
+    // exit 事件本身携带的 code/signal 更能说明"为什么要停"，绝不能因为一次
+    // 纯粹的时序巧合就在审计里被抹成一句不知道由头的通用退出信息。
+    worker._pendingStopReason = reason;
     if (worker.currentAbort) worker.currentAbort.abort(new Error('worker stopping'));
     if (worker.child && worker.child.exitCode === null) {
       try {
@@ -1605,7 +1661,17 @@ export class AgentSupervisor {
     // 应答未消费反向请求"这一段两条路径共用的逻辑。
     this._rejectInFlight(worker, new Error(`worker exited (code=${code}, signal=${signal || 'none'})`), 'worker_exit');
     const wasClean = code === 0;
-    this._finalizeWorker(worker, wasClean ? 'stopped' : 'crashed', `exit code=${code} signal=${signal || 'none'}`, { code, signal });
+    // 干净退出（code 0）且这次退出发生在一次已知的 _stopWorker() 收尾期间
+    // 时，优先用调用方传给 stop() 的那个更有意义的 reason（见 _stopWorker()
+    // 顶部注释）——不管这个 'exit' 事件是不是抢在 _stopWorker() 自己那句
+    // finalize 之前触发，audit 详情都应该记录"为什么要停"而不是"进程怎么
+    // 退出的"这句技术性文案。非干净退出（wasClean=false，真的是崩溃/被信号
+    // 杀掉）不套用这个覆盖：即使恰好正处在 stop() 期间，一次异常退出本身就
+    // 是值得单独记录的事实，不应该被"这是一次正常关闭"的措辞掩盖。
+    const detail = (wasClean && worker._pendingStopReason)
+      ? worker._pendingStopReason
+      : `exit code=${code} signal=${signal || 'none'}`;
+    this._finalizeWorker(worker, wasClean ? 'stopped' : 'crashed', detail, { code, signal });
   }
 
   // 终态只落一次账：graceful stop() 与子进程 'exit' 事件可能前后脚都想收尾同

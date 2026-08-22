@@ -9,19 +9,33 @@
 // 红线落地对照（设计稿 §4 + 任务书）：
 //   - GET  /api/agent/status                       —— 只读；enabled=false 时
 //     直接返回 status:'disabled'，不触碰任何 worker/credential。
-//   - POST /api/cases/:id/agent/start               —— 转发 supervisor.start()；
-//     disabled/error 两种失败态映射成明确的 4xx/5xx，不吞成 200。
-//   - POST /api/cases/:id/agent/prompt              —— 不等待整轮完成（见下方
-//     该路由内的注释），只做同步可见的门禁校验；真正的进度/结果只经 SSE 下行。
-//   - POST /api/cases/:id/agent/cancel              —— 转发 supervisor.cancelTurn()。
+//   - POST /api/cases/:id/agent/start               —— 先自己查一遍
+//     loadAgentConfig()（disabled 直接 409 agent_disabled，不进
+//     supervisor.start()），再转发 supervisor.start()；disabled/error 两种
+//     失败态映射成明确的 4xx/5xx，不吞成 200——双保险而不是互相替代，
+//     supervisor.start() 内部对"既存 live worker"分支同样会重新查配置（见
+//     supervisor.js），不靠这一层单独兜底。
+//   - POST /api/cases/:id/agent/prompt              —— 同样先查
+//     loadAgentConfig()（disabled 直接 409），再做同步可见的门禁校验；不等待
+//     整轮完成（见下方该路由内的注释），真正的进度/结果只经 SSE 下行。
+//   - POST /api/cases/:id/agent/cancel              —— 先查 loadAgentConfig()
+//     （disabled 直接 409），再转发 supervisor.cancelTurn()。
 //   - GET  /api/cases/:id/agent/events              —— authenticated SSE；订阅
 //     绑定在服务端已知的 caseId 上，不接受、不使用客户端传来的任何 session id
-//     做过滤依据（设计稿 §4「不把浏览器传来的任意 session ID 当作权限依据」）。
-//   - POST /api/agent/interactions/:id/answer        —— one-shot；interactionId
-//     是唯一入参，caseId/worker 完全由服务端反查（findInteractionOwner），
-//     不信任、也不需要客户端提交 case_id/session_id；approval 的 outcome 与
-//     question 的 answer 都经过严格校验，非法/过期/已消费/跨 session/worker
-//     已退一律拒绝并审计（不含敏感值）。
+//     做过滤依据（设计稿 §4「不把浏览器传来的任意 session ID 当作权限依据」）；
+//     disabled 时首帧直接下发 status:'disabled'，不建立 supervisor 订阅。
+//   - POST /api/agent/interactions/:id/answer        —— 先查 loadAgentConfig()
+//     （disabled 直接 409，且先于 findInteractionOwner()），再校验：
+//     interactionId 是唯一入参，caseId/worker 完全由服务端反查
+//     （findInteractionOwner），不信任、也不需要客户端提交 case_id/session_id；
+//     approval 的 outcome 与 question 的 answer 都经过严格校验，非法/过期/
+//     已消费/跨 session/worker 已退一律拒绝并审计（不含敏感值）。
+//   - 上面这五个端点的 disabled 检查全部各自独立调用 loadAgentConfig()，不
+//     依赖某个上游中间件把结果挂在 req 上——每个端点都必须能在完全孤立的情况
+//     下 fail-closed（编排方人工验收发现的运行时缺口：此前只有 GET
+//     /agent/status 与 SSE 首帧做了这一层短路，start/prompt/cancel/answer
+//     要么完全没查、要么只在 supervisor 内部间接查，见
+//     docs/agent-gates.md 门禁 2/10 补记）。
 //   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
 //     （src/routes/views.js 的 /api/inbox/:id/accept|decline），本文件不新开
 //     任何模型可达的 accept API。
@@ -115,6 +129,16 @@ export function createAgentRouter(supervisor) {
   r.post('/cases/:id/agent/start', async (req, res) => {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
+    // 路由层自己也查一遍 loadAgentConfig()：不依赖"supervisor.start() 内部
+    // 会拒绝"这一件事——之前 supervisor.start() 命中既存 live worker 时会先
+    // 返回它的旧状态、根本不看当下配置（见 supervisor.js start() 顶部注释与
+    // docs/agent-gates.md 门禁 2/10 补记的运行时缺口），这里在调用 supervisor
+    // 之前就先短路，disabled 时压根不进 supervisor.start()，双保险而不是互相
+    // 替代。
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled', status: 'disabled' });
+    }
     let result;
     try {
       result = await supervisor.start(caseId);
@@ -141,6 +165,16 @@ export function createAgentRouter(supervisor) {
   r.post('/cases/:id/agent/prompt', (req, res) => {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
+    // disabled 时 fail-closed，且必须在任何其它校验/supervisor 调用之前判
+    // 断——此前这里完全没有查过 loadAgentConfig()，只看 supervisor.isLive()：
+    // 只要设置刚好还没来得及停掉一个存活 worker（或者压根没人管这一段窗
+    // 口），一条 prompt 就能被受理（202）并真的写进子进程 stdin，这正是编排
+    // 方人工验收复现的红线缺陷之一（agent-prompt 审计时间戳晚于 settings
+    // update）。
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    }
     const raw = req.body?.text;
     const text = typeof raw === 'string' ? raw.trim() : '';
     if (!text) return res.status(400).json({ error: 'text 不能为空' });
@@ -169,6 +203,13 @@ export function createAgentRouter(supervisor) {
   r.post('/cases/:id/agent/cancel', (req, res) => {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
+    // disabled 时同样 fail-closed：关掉开关之后这个案件不应该再有任何
+    // agent 端点可用——真正的存活 worker 已经由 settings 路由/supervisor 的
+    // stop() 收尾，这里不是"取消一个本不该存在的 turn"的正常路径。
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    }
     const cancelled = supervisor.cancelTurn(caseId, `cancelled by ${req.actor}`);
     audit(req.actor, 'agent-cancel', 'agent-worker', caseId, cancelled ? 'ok' : 'no_active_turn');
     res.json({ cancelled });
@@ -242,6 +283,15 @@ export function createAgentRouter(supervisor) {
   // 入参:caseId/worker/该交互的类型与待答问题,全部由服务端反查得到,不接受
   // 任何客户端提交的 case_id/session_id/cwd(设计稿 §4)。
   r.post('/agent/interactions/:id/answer', (req, res) => {
+    // disabled 时 fail-closed，且必须先于 findInteractionOwner()：关掉开关之
+    // 后不应该还存在任何可以被回答的待办交互（对应的 worker 应该早就被
+    // settings 路由触发的 stopAll() 停掉、pendingInteractions 也随之清空），
+    // 这里的检查是不信任"调用方/时序恰好保证了这一点"的兜底闸门。
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, 'agent_disabled');
+      return res.status(409).json({ error: 'AI 助理未启用', code: 'agent_disabled' });
+    }
     const interactionId = String(req.params.id || '');
     const owner = supervisor.findInteractionOwner(interactionId);
     if (!owner) {
