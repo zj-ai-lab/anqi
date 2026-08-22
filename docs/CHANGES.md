@@ -62,9 +62,9 @@
 
 ---
 
-## 未发布 → 2.7.0-beta.2 — AI 助理设置面易用性改造 · 服务端（分支 `feat/agent-sidecar`，尚未合并 `main`）
+## 未发布 → 2.7.0-beta.2 — AI 助理设置面易用性改造（分支 `feat/agent-sidecar`，尚未合并 `main`）
 
-**状态：`feat/agent-sidecar` 分支上功能迭代阶段，本条目只覆盖服务端改造，前端设置页 UI 尚未跟进；尚未合并 `main`。**
+**状态：`feat/agent-sidecar` 分支上功能迭代阶段，服务端与前端设置页 UI 均已落地（前端见下方「前端设置页」小节）；尚未合并 `main`。**
 
 **背景**：beta.1 的设置面要求用户先在系统里设好环境变量、再把变量名填进界面——这对公开版用户不可用。本轮目标：只填一个 API key → 选一个供应商（baseURL 自动带出）→ 拉取该 key 可用的模型列表 → 下拉选一个 → 保存。
 
@@ -78,6 +78,16 @@
 - **新增 `POST /api/agent/models`**（`apiAuth`，刻意不经过 `agent_enabled` 门——这是"保存前先测试 key"的配置期工具）：入参 `{provider, baseURL, apiKey?}`；`baseURL` 复用与保存设置同一套 `validateBaseURL()`（协议/凭据/内网回环/deepseek-official 官方域，SSRF 防线不因为这是"辅助端点"而放松）；`apiKey` 省略时走上述取值链（请求体 > env > 已存加密 key）。网络层拆到独立模块 `src/agent/models-client.js`（`fetchProviderModels()`）：15s 超时、2MB 响应体上限（逐块读流累计字节数中途掐断，不信任 `Content-Length`）、解析 OpenAI 兼容格式（容忍 `{data:[{id,...}]}` 与裸数组两种形状）；上游 401/403→"API Key 无效或无权限"、404→"未提供 /models 接口"、其它非 2xx/网络错误/超时/畸形 JSON/无法识别的形状均映射为不含 key 值、不含上游原始响应体的中文错误。路由通过依赖注入点 `createAgentRouter(supervisor, {fetchModels})` 接线（默认真实实现，同 `AgentSupervisor` 的 `spawnFn` 注入风格），便于测试。
 - **`/api/counts` 与 `GET /api/agent/status` 新增 key 状态字段**：`counts` 新增 `agent_key_configured`/`agent_key_source`（既有 `agent` 布尔字段不变）；`/agent/status` 新增 `apiKey:{configured, keySource}`。均只回布尔/枚举，从不含 key 值。
 
+### 前端设置页（`public/profile.html` + `public/js/profile.js`）
+
+「用户中心 · AI 助理」面板按本轮目标重做，把「先在系统里设环境变量、再把变量名填进界面、还要手打模型名」压缩成「填一个 key → 选一个供应商 → 拉一次模型 → 下拉选一个 → 保存」：
+
+- **供应商联动**：`Provider` 下拉两项；选 `deepseek-official` 时 `Base URL` 自动带出官方地址并置为只读（用户不可编辑），选 `openai-completions` 时若当前值仍是刚自动填入的官方地址则清空，避免留下一个看似自定义、实际是残留官方地址的误导值。
+- **API Key 三态展示**：密码框按 `GET /api/settings` 派生的 `agent_api_key_source` 渲染——`env`（当前由环境变量提供）/`stored`（已保存，placeholder 显示末四位掩码，留空提交表示不修改）/`none`（尚未配置）；`stored` 态额外给出「清除已保存的 key」按钮（发一次 `agent_api_key: ""` 的显式清空 PUT，不依赖"先清空输入框再点主保存"这条容易被忽略的隐式路径）。三态文案都如实说明「保存在本机数据库并加密；能拿到数据目录的人可以解出来」。
+- **拉取模型下拉**：「拉取可用模型」按钮调 `POST /api/agent/models`，成功后把手填 `Model` 输入框切换成下拉框（保留「改手动填写」兜底，切回时把当前选中值带回输入框）；失败时把服务端返回的中文错误原样贴在按钮旁，不只依赖一闪而过的 toast。默认选中项的计算规则拆到不依赖 DOM 的纯函数 `public/js/agent-model-options.js`（`buildModelOptions()`），单独有单元测试。
+- **高级选项折叠**：`apiKeyEnv` 折进默认收起的 `<details>`「高级选项」（已存在非空值时自动展开，免得用户看不到「输入框被 env 锁住」的原因）；保留名黑名单与格式校验不变，权威仍在服务端。
+- 前端不重复实现任何一条服务端校验（白名单/格式/协议/保留名/SSRF）——校验不过就让服务端的中文错误显示出来，与全站其它表单一致。
+
 ### 测试
 
 - `tools/test-secret-box.js`：往返、错误密钥解不开、畸形密文安全失败、`secret.key` 首次生成权限位 0o600 且幂等复用、`ANJIAN_SECRET` 熵校验与派生确定性、掩码函数边界。
@@ -85,7 +95,9 @@
 - `tools/test-agent-models-client.js`：真起本地 http 假服务器验证 `fetchProviderModels()` 网络层——两种 OpenAI 兼容格式解析、401/404/其它非 2xx/畸形 JSON/无法识别形状/响应体过大/超时/连接被拒，逐一映射到预期错误码，且错误消息不透传上游原始响应体（探针用会回显 key 片段的假 401 响应体验证过）。
 - `tools/test-agent-models-http.js`：路由层黑盒测试（注入假 `fetchModels`）——provider/baseURL 校验失败时确认从未调用 `fetchModels`、apiKey 取值优先级（请求体>env>已存）、错误码→HTTP 状态映射、审计与响应体逐一确认不含任何一个测试用明文 key。
 - `tools/test-agent-settings.js`/`tools/test-agent-http.js` 同步更新：`agent_api_key_env` 留空的新允许行为、`agent_api_key` 的加密落库/掩码回显/清空、`/agent/status` 新增 `apiKey` 字段的形状。
-- `tools/check.sh` 增至 43 步（详见 [agent-gates.md](agent-gates.md)）。
+- `tools/smoke-agent-profile-frontend.js`：设置页前端冒烟——新控件静态审查（四组控件齐全、`apiKeyEnv` 确实折进默认收起的 `details`）、`profile.js` 五条交互逻辑命中、真实 server 进程上跑 `agent_api_key` 明文入参 → 加密落库 → GET/PUT 只回掩码的往返、`apiKeyEnv` 优先级、显式空串清空，以及本地假 `/models` 服务器的解析形状与「回环地址即使显式带 apiKey 也照样 400」两条断言。
+- `tools/test-agent-model-options.js`：下拉框默认选中项的纯逻辑自检（命中/未命中/空列表四类场景）。
+- `tools/check.sh` 增至 45 步（详见 [agent-gates.md](agent-gates.md)）。
 
 ### 复审修复（本轮，红线/SSRF/工程卫生）
 
@@ -120,7 +132,9 @@
 
 ### 已知边界（非本轮范围）
 
-- 前端设置页 UI（供应商下拉、key 输入框、"拉取模型列表"按钮、高级选项折叠）尚未实现，本轮只完成服务端接口；`PROVIDER_CANONICAL_KEY_ENV` 目前只覆盖已有的两个 provider 枚举值，新增 provider 时需要同步补充。
+- `PROVIDER_CANONICAL_KEY_ENV` 目前只覆盖已有的两个 provider 枚举值，新增 provider 时需要同步补充。
+- `POST /api/agent/models` 没有单独的调用频率限制：它是 `apiAuth` 之后的端点（需要已登录会话），每次请求最长占用 15s 超时窗口并向外发一次 GET。SSRF 三层闸门保证目标不可能是内网/回环，但一个已登录会话理论上仍可反复调用它对公网地址产生放大流量。GA 前可考虑加一条按会话的频率限制。
+- `agent_api_key_masked` 对 `env` 来源的 key 同样回末四位掩码——这是设计明确要求的展示（"掩码或布尔已配置"），但对既有的纯环境变量部署而言，是一个此前不存在的新增展示面（改造前 `GET /api/settings` 从不透出与 key 值相关的任何字符）。掩码只留末 4 位、长度 ≤4 时整串折叠为 `*`，且仅对已登录会话可见。
 - 数据结构新增一个 settings 键 `agent_api_key_encrypted`（无 migration，`settings` 是既有 key-value 表）；未配置时该键不存在，不影响任何既有功能。
 - **worker 启动路径的残余 key 外带面**（见上方"三次复审修复"最后一条）：`openai-completions` 下 `agent_base_url` 客户端可写、`src/agent/supervisor.js` 的 `buildSpawnEnv()` 会把已存明文 key 与该 baseURL 一起注入子进程，且不经过 `resolvePinnedAddress()` 的 DNS 钉住核对。GA 前应评估是否需要对 `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key 重新确认。
 

@@ -268,7 +268,7 @@ docker start anqi
 开启方式：在设置页把「AI 助理」开关打开，并按需填写 provider / baseURL / model。API key 的值有两种来源，取值时环境变量优先：
 
 - **环境变量（`apiKeyEnv`，兼容既有部署）**：设置页里只填一个环境变量**名**，真正的 key 值必须由部署者在部署环境里单独设置，不写进设置页、不进数据库。默认 provider 是 `deepseek-official` 时，常见做法是把 `apiKeyEnv` 填成 `DEEPSEEK_API_KEY`，并在部署环境里配置该变量的真实 key。
-- **界面直接填（服务端已支持，配套设置页 UI 见 `docs/CHANGES.md`「已知边界」）**：key 落库前用 AES-256-GCM 静态加密，解密用的主密钥由 `ANJIAN_SECRET` 环境变量派生（若配置），否则自动在数据目录下生成 `secret.key` 文件（首次生成、权限 0600）。**这把主密钥本身就是敏感数据**：`secret.key` 丢失或损坏，或 `ANJIAN_SECRET` 变更，都会让库里已加密存储的 key 永久解不开（不报错，只是「未配置」）——见上方「数据、案件夹与备份」；换主机/换容器卷时，`secret.key` 必须和 `anjian.db` 一起搬过去，`ANJIAN_SECRET` 则必须和其它部署环境变量一起搬过去。
+- **界面直接填（推荐，设置页「用户中心 · AI 助理」直接填写）**：选好供应商后 baseURL 会自动带出，填一次 key 就能点「拉取可用模型」从下拉框选模型，不需要碰任何环境变量。key 落库前用 AES-256-GCM 静态加密，解密用的主密钥由 `ANJIAN_SECRET` 环境变量派生（若配置），否则自动在数据目录下生成 `secret.key` 文件（首次生成、权限 0600）。**这把主密钥本身就是敏感数据**：`secret.key` 丢失或损坏，或 `ANJIAN_SECRET` 变更，都会让库里已加密存储的 key 永久解不开（不报错，只是「未配置」）——见上方「数据、案件夹与备份」；换主机/换容器卷时，`secret.key` 必须和 `anjian.db` 一起搬过去，`ANJIAN_SECRET` 则必须和其它部署环境变量一起搬过去。
 
 其余必需的环境变量：
 
