@@ -1,4 +1,5 @@
 import net from 'node:net';
+import { assertPassphraseStrength } from './secret-box.js';
 
 export const DEFAULT_HOST = '127.0.0.1';
 
@@ -50,6 +51,21 @@ export function resolveStartupConfig(env = process.env) {
   }
   if (!unsafeNoAuth && !isLoopbackHost(host) && !configured(env.ANJIAN_INTERNAL_KEY)) {
     throw new Error('非回环监听必须配置 ANJIAN_INTERNAL_KEY');
+  }
+
+  // ANJIAN_SECRET（AI 助理「界面填 key」的加密主密钥来源之一）此前只在用户
+  // 第一次保存 key 时才会被 src/lib/secret-box.js 的 resolveMasterKey() 校
+  // 验——配置写短了/写弱了，要等到那一刻才以一个 500 的形式暴露出来，比
+  // ANJIAN_USER/ANJIAN_PASS_HASH/ANJIAN_INTERNAL_KEY 这几个同样重要的凭据
+  // 晚了一大截（它们都在这里、进程启动时就 fail-fast）。这里只在配置了该
+  // 变量时才校验——不配置时走 secret.key 文件兜底，是完全合法的部署形态，
+  // 不应该被这条检查拦下。
+  if (configured(env.ANJIAN_SECRET)) {
+    try {
+      assertPassphraseStrength(env.ANJIAN_SECRET);
+    } catch (error) {
+      throw new Error(`ANJIAN_SECRET 配置非法：${error.message}`);
+    }
   }
 
   return Object.freeze({

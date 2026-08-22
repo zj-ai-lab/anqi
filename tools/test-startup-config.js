@@ -100,4 +100,35 @@ config = resolveStartupConfig({
 });
 assert.equal(config.host, '::1', 'Electron/本机 production 可不启用 internal 面');
 
-console.log('startup config tests: fail-closed + loopback-only explicit unsafe mode passed');
+// 【红线回归】ANJIAN_SECRET 配置错误此前只在用户第一次保存 key 时才会被
+// resolveMasterKey() 校验，比 ANJIAN_USER/ANJIAN_PASS_HASH/ANJIAN_INTERNAL_KEY
+// 这几个同样重要的凭据晚了一大截（那几个都在这里、进程启动时就 fail-fast）。
+// 现在启动时就应该拒绝。
+assert.throws(
+  () => resolveStartupConfig({
+    NODE_ENV: 'test', ANJIAN_USER: 'admin', ANJIAN_PASS_HASH: 'hash',
+    ANJIAN_SECRET: 'too-short',
+  }),
+  /ANJIAN_SECRET 配置非法.*长度不足/s,
+  'ANJIAN_SECRET 太短必须在启动时就拒绝，不能等到第一次保存 key 才暴露'
+);
+assert.throws(
+  () => resolveStartupConfig({
+    NODE_ENV: 'test', ANJIAN_USER: 'admin', ANJIAN_PASS_HASH: 'hash',
+    ANJIAN_SECRET: 'a'.repeat(40),
+  }),
+  /ANJIAN_SECRET 配置非法.*熵不足/s,
+  'ANJIAN_SECRET 单一字符重复必须在启动时就拒绝'
+);
+// 不配置 ANJIAN_SECRET（走 secret.key 文件兜底）是完全合法的部署形态，不
+// 应该被这条新增校验误伤。
+config = resolveStartupConfig({ NODE_ENV: 'test', ANJIAN_USER: 'admin', ANJIAN_PASS_HASH: 'hash' });
+assert.equal(config.host, DEFAULT_HOST, '不配置 ANJIAN_SECRET 不应该被误伤');
+// 强度足够的 ANJIAN_SECRET 必须放行。
+config = resolveStartupConfig({
+  NODE_ENV: 'test', ANJIAN_USER: 'admin', ANJIAN_PASS_HASH: 'hash',
+  ANJIAN_SECRET: 'Tr0ub4dor&3-correct-horse-battery-staple-2026',
+});
+assert.equal(config.host, DEFAULT_HOST, '强度足够的 ANJIAN_SECRET 必须放行');
+
+console.log('startup config tests: fail-closed + loopback-only explicit unsafe mode + ANJIAN_SECRET 启动时校验 passed');

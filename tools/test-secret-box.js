@@ -116,22 +116,41 @@ const {
   console.log('  [5.5/7] secret.key 首次生成并发安全（写临时文件+linkSync 原子提交，不被后写者覆盖）：ok');
 }
 
-// ---- 6) ANJIAN_SECRET：熵不足必须拒绝；熵足够时优先于 secret.key 生效，
-//      且同一 passphrase 必须每次派生出同一把 key（可移植性——多实例共享
-//      同一份 ANJIAN_SECRET 时，各自派生的 key 必须一致） ----
+// ---- 6) ANJIAN_SECRET：长度不足/字符多样性不足必须分别拒绝；两项都满足
+//      时优先于 secret.key 生效，且同一 passphrase 必须每次派生出同一把
+//      key（可移植性——多实例共享同一份 ANJIAN_SECRET 时，各自派生的 key
+//      必须一致） ----
 {
   assert.throws(
     () => resolveMasterKey({ ANJIAN_SECRET: 'too-short' }),
-    /熵不足/,
+    /长度不足/,
     'ANJIAN_SECRET 短于 32 字节必须拒绝'
   );
-  const longSecret = 'a'.repeat(40);
+  // 【红线回归】纯长度校验挡不住"看起来长、实际是单一字符重复"的输入——
+  // 探针实测过 32 个空格与 'a'.repeat(32) 都能通过纯长度校验；现在字符多样
+  // 性不足必须单独拒绝，错误信息用"熵不足"（与长度不足的措辞区分开，指向
+  // 不同的失败原因）。
+  for (const weak of ['a'.repeat(40), ' '.repeat(32), '0'.repeat(64)]) {
+    assert.throws(
+      () => resolveMasterKey({ ANJIAN_SECRET: weak }),
+      /熵不足/,
+      `ANJIAN_SECRET=${JSON.stringify(weak)}（单一字符重复）必须被拒绝`
+    );
+  }
+
+  const longSecret = 'Tr0ub4dor&3-correct-horse-battery-staple-2026';
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-secret-box-env-'));
   const env = { DB_PATH: path.join(scratch, 'anjian.db'), ANJIAN_SECRET: longSecret };
   const keyFromEnv1 = resolveMasterKey(env);
   const keyFromEnv2 = resolveMasterKey(env);
-  assert.ok(keyFromEnv1.equals(keyFromEnv2), '同一个 ANJIAN_SECRET 必须每次派生出同一把 key');
+  assert.ok(keyFromEnv1.equals(keyFromEnv2), '同一个 ANJIAN_SECRET 必须每次派生出同一把 key（含 scrypt 缓存命中的第二次调用）');
   assert.equal(fs.existsSync(secretKeyPath(env)), false, 'ANJIAN_SECRET 存在时不应该落地 secret.key');
+
+  // 不同的 ANJIAN_SECRET 必须派生出不同的 key（scrypt 缓存按 passphrase 精
+  // 确值区分，不会把两个不同口令混算成同一把 key）。
+  const otherEnv = { DB_PATH: path.join(scratch, 'anjian2.db'), ANJIAN_SECRET: 'Another-Str0ng-Passphrase-Xyz-9876!' };
+  const keyFromOtherSecret = resolveMasterKey(otherEnv);
+  assert.ok(!keyFromEnv1.equals(keyFromOtherSecret), '不同的 ANJIAN_SECRET 必须派生出不同的 key');
 
   // 掩码：只留末 4 位，短字符串整串折叠，不泄露任何真实字符。
   assert.equal(maskSecret('sk-abcdefgh1234'), '…1234');
@@ -139,7 +158,7 @@ const {
   assert.equal(maskSecret(''), '*');
 
   fs.rmSync(scratch, { recursive: true, force: true });
-  console.log('  [6/7] ANJIAN_SECRET 熵校验 + 派生确定性 + 掩码：ok');
+  console.log('  [6/7] ANJIAN_SECRET 长度/熵校验 + scrypt 派生确定性与区分度 + 掩码：ok');
 }
 
 console.log('secret-box 自检全部通过');

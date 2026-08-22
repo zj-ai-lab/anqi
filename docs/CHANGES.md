@@ -99,6 +99,8 @@
 - **`agent_api_key` 落库前 trim**，纯空白输入显式拒绝（此前会静默存成"已配置"，但 supervisor 实际会拿一把空白 key 去启动 worker）。
 - **`secret.key` 首次生成的 TOCTOU 竞态**：并发首次生成时改用"写临时文件 + `linkSync` 原子提交"，不再可能被后写者覆盖或被并发读者读到半写状态。
 - **`secret.key` 纳入 `tools/backup.cjs` 备份**：此前该脚本只备份 `anjian.db`，现在同步备份 `secret.key`（若存在）；`SELF-HOSTING.md` 补充 `ANJIAN_SECRET`/`secret.key` 的配置参考与备份说明（此前完全没有文档提及这两者）。
+- **`baseURL` 拒绝查询参数/片段**：`models-client.js` 用字符串拼接 `${baseURL}/models`，带 `?`/`#` 的 baseURL 会把这个后缀拼进错误位置（探针实测 `/v1#frag` 结尾时 `/models` 被静默吞掉）。`validateBaseURL()` 现在直接拒绝这类输入。
+- **`ANJIAN_SECRET` 强度校验与派生算法加固**：长度校验（≥32 字节）之外新增字符多样性校验（至少 8 种不同字符，挡住 `'a'.repeat(32)`/32 个空格这类"够长但明显非随机"的输入）；派生算法从裸 `sha256`（无 salt、可被彩虹表复用、对短口令几乎不设防）改为 `scrypt`（固定应用层 salt + 加重的成本参数），并按 passphrase 精确值做进程内缓存以抵消 scrypt 引入的计算开销；`src/lib/startup-config.js` 新增进程启动时的校验（此前要等用户第一次保存 key 才会以一个 500 暴露配置错误，比 `ANJIAN_USER`/`ANJIAN_PASS_HASH`/`ANJIAN_INTERNAL_KEY` 这几个同样重要的凭据晚了一大截）。
 
 ### 已知边界（非本轮范围）
 

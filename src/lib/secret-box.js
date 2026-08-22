@@ -3,11 +3,14 @@
 // 改动）时 decipher.final() 会抛错，不会安静地吐出乱码明文。
 //
 // 主密钥解析优先级（任务书 §2）：
-//   1) env ANJIAN_SECRET——若设置，必须至少有 32 字节 UTF-8 熵（不足直接
-//      抛错，不静默降级到弱密钥）；用它的 sha256 摘要当 32 字节 AES key
-//      （摘要而不是直接截断/填充，保证无论用户填多长的字符串，最终 key 都
-//      是均匀分布的 32 字节，同时保留了"同一个 ANJIAN_SECRET 在所有实例上
-//      派生出同一把 key"这个可移植性——多实例共享同一份加密设置时必需）。
+//   1) env ANJIAN_SECRET——若设置，必须至少 32 字节 UTF-8 长度、且至少
+//      8 种不同字符（不足直接抛错，不静默降级到弱密钥；字符多样性检查是
+//      粗糙的启发式，不是真正的信息熵估计，只用来挡住 'a'.repeat(32) 或
+//      32 个空格这类"够长但明显不是随机生成"的输入，见 assertPassphraseStrength
+//      顶部注释）；用 scrypt（固定应用层 salt + 加重的成本参数，见
+//      SCRYPT_SALT/SCRYPT_COST_N）派生成 32 字节 AES key——比裸 sha256 更能
+//      抵抗对短口令的离线爆破，同时保留了"同一个 ANJIAN_SECRET 在所有实例
+//      上派生出同一把 key"这个可移植性——多实例共享同一份加密设置时必需。
 //   2) 否则用数据目录下的 secret.key：不存在就首次生成 32 随机字节、写盘时
 //      指定 mode 0o600，再显式 chmod 一次（writeFileSync 的 mode 参数会被
 //      进程 umask 修正，不能保证最终位恰好是 0o600，必须补一次显式 chmod
@@ -21,7 +24,7 @@
 // 版本前缀 "v1" 留给将来换算法/换格式时的兼容判断；数据目录与 payload 都不
 // 含任何明文 key，本模块的返回值只有"密文字符串"或"解密后的明文字符串"两种
 // 形态，调用方（config.js/settings.js）自己负责不把后者写进日志/响应/审计。
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes, scryptSync } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -34,10 +37,25 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DEFAULT_DB_PATH = path.join(__dirname, '..', '..', 'data', 'anjian.db');
 const SECRET_KEY_FILENAME = 'secret.key';
 const MIN_PASSPHRASE_BYTES = 32;
+// 至少需要多少种不同字符——粗糙的启发式，不是真正的信息熵估计（编程判断
+// 一个字符串的"熵"本就做不到严谨：'a'.repeat(32) 与一段真随机字符串可以
+// 长度相同）。这条只用来挡住"看起来长、实际是单一/极少数字符重复"这种最
+// 容易被误当成"够长就够安全"的输入——探针实测过 32 个空格与 'a'.repeat(32)
+// 都能通过纯长度校验；真正随机生成的口令（如 `openssl rand -base64 32`
+// 的输出）天然会有远多于这个数字的不同字符，不会被误伤。
+const MIN_DISTINCT_CHARS = 8;
 const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 const KEY_BYTES = 32;
 const FORMAT_VERSION = 'v1';
+// scrypt 的应用层固定 salt（非秘密，写死在代码里）。多实例部署要求"同一个
+// ANJIAN_SECRET 必须派生出同一把 key"这条可移植性（见下方 resolveMasterKey
+// 注释），所以不能用随机生成再持久化的 salt；固定 salt 仍然把"离线爆破一
+// 个可记忆口令"的成本从一次 sha256（纳秒级、无 salt 的话还能被彩虹表复用）
+// 抬高到一次 scrypt（毫秒级、且需要针对本应用重新打表），比裸 sha256 有意
+// 义地更贵。
+const SCRYPT_SALT = Buffer.from('anqi-secret-box-v1-fixed-salt', 'utf8');
+const SCRYPT_COST_N = 16384;
 
 function resolveDataDir(env) {
   const dbPath = env.DB_PATH ? String(env.DB_PATH) : DEFAULT_DB_PATH;
@@ -48,8 +66,35 @@ export function secretKeyPath(env = process.env) {
   return path.join(resolveDataDir(env), SECRET_KEY_FILENAME);
 }
 
+// ANJIAN_SECRET 的强度校验：长度（字节数）与字符多样性各一道门。导出这个
+// 函数是为了让 src/lib/startup-config.js 能在进程启动时就校验一遍——不这样
+// 做的话，配置错误要等到用户第一次保存 key（第一次真正调用
+// resolveMasterKey()）才会以一个 500 的形式暴露出来。
+export function assertPassphraseStrength(passphrase) {
+  if (Buffer.byteLength(passphrase, 'utf8') < MIN_PASSPHRASE_BYTES) {
+    throw new Error(`ANJIAN_SECRET 长度不足：至少需要 ${MIN_PASSPHRASE_BYTES} 字节，建议用随机生成的长字符串（例如 openssl rand -base64 32）`);
+  }
+  if (new Set(passphrase).size < MIN_DISTINCT_CHARS) {
+    throw new Error(`ANJIAN_SECRET 熵不足：至少需要 ${MIN_DISTINCT_CHARS} 种不同字符，不能是单一/少量重复字符（建议用随机生成的长字符串，例如 openssl rand -base64 32）`);
+  }
+}
+
+// 同一个 passphrase 值在同一进程生命周期内缓存派生结果——scrypt 是刻意
+// 加重的计算量（见 SCRYPT_COST_N 注释），resolveMasterKey() 在请求路径上
+// 被相对频繁地调用（GET /api/settings、/api/counts、/api/agent/status 等
+// 都会间接触发），不缓存会让这些本应轻量的只读端点平白多背几十毫秒的同步
+// CPU 阻塞。缓存键是 passphrase 的精确值本身（纯函数，同输入必同输出），
+// 不是"进程启动时读一次"这种更容易过期的缓存策略——env 在测试里被反复
+// 改写时（同一进程内切换不同的 ANJIAN_SECRET 值）依然会各自算出正确的 key，
+// 不会读到别的 passphrase 缓存下的陈旧结果。
+const scryptCache = new Map();
+
 function deriveKeyFromPassphrase(passphrase) {
-  return createHash('sha256').update(passphrase, 'utf8').digest();
+  const cached = scryptCache.get(passphrase);
+  if (cached) return cached;
+  const key = scryptSync(passphrase, SCRYPT_SALT, KEY_BYTES, { N: SCRYPT_COST_N, r: 8, p: 1 });
+  scryptCache.set(passphrase, key);
+  return key;
 }
 
 function assertKeyLength(buf, filePath) {
@@ -109,15 +154,15 @@ function loadOrCreateKeyFile(filePath) {
   return key;
 }
 
-// 解析主密钥。每次调用都重新解析（不做进程级缓存）：ANJIAN_SECRET 分支只是
-// 一次 sha256，file 分支在文件已存在时只是一次同步读盘，两者都足够便宜，
-// 没有必要为了省这点开销引入"env 变了但缓存没失效"的陈旧风险。
+// 解析主密钥。file 分支不做进程级缓存（文件已存在时只是一次同步读盘，足够
+// 便宜，没必要为了省这点开销引入"env 变了但缓存没失效"的陈旧风险）；
+// ANJIAN_SECRET 分支现在是 scrypt（刻意加重的计算量，见 SCRYPT_COST_N 注
+// 释），靠 deriveKeyFromPassphrase() 内部按 passphrase 精确值做的缓存避免
+// 每次调用都重新付出这个成本，见该函数顶部注释。
 export function resolveMasterKey(env = process.env) {
   const passphrase = env.ANJIAN_SECRET;
   if (typeof passphrase === 'string' && passphrase.length > 0) {
-    if (Buffer.byteLength(passphrase, 'utf8') < MIN_PASSPHRASE_BYTES) {
-      throw new Error(`ANJIAN_SECRET 熵不足：至少需要 ${MIN_PASSPHRASE_BYTES} 字节，建议用随机生成的长字符串（例如 openssl rand -base64 32）`);
-    }
+    assertPassphraseStrength(passphrase);
     return deriveKeyFromPassphrase(passphrase);
   }
   return loadOrCreateKeyFile(secretKeyPath(env));
