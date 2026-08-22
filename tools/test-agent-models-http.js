@@ -136,6 +136,48 @@ try {
     delete process.env.TEST_AGENT_MODELS_HTTP_KEY;
   }
 
+  // ---- 7.5) 【红线回归】openai-completions 下,apiKey 省略时只有 baseURL
+  //      与已保存的 agent_base_url 同源才允许回落到 env/stored key——否则
+  //      这个端点会变成把已存 key 外带到调用方指定任意主机的通道（不经过
+  //      config.enabled 门，也不受 GET /api/settings 的掩码保护）。 ----
+  {
+    setSetting(AGENT_SETTINGS_KEYS.provider, 'openai-completions');
+    setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://saved.example.com/v1');
+    setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, '');
+    setSetting(AGENT_SETTINGS_KEYS.apiKeyEncrypted, encryptSecret('sk-openai-stored', resolveMasterKey()));
+
+    // 7.5a) baseURL 与已保存的不同源（攻击者指定的任意地址）→ 拒绝回落，
+    //       且从未把 key 发给 fetchModels。
+    const before = fetchModels.calls.length;
+    const untrusted = await postModels({
+      provider: 'openai-completions',
+      baseURL: 'https://totally-unrelated-attacker.example.com/v1',
+    });
+    assert.equal(untrusted.status, 400, '未提供 apiKey 且 baseURL 与已保存地址不同源时必须拒绝');
+    assert.equal(untrusted.data.code, 'api_key_required_for_untrusted_baseurl');
+    assert.equal(fetchModels.calls.length, before, '不可信 baseURL 时不应该把已存/环境变量 key 交给 fetchModels');
+
+    // 7.5b) baseURL 与已保存的同源 → 允许回落（用户对这个地址已经决定信任）。
+    const trusted = await postModels({ provider: 'openai-completions', baseURL: 'https://saved.example.com/v1' });
+    assert.equal(trusted.status, 200);
+    const lastCall = fetchModels.calls[fetchModels.calls.length - 1];
+    assert.equal(lastCall.apiKey, 'sk-openai-stored', '同源 baseURL 时应该正常回落到已存 key');
+
+    // 7.5c) 不可信 baseURL 时,请求体自带 apiKey 依然放行（红线只挡"静默
+    //       回落已存 key"，不挡"用户自己在这次请求里明确提供的 key"）。
+    const withOwnKey = await postModels({
+      provider: 'openai-completions',
+      baseURL: 'https://totally-unrelated-attacker.example.com/v1',
+      apiKey: 'sk-user-provided-explicitly',
+    });
+    assert.equal(withOwnKey.status, 200);
+    assert.equal(fetchModels.calls[fetchModels.calls.length - 1].apiKey, 'sk-user-provided-explicitly');
+
+    // 复位，避免影响后续场景。
+    setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+    setSetting(AGENT_SETTINGS_KEYS.baseURL, '');
+  }
+
   // ---- 8) fetchModels 抛出各类错误 → 正确映射 HTTP 状态码,且响应体来自
   //      error.message/error.code,不是路由层自己拼的文案 ----
   const errorCases = [
@@ -161,7 +203,7 @@ try {
   {
     const rows = db.prepare(`SELECT detail FROM audit_log WHERE entity = 'agent-models'`).all();
     const joined = rows.map((r) => r.detail).join('\n');
-    for (const leaked of ['sk-request-body-key', 'sk-stored-in-db', 'sk-from-env-var', 'sk-any']) {
+    for (const leaked of ['sk-request-body-key', 'sk-stored-in-db', 'sk-from-env-var', 'sk-any', 'sk-openai-stored', 'sk-user-provided-explicitly']) {
       assert.ok(!joined.includes(leaked), `audit_log 不应该包含明文 key: ${leaked}`);
     }
   }

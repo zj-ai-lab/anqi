@@ -45,6 +45,7 @@ import {
   AGENT_SETTINGS_KEYS,
   ALLOWED_PROVIDERS,
   agentKeyStatus,
+  baseURLsShareOrigin,
   loadAgentConfig,
   resolveAgentApiKey,
   validateBaseURL,
@@ -173,12 +174,36 @@ export function createAgentRouter(supervisor, { fetchModels = fetchProviderModel
     // 同源,见 resolveAgentApiKey());body.apiKey 只在类型是非空字符串时才
     // 采用——用户在"改 baseURL/model 但没改 key"这种场景下重新拉取列表,
     // 前端没有理由把已经存在服务端的 key 再传一遍。
+    //
+    // 【红线】只有当这次请求的 baseURL 是"可信来源"时才允许回落到 env/本机
+    // 存储的 key——否则本端点会变成一条 key 外带通道：它刻意不经过
+    // config.enabled 门（见上方注释），如果对调用方指定的任意 baseURL 都
+    // 放行已存 key，就等于把只在 GET /api/settings 里以掩码形式暴露的完整
+    // 明文 key，原样送给调用方在请求体里随便填的任何主机（任意 XSS / 本机
+    // 另一个不设防实例 / 被诱导粘贴的"免费网关"地址）。可信来源只有两种：
+    //   1) provider === 'deepseek-official'——baseURL 已经被上面的
+    //      validateBaseURL() 钉死成官方域，不存在"指向任意主机"的可能；
+    //   2) openai-completions 且这次的 baseURL 与用户已经保存过的
+    //      agent_base_url 同源（baseURLsShareOrigin()）——用户对这个地址
+    //      "已经决定信任"，不是这次请求临时提供的新地址。
+    // 指向任何其它地址，一律要求请求体里显式带上 apiKey，不做静默回落。
     let apiKey;
     let apiKeySource;
     if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
       apiKey = body.apiKey.trim();
       apiKeySource = 'request';
     } else {
+      const savedBaseURLRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(AGENT_SETTINGS_KEYS.baseURL);
+      const savedBaseURL = savedBaseURLRow ? String(savedBaseURLRow.value ?? '') : '';
+      const trustedTarget = provider === 'deepseek-official'
+        || (savedBaseURL && baseURLsShareOrigin(baseURL, savedBaseURL));
+      if (!trustedTarget) {
+        audit(req.actor, 'agent-models-fetch-fail', 'agent-models', null, `provider=${provider} reason=untrusted_baseurl_for_stored_key`);
+        return res.status(400).json({
+          error: '该 baseURL 尚未保存过，出于安全考虑不会自动带上已保存/环境变量里的 API Key；请在请求中附带 apiKey，或先保存该地址后再拉取模型列表',
+          code: 'api_key_required_for_untrusted_baseurl',
+        });
+      }
       const apiKeyEnvRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(AGENT_SETTINGS_KEYS.apiKeyEnv);
       const apiKeyEnv = apiKeyEnvRow ? String(apiKeyEnvRow.value ?? '').trim() : '';
       const resolved = resolveAgentApiKey({ apiKeyEnv });

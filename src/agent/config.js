@@ -156,6 +156,22 @@ export function validateBaseURL(baseURLRaw, provider) {
   return { ok: true, parsed, normalized: parsed.toString().replace(/\/$/, '') };
 }
 
+// 两个 baseURL 是否同源（协议+host+port，用 URL.origin 归一化，自动处理
+// 默认端口的省略形式）。POST /api/agent/models 用它判断"调用方给的 baseURL
+// 是不是用户已经保存过的那一个"——只有同源才允许把 env/本机存储的 key 自动
+// 回落进 Authorization 头，见 src/routes/agent.js 的红线注释：这个端点刻意
+// 不经过 config.enabled 门，如果对任意调用方指定的 baseURL 都放行已存
+// key，就等于把一条"完整明文 key 外带到调用方指定的任意主机"的通道正式
+// 开放出来（GET /api/settings 只回末 4 位掩码，绕过这道门就相当于把这个
+// 边界废掉）。任一入参不是合法 URL 时按不同源处理（fail-closed）。
+export function baseURLsShareOrigin(a, b) {
+  try {
+    return new URL(String(a ?? '')).origin === new URL(String(b ?? '')).origin;
+  } catch {
+    return false;
+  }
+}
+
 // settings 表里的键名。设置路由只 PUT/GET 这五个键，其余一律丢弃——与
 // src/routes/settings.js 既有的白名单模式保持一致。
 export const AGENT_SETTINGS_KEYS = Object.freeze({
