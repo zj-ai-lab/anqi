@@ -90,6 +90,14 @@ export async function fetchProviderModels({
   try {
     response = await fetchImpl(modelsURL, {
       method: 'GET',
+      // redirect:'manual'——绝不自动跟随 3xx。/models 是一次单纯的只读探测,
+      // 没有任何正当理由需要跟着上游的 Location 走；跟随会把这次请求带去
+      // 一个 validateBaseURL() 从未审过的第二个地址,直接废掉调用方那道
+      // SSRF 拦截（探针实测：一个已通过校验的"公网"baseURL 返回 302 指向
+      // 127.0.0.1 上的内网服务，内网服务被真实打到一次，其响应体被当成
+      // 模型列表原样返回）。Node fetch 在 manual 模式下不会抛错，只是原样
+      // 把 3xx 状态码交回来，见下方的显式判断。
+      redirect: 'manual',
       headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
       signal: controller.signal,
     });
@@ -107,6 +115,14 @@ export async function fetchProviderModels({
   }
 
   if (!response.ok) {
+    if (response.status >= 300 && response.status < 400) {
+      // manual 模式下 fetch 本身不抛错，3xx 原样回来——显式拒绝，不落到下面
+      // 泛化的 upstream_error 分支（那样错误码会误导成"上游服务出错"，而
+      // 真实情况是"上游想让我们去一个没审过的地址"）。不读取 Location 头，
+      // 不做任何形式的"提示用户改用最终地址"之外的自动化——那样等于换一种
+      // 方式重新实现跟随重定向。
+      throw modelsError('upstream_redirect_blocked', '模型服务地址返回了重定向，出于安全考虑已阻止自动跟随，请直接填写最终地址', { status: response.status });
+    }
     if (response.status === 401 || response.status === 403) {
       throw modelsError('upstream_unauthorized', 'API Key 无效或无权限，请检查后重试', { status: response.status });
     }
@@ -138,6 +154,7 @@ export function modelsErrorToHttpStatus(code) {
   switch (code) {
     case 'upstream_unauthorized': return 401;
     case 'upstream_not_found': return 404;
+    case 'upstream_redirect_blocked': return 502;
     case 'timeout':
     case 'network_error': return 504;
     default: return 502;
