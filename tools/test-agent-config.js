@@ -127,8 +127,10 @@ for (const host of [
   assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（.localhost 后缀 / fe80::/10 链路本地 / fec0::/10 站点本地）`);
 }
 // 边界之外的地址必须仍然放行，确认没有误伤——2001:db8::1 是文档用途的公网
-// IPv6 段，既不在 fe80::/10 也不在 fec0::/10 里。
-setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://[2001:db8::1]/');
+// IPv6 段，既不在 fe80::/10 也不在 fec0::/10 里。用 https：公网地址现在强制
+// https（见下方 13.6），这里用 https 只是为了不让"公网强制 https"这条独立
+// 规则干扰这条测的是"SSRF 黑名单没有误伤"这件事。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://[2001:db8::1]/');
 assert.equal(loadAgentConfig().enabled, true, 'fe80::/10 与 fec0::/10 段之外的公网 IPv6 不应该被误伤');
 
 // 11.6) 尾点 FQDN（"localhost."、"api.localhost."、"foo.local."）——WHATWG
@@ -174,8 +176,8 @@ for (const host of [
   assert.equal(rejected.enabled, false, `baseURL=${host} 必须被拒绝（内网/回环套壳绕过）`);
 }
 // 边界之外的地址必须仍然放行，确认没有误伤——100.128.0.1 已经在 CGNAT 段
-// 之外，是合法公网地址。
-setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://100.128.0.1/');
+// 之外，是合法公网地址。用 https：公网地址现在强制 https（见下方 13.6）。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://100.128.0.1/');
 assert.equal(loadAgentConfig().enabled, true, 'CGNAT 段之外的 100.128.0.1 不应该被误伤');
 
 // 13.5) 【红线回归】黑名单进一步补漏——云元数据主机名/*.internal 后缀、
@@ -200,11 +202,34 @@ for (const host of [
 }
 // 边界之外的地址必须仍然放行，确认没有误伤：198.18.0.0/15 段紧邻两侧的
 // 198.17.255.255 与 198.20.0.0 都是合法公网地址；2001:db8::1 是不满足
-// IPv4-compatible 展开条件的普通公网 IPv6，不应该被新加的展开逻辑误伤。
-for (const host of ['http://198.17.255.255/v1', 'http://198.20.0.0/v1', 'http://[2001:db8::1]/v1']) {
+// IPv4-compatible 展开条件的普通公网 IPv6，不应该被新加的展开逻辑误伤。用
+// https：公网地址现在强制 https（见下方 13.6）。
+for (const host of ['https://198.17.255.255/v1', 'https://198.20.0.0/v1', 'https://[2001:db8::1]/v1']) {
   setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
   assert.equal(loadAgentConfig().enabled, true, `baseURL=${host} 不应该被误伤`);
 }
+
+// 13.6) 【红线回归】公网地址强制 https：内网/回环地址已经在别处整体拒绝，
+//      能走到这一步判断的 host 按定义就是公网地址——key 会以明文 Bearer
+//      头发出去，继续允许 http 就是让它在链路上明文传输。仓库自己在
+//      android-v1.1.0（docs/CHANGES.md）已经立过同一条规则："公网强制
+//      HTTPS，回环/RFC1918/.local 允许 HTTP 并明示"，这里同样的取舍更该
+//      成立——不存在"内网强制 https 会误伤自签证书部署"这种顾虑，因为回环
+//      /内网本来就已经被拒绝、走不到这条判断。
+for (const host of ['http://api.example.com/v1', 'http://8.8.8.8/v1', 'http://[2001:db8::1]/v1']) {
+  setSetting(AGENT_SETTINGS_KEYS.baseURL, host);
+  const rejected = loadAgentConfig();
+  assert.equal(rejected.enabled, false, `baseURL=${host} 公网地址走 http 必须被拒绝`);
+  assert.match(rejected.error, /https/, `baseURL=${host} 的拒绝原因应该提到 https`);
+}
+// https 本身必须放行（不是"公网地址一律拒绝"，只是不接受 http）。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'https://api.example.com/v1');
+assert.equal(loadAgentConfig().enabled, true, '公网地址用 https 必须放行');
+// 回环/内网地址继续允许 http——这条规则只加在"公网"分支上，不改变既有的
+// 内网自托管场景（例如局域网里自建的 OpenAI 兼容网关，本来就没有走公网）。
+setSetting(AGENT_SETTINGS_KEYS.baseURL, 'http://192.168.1.50:8080/v1');
+assert.equal(loadAgentConfig().enabled, false, '内网地址仍然按内网/回环规则拒绝');
+assert.doesNotMatch(loadAgentConfig().error, /https/, '内网地址被拒绝的原因应该是内网/回环，不是缺 https');
 
 // 14) apiKeyEnv 现在是可选高级项：留空且没有已存加密 key 时，enabled 判定
 //     本身仍然是 true（provider/model/baseURL 齐全就够）——"有没有可用的

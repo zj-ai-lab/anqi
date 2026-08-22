@@ -207,6 +207,16 @@ export function validateBaseURL(baseURLRaw, provider) {
   if (isPrivateOrLoopbackHost(parsed.hostname)) {
     return { ok: false, error: 'baseURL 不得指向内网/回环地址' };
   }
+  // 公网地址强制 https：内网/回环地址已经在上面被整体拒绝，能走到这里的
+  // host 按定义就是"公网地址"，key 会以明文 Bearer 头发出去——继续允许
+  // http 就是让它在链路上明文传输。仓库自己在 android-v1.1.0（见
+  // docs/CHANGES.md）已经立过同一条规则："公网强制 HTTPS，回环/RFC1918/
+  // .local 允许 HTTP 并明示"；这里同样的取舍更该成立，因为回环/内网本来
+  // 就已经被拒绝了，不存在"内网自签证书用不了 https"这种需要放行 http 的
+  // 正当理由。
+  if (parsed.protocol === 'http:') {
+    return { ok: false, error: 'baseURL 指向公网地址时必须使用 https（回环/内网地址不受此限，但那些地址本身已被拒绝）' };
+  }
   if (provider === 'deepseek-official' && parsed.hostname.toLowerCase() !== DEEPSEEK_OFFICIAL_HOST) {
     return { ok: false, error: `deepseek-official 的 baseURL 只允许 ${DEEPSEEK_OFFICIAL_HOST}` };
   }
