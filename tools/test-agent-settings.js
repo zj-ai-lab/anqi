@@ -229,6 +229,34 @@ try {
     assert.equal(data.agent_api_key_source, 'none');
   }
 
+  // ---- 【红线回归】agent_api_key 落库前必须 trim，且纯空白必须显式拒绝
+  //      ----
+  //      复制粘贴 key 时带上首尾空白/换行是最高频的用户错误：不 trim 的话
+  //      这个错误会被静默存成密文，直到"实际调用"那一步才以一条完全误导
+  //      的 network_error 表现出来（undici 拒绝带 \n 的请求头）；纯空白输
+  //      入如果被静默接受成"已配置"，agentReady() 会判定为可用，但
+  //      supervisor 实际会拿一把空白 key 去启动 worker。
+  {
+    // 纯空白（非空字符串，但 trim 后什么都不剩）必须 400，不是静默接受成
+    // "已配置"或静默等价于清空。
+    delete process.env.MY_DEEPSEEK_KEY;
+    const before = await get();
+    const { status, data } = await put({ agent_api_key: '   ' });
+    assert.equal(status, 400, '纯空白 agent_api_key 必须拒绝');
+    assert.match(data.error, /空白/);
+    const after = await get();
+    assert.equal(after.agent_api_key_configured, before.agent_api_key_configured, '拒绝的输入不应该改动已存的 key 状态');
+  }
+  {
+    // 带首尾空白/换行的 key：落库前必须 trim，掩码/resolveAgentApiKey() 拿
+    // 到的都应该是去掉空白之后的值——不能把换行也存进密文里。
+    const { status, data } = await put({ agent_api_key: '  sk-paste-with-space-1234  \n' });
+    assert.equal(status, 200);
+    assert.equal(data.agent_api_key_configured, true);
+    assert.equal(data.agent_api_key_masked, '…1234', '掩码必须是 trim 之后的末 4 位，不能带换行/空格');
+    assert.ok(!JSON.stringify(data).includes('\\n'), 'PUT 响应体不应该带任何原始换行片段');
+  }
+
   // ---- baseURL：协议、凭据、内网/回环、deepseek-official 官方域 ----
   const badUrls = [
     'not a url',

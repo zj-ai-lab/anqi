@@ -143,11 +143,27 @@ export function createSettingsRouter(supervisor) {
       if (typeof body.agent_api_key !== 'string') {
         return { ok: false, error: 'agent_api_key 必须为字符串' };
       }
-      const raw = body.agent_api_key;
-      if (raw.length > MAX_API_KEY_LENGTH) {
+      const original = body.agent_api_key;
+      // 落库前 trim：复制粘贴 API key 时带上首尾空白/换行是最高频的用户
+      // 错误——不 trim 的话，这个错误会被静默存成密文，直到"拉取模型/实际
+      // 调用"那一步才以一条完全误导的 network_error（undici 会拒绝带 \n 的
+      // 请求头）表现出来，用户看不出真实原因是 key 尾部多了个换行。POST
+      // /api/agent/models 的请求体分支（src/routes/agent.js）已经在 trim，
+      // 这里补上是为了让"拉取模型当场成功、保存后实跑却失败"这种不对称
+      // 消失——两条路径必须对同一份输入做同样的规整。
+      const trimmed = original.trim();
+      // 纯空白输入（如粘贴时不小心带上的空格串）显式拒绝，不当成"清空 key"
+      // 静默接受——那样会让 GET /api/settings 显示 configured:true、
+      // agentReady() 判定为可用，但 supervisor 实际会拿一把空白 key 去启动
+      // worker。真正的"清空已存 key"信号是显式传空字符串（下面单独处理），
+      // 不是传一串看起来非空、trim 后却什么都不剩的空白。
+      if (original.length > 0 && !trimmed) {
+        return { ok: false, error: 'agent_api_key 不能是纯空白字符' };
+      }
+      if (trimmed.length > MAX_API_KEY_LENGTH) {
         return { ok: false, error: `agent_api_key 过长（上限 ${MAX_API_KEY_LENGTH} 字符）` };
       }
-      values[AGENT_SETTINGS_KEYS.apiKeyEncrypted] = raw ? encryptSecret(raw, resolveMasterKey()) : '';
+      values[AGENT_SETTINGS_KEYS.apiKeyEncrypted] = trimmed ? encryptSecret(trimmed, resolveMasterKey()) : '';
     }
 
     if (touches('agent_base_url') || touches('agent_provider')) {
