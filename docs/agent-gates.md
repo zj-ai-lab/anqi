@@ -364,8 +364,8 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
     行（AES-256-GCM 密文，非明文）、`getStoredApiKey()` 一次性解密出的内存明文（用完即弃，不
     缓存）、`GET /api/settings` 响应体里的 `agent_api_key_masked`（只留末 4 位，非明文）、以及
     `POST /api/agent/models` 发往调用方指定主机的 `Authorization` 头（这是该端点的设计目的
-    本身——把 key 发给一个模型 provider 的 `/models` 接口——不是泄漏；该端点现在只信任
-    provider 官方域或与已保存 `agent_base_url` 同源的目标，见本条目下方的"外带通道"补记）。
+    本身——把 key 发给一个模型 provider 的 `/models` 接口——不是泄漏；哪些情形下允许这个
+    `Authorization` 头用已存/环境变量的 key，见本条目下方的"外带通道"补记）。
   - **"`/api/counts` 只回一个布尔"** 不再成立：现在还回 `agent_key_source`（`env`/`stored`/
     `none` 三态枚举），仍然不含 key 值本身，只是多了一个"来源"维度。`GET /api/settings` 同样
     新增 `agent_api_key_masked` 与 `agent_api_key_source`——均为脱敏字段，未回归到明文。
@@ -374,15 +374,54 @@ POST /api/agent/models 的网络层（本地假服务器）与路由层（provid
     绕过这层校验（2026-08-23 复审探针实证：把 `agent_api_key_env` 直接置成
     `ANJIAN_INTERNAL_KEY`，这两个消费者会把内部密钥当模型 key 读出来）。现已修复：校验下沉进
     `resolveAgentApiKey()` 本身，所有调用方自动继承，不再依赖每个新增消费者各自记得复检一遍。
-  - **【2026-08-23 复审新增的外带通道，已修复】** `POST /api/agent/models` 曾经对**任意**
-    调用方指定的 `baseURL` 都放行 env/本机存储的 key 回落——这构成一条把只在 `GET /api/settings`
-    里以掩码形式暴露的完整明文 key，外带到调用方指定的任意主机的通道（且该端点如上所述刻意
-    不经过 `agent_enabled` 门）。现已修复为只信任 provider 官方域或与已保存 `agent_base_url`
-    同源的目标，机械回归见 `tools/test-agent-models-http.js` 场景 7.5。
+  - **【2026-08-23 首次复审新增的外带通道；同日二次复审证实"已修复"的说法不成立，现已
+    真正修复】** `POST /api/agent/models` 曾经对**任意**调用方指定的 `baseURL` 都放行
+    env/本机存储的 key 回落——首次复审当时把这个洞的修复方案定为"只信任 provider 官方域
+    或与已保存 `agent_base_url` 同源的目标"（`tools/test-agent-models-http.js` 场景 7.5），
+    并在本条目留下了"已修复"的记录。**二次复审探针实测证明这个修复本身无效**：
+    "与已保存 `agent_base_url` 同源"这条信任路径依赖的凭据——settings 表里当前的
+    `agent_base_url`——本身就是同一个 `PUT /api/settings` 面可写的值，与被保护的
+    `agent_api_key_encrypted` 处在同一个信任边界内，不构成独立凭据。攻击者（典型场景 XSS，
+    天然可以发起任意已认证的 `fetch`）只需要两次请求就能完整复现：① `PUT /api/settings`
+    把 `agent_provider=openai-completions`、`agent_base_url=<攻击者地址>` 写进去（不需要
+    触碰 `model`/`agent_api_key` 两个字段）；② 省略 `apiKey` 的 `POST /api/agent/models`
+    此时判定"同源"为真，`resolveAgentApiKey()` 解密出已存的完整明文 key，原样发进
+    `Authorization` 头打给攻击者服务器——且这一切在 `agent_enabled=false` 时同样成立
+    （该端点如上所述刻意不经过 `enabled` 门）。**真正的修复**：`baseURLsShareOrigin()`
+    连同这条"同源即信任"分支已整段删除（`src/agent/config.js`/`src/routes/agent.js`），
+    现在只保留 `provider === 'deepseek-official'` 一种可以省略 `apiKey` 的情形——它的
+    `baseURL` 已经被 `validateBaseURL()` 钉死成官方域常量，不依赖 settings 表里任何攻击者
+    可写的值；`openai-completions` 一律要求请求体显式带 `apiKey`（错误码
+    `api_key_required_for_custom_provider`），不再提供任何形式的静默回落。机械回归见
+    `tools/test-agent-models-http.js` 场景 7.5——同一份"baseURL 与已保存值完全同源"的输入，
+    断言从原来的"必须 200"改成"修复后必须仍是 400"，直接复现并锁死这条回归。
+  - **【2026-08-23 二次复审新增，已修复】** `validateBaseURL()`（`isPrivateOrLoopbackHost()`）
+    只对 URL 解析出来的 hostname 字符串做黑名单匹配，注释里一直如实写着"不做 DNS 解析"——
+    这意味着整套内网/回环拦截对任何一个字符串看起来合法、实际解析到回环/内网的公网注册域
+    名结构性失效。二次复审探针实测：`https://localtest.me:8443/v1`（真实存在、可签发有效
+    证书的公网域名，DNS 却把它解析到 127.0.0.1；同类现成域名还有 `*.traefik.me`、
+    `*.local.gd`）能通过 `validateBaseURL()` 的全部校验，`POST /api/agent/models` 返回
+    200 并真实打到了本机回环端口。**修复**：新增 `resolvePinnedAddress()`
+    （`src/agent/config.js`）——在真正发起请求前对 hostname 做一次真实 DNS 解析，只要解析
+    结果里**任何一条**记录落在内网/回环范围就整体拒绝（不是"挑一条公网地址凑合过关"，防止
+    同一 hostname 混答公网/内网地址的绕过思路），并把选中的地址原样传给
+    `fetchProviderModels()` 的新参数 `pinnedAddress`——`models-client.js` 因此从全局
+    `fetch()` 改写成 Node 核心 `http`/`https` 模块，实际 TCP 连接直接打到这个已核对过的具体
+    地址，不再让下层网络库重新解析一次 hostname，消除两次解析之间的 DNS rebinding 窗口；
+    `Host` 请求头与 TLS SNI（`servername`）保持原始 hostname 不变（这是虚拟主机路由/证书
+    校验的正确性要求，与安全边界无关，两者刻意分离）。`validateBaseURL()` 的字符串黑名单
+    继续保留，作为不需要网络 I/O 的快速失败层，两层互补。机械回归：`tools/test-agent-
+    config.js` 场景 18（注入假 `lookupImpl`，覆盖全公网/全私网/混合应答/解析失败/IPv6 字面
+    量方括号剥离五种情形，不依赖真实网络）、`tools/test-agent-models-client.js` 场景 12/13
+    （`pinnedAddress` 机制本身：连接目标是钉住的 IP，Host 头仍是原始 hostname；省略
+    `pinnedAddress` 时同一 hostname 确实会走真实 DNS 解析并失败，反证机制生效）、
+    `tools/test-agent-models-http.js` 场景 3.5（路由层接线：注入假 `resolvePinnedAddress`
+    验证拒绝时 400 且从未调用 `fetchModels`）。
   - **【2026-08-23 复审新增，已修复】** `fetchProviderModels()` 曾经跟随 3xx 重定向，可以把
     一个已通过 SSRF 校验的公网 `baseURL` 用 302 带进内网——虽然跨源重定向时 undici 会剥掉
     `Authorization` 头（key 本身没有跟着走），但内网 JSON 响应体的 `id` 字段会被当成模型列表
-    原样返回，构成一个内网端口存活探测 oracle。现已改为 `redirect:'manual'`，3xx 显式拒绝为
+    原样返回，构成一个内网端口存活探测 oracle。现已改为手动处理响应状态码（不再是 undici 的
+    `redirect:'manual'`，见上一条改用核心 http/https 模块的说明；语义不变），3xx 显式拒绝为
     `upstream_redirect_blocked`，机械回归见 `tools/test-agent-models-client.js` 场景 11。
 - **机械** — 场景 7（`listPendingInteractions` 脱敏）、场景 16c（对象 key 名脱敏）、
   场景 19（`worker.error` 兜底脱敏）、场景 23（wire 事件撞名重写）；

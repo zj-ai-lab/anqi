@@ -41,10 +41,21 @@
 //     这是"保存前先测试 provider/baseURL/key"的配置期工具，用户可能还没点
 //     启用开关就要看模型下拉框。这个例外不等于"不设防"：它有自己独立的红
 //     线（见该路由内的详细注释与 docs/agent-gates.md 门禁 2/9 补记）——
-//     apiKey 省略时只有 baseURL 与 provider 官方域/已保存的 agent_base_url
-//     同源才允许回落到 env/本机存储的 key，否则要求请求体显式带 apiKey，
-//     防止把 key 外带到调用方指定的任意主机；baseURL 仍然过与保存设置同一
-//     套 SSRF 校验（协议/凭据/内网回环/官方域）。
+//     apiKey 省略时只有 provider === 'deepseek-official'（baseURL 被
+//     validateBaseURL() 钉死成官方域常量，不是任何攻击者可写的值）才允许
+//     回落到 env/本机存储的 key；openai-completions 一律要求请求体显式带
+//     apiKey，不提供任何自动回落——【2026-08-23 复审修复】此前这里还有第二
+//     条"回落到已保存的 agent_base_url 同源"的信任路径，但那个信任锚点本身
+//     就是同一个 PUT /api/settings 面可写的，攻击者（典型场景 XSS）只需要
+//     先 PUT 把 agent_base_url 改成自己的地址、再 POST 本端点省略 apiKey，
+//     两次请求就能把已存的完整明文 key 送到攻击者服务器（复审探针实测复
+//     现），已整段删除，不再复用（见 src/agent/config.js 顶部关于
+//     baseURLsShareOrigin() 被移除的说明）。baseURL 仍然过与保存设置同一
+//     套字符串 SSRF 校验（协议/凭据/内网回环字面量/官方域），并在此基础上
+//     额外做一次连接期 DNS 解析 + IP 钉住（resolvePinnedAddress()）——纯
+//     字符串黑名单堵不住"字符串本身看起来是公网域名、DNS 却把它解析到内网/
+//     回环"这类情形（复审探针实测：`localtest.me` 之类真实注册域名解析到
+//     127.0.0.1）。
 //   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
 //     （src/routes/views.js 的 /api/inbox/:id/accept|decline），本文件不新开
 //     任何模型可达的 accept API。
@@ -54,9 +65,9 @@ import {
   AGENT_SETTINGS_KEYS,
   ALLOWED_PROVIDERS,
   agentKeyStatus,
-  baseURLsShareOrigin,
   loadAgentConfig,
   resolveAgentApiKey,
+  resolvePinnedAddress,
   validateBaseURL,
 } from '../agent/config.js';
 import { fetchProviderModels, modelsErrorToHttpStatus } from '../agent/models-client.js';
@@ -120,7 +131,14 @@ function buildQuestionAnswer(pendingQuestions, rawAnswers) {
 // fetchModels 是 fetchProviderModels() 的依赖注入点（同 AgentSupervisor 的
 // spawnFn 一个风格）：生产环境用真实网络实现，测试可以注入假实现验证路由层
 // 自己的职责（校验/取值优先级/错误映射/脱敏），不必每次都发起真实网络调用。
-export function createAgentRouter(supervisor, { fetchModels = fetchProviderModels } = {}) {
+export function createAgentRouter(supervisor, {
+  fetchModels = fetchProviderModels,
+  // 依赖注入点，同 fetchModels 一个风格：生产环境用真实 DNS 解析，测试传
+  // 入假实现验证"路由层真的调用了这道闸门、且失败时正确 400 并从不调用
+  // fetchModels"，不需要在路由层自检里发起真实网络 DNS 查询（真实解析行为
+  // 由 src/agent/config.js 的单元测试单独覆盖）。
+  resolvePinnedAddress: resolveAddress = resolvePinnedAddress,
+} = {}) {
   const r = Router();
 
   // 只读:配置层可用性 + (可选)某案件当前 worker 状态。不带 case_id 时只反映
@@ -171,48 +189,59 @@ export function createAgentRouter(supervisor, { fetchModels = fetchProviderModel
     }
 
     // baseURL 必须过与保存时同一套安全校验（协议、credential-free、内网/
-    // 回环拦截、deepseek-official 官方域钉死）——这一步是防 SSRF 的关键闸
-    // 门,不能因为这是"只是拉个列表"的辅助端点就绕过。
+    // 回环字面量拦截、deepseek-official 官方域钉死）——这一步是防 SSRF 的
+    // 第一层闸门,不能因为这是"只是拉个列表"的辅助端点就绕过；但纯字符串
+    // 黑名单堵不住"字符串本身看起来是合法公网域名、DNS 却解析到内网/回环"
+    // 这类情形,下面 resolveAddress() 是第二层、真正决定连接目标的闸门。
     const baseURLResult = validateBaseURL(body.baseURL, provider);
     if (!baseURLResult.ok) {
       return res.status(400).json({ error: baseURLResult.error });
     }
     const baseURL = baseURLResult.normalized;
 
+    // 【2026-08-23 复审新增】连接期 DNS 解析 + IP 钉住——见
+    // src/agent/config.js 的 resolvePinnedAddress() 顶部注释。这一步必须
+    // 发生在 apiKey 取值链之前：即使调用方在请求体里显式带了 apiKey（不走
+    // 任何自动回落），这个端点依然会替调用方去连一次这个 baseURL,不能允许
+    // "只要我自己带 key,就可以让 anqi 服务器帮我打内网/回环地址"这条路径
+    // 存在（这与 apiKey 来自哪里无关,是纯粹的 SSRF 防护,对所有调用方一
+    // 视同仁）。拒绝时不区分是"字符串黑名单"还是"DNS 解析"命中的,统一走
+    // 同一条 400,避免把内部判定细节当成端口/内网结构探测 oracle 暴露出去。
+    const pinResult = await resolveAddress(baseURLResult.parsed.hostname);
+    if (!pinResult.ok) {
+      audit(req.actor, 'agent-models-fetch-fail', 'agent-models', null, `provider=${provider} reason=dns_pin_rejected`);
+      return res.status(400).json({ error: pinResult.error });
+    }
+
     // apiKey 省略时,用已保存的/环境变量的(取值优先级链与 loadAgentConfig()
     // 同源,见 resolveAgentApiKey());body.apiKey 只在类型是非空字符串时才
     // 采用——用户在"改 baseURL/model 但没改 key"这种场景下重新拉取列表,
     // 前端没有理由把已经存在服务端的 key 再传一遍。
     //
-    // 【红线】只有当这次请求的 baseURL 是"可信来源"时才允许回落到 env/本机
-    // 存储的 key——否则本端点会变成一条 key 外带通道：它刻意不经过
-    // config.enabled 门（见上方注释），如果对调用方指定的任意 baseURL 都
-    // 放行已存 key，就等于把只在 GET /api/settings 里以掩码形式暴露的完整
-    // 明文 key，原样送给调用方在请求体里随便填的任何主机（任意 XSS / 本机
-    // 另一个不设防实例 / 被诱导粘贴的"免费网关"地址）。可信来源只有两种：
-    //   1) provider === 'deepseek-official'——baseURL 已经被上面的
-    //      validateBaseURL() 钉死成官方域，不存在"指向任意主机"的可能；
-    //   2) openai-completions 且这次的 baseURL 与用户已经保存过的
-    //      agent_base_url 同源（baseURLsShareOrigin()）——用户对这个地址
-    //      "已经决定信任"，不是这次请求临时提供的新地址。
-    // 指向任何其它地址，一律要求请求体里显式带上 apiKey，不做静默回落。
+    // 【红线】只有 provider === 'deepseek-official' 时才允许省略 apiKey 并
+    // 回落到 env/本机存储的 key——它的 baseURL 已经被上面的 validateBaseURL()
+    // 钉死成官方域常量,不存在"指向任意主机"的可能,不依赖 settings 表里任
+    // 何攻击者可写的值。openai-completions 的 baseURL 天然是用户自定义、
+    // 可以被同一个登录态的调用方（典型场景 XSS）随时通过 PUT /api/settings
+    // 改写,因此这里不提供任何形式的自动回落,一律要求请求体显式带上
+    // apiKey——【2026-08-23 复审修复】此前这里还允许"这次的 baseURL 与已
+    // 保存的 agent_base_url 同源"时回落,但那个信任锚点本身就是可以被同一
+    // 条 PUT 通道改写的,攻击者只需要先 PUT 把 agent_base_url 改成自己的
+    // 地址、"同源"判定立刻为真,两次请求就足以把已存的完整明文 key 外带出
+    // 去（不经过 config.enabled 门，即使 agent_enabled=false 也成立）,已
+    // 整段删除,不再复用。
     let apiKey;
     let apiKeySource;
     if (typeof body.apiKey === 'string' && body.apiKey.trim()) {
       apiKey = body.apiKey.trim();
       apiKeySource = 'request';
+    } else if (provider !== 'deepseek-official') {
+      audit(req.actor, 'agent-models-fetch-fail', 'agent-models', null, `provider=${provider} reason=custom_provider_requires_explicit_key`);
+      return res.status(400).json({
+        error: 'openai-completions 的 baseURL 可由客户端随时改写，出于安全考虑该 provider 下拉取模型必须显式在请求中提供 apiKey，不会自动使用已保存/环境变量里的 key；仅 deepseek-official（baseURL 钉死官方域）支持省略 apiKey',
+        code: 'api_key_required_for_custom_provider',
+      });
     } else {
-      const savedBaseURLRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(AGENT_SETTINGS_KEYS.baseURL);
-      const savedBaseURL = savedBaseURLRow ? String(savedBaseURLRow.value ?? '') : '';
-      const trustedTarget = provider === 'deepseek-official'
-        || (savedBaseURL && baseURLsShareOrigin(baseURL, savedBaseURL));
-      if (!trustedTarget) {
-        audit(req.actor, 'agent-models-fetch-fail', 'agent-models', null, `provider=${provider} reason=untrusted_baseurl_for_stored_key`);
-        return res.status(400).json({
-          error: '该 baseURL 尚未保存过，出于安全考虑不会自动带上已保存/环境变量里的 API Key；请在请求中附带 apiKey，或先保存该地址后再拉取模型列表',
-          code: 'api_key_required_for_untrusted_baseurl',
-        });
-      }
       const apiKeyEnvRow = db.prepare('SELECT value FROM settings WHERE key = ?').get(AGENT_SETTINGS_KEYS.apiKeyEnv);
       const apiKeyEnv = apiKeyEnvRow ? String(apiKeyEnvRow.value ?? '').trim() : '';
       const resolved = resolveAgentApiKey({ apiKeyEnv });
@@ -225,7 +254,7 @@ export function createAgentRouter(supervisor, { fetchModels = fetchProviderModel
 
     let result;
     try {
-      result = await fetchModels({ baseURL, apiKey });
+      result = await fetchModels({ baseURL, apiKey, pinnedAddress: pinResult.address });
     } catch (error) {
       // fetchProviderModels() 的所有错误分支都带 .code（见
       // src/agent/models-client.js），message 本身已经是脱敏过的中文提

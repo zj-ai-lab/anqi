@@ -18,6 +18,7 @@
 //   - baseURL 必须经过协议、credential-free 和允许域策略三项校验（设计稿
 //     §5）；apiKeyEnv 除了合法环境变量名格式，还必须排除 anqi 自身会用到的
 //     保留前缀/名称——见下面 isReservedEnvName 的注释。
+import dns from 'node:dns';
 import { db } from '../db.js';
 import { decryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
 
@@ -92,7 +93,7 @@ function expandIPv6Groups(addr) {
   return [...head, ...Array(missing).fill('0'), ...tail];
 }
 
-function isPrivateOrLoopbackHost(hostname) {
+export function isPrivateOrLoopbackHost(hostname) {
   let lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   // 尾点 FQDN（如 "localhost."、"api.localhost."）——WHATWG URL 会原样保留
   // 这个尾部的点（`new URL('http://LOCALHOST./v1').hostname === 'localhost.'`），
@@ -235,20 +236,75 @@ export function validateBaseURL(baseURLRaw, provider) {
   return { ok: true, parsed, normalized: parsed.toString().replace(/\/$/, '') };
 }
 
-// 两个 baseURL 是否同源（协议+host+port，用 URL.origin 归一化，自动处理
-// 默认端口的省略形式）。POST /api/agent/models 用它判断"调用方给的 baseURL
-// 是不是用户已经保存过的那一个"——只有同源才允许把 env/本机存储的 key 自动
-// 回落进 Authorization 头，见 src/routes/agent.js 的红线注释：这个端点刻意
-// 不经过 config.enabled 门，如果对任意调用方指定的 baseURL 都放行已存
-// key，就等于把一条"完整明文 key 外带到调用方指定的任意主机"的通道正式
-// 开放出来（GET /api/settings 只回末 4 位掩码，绕过这道门就相当于把这个
-// 边界废掉）。任一入参不是合法 URL 时按不同源处理（fail-closed）。
-export function baseURLsShareOrigin(a, b) {
+// 【2026-08-23 复审修复，替换已废弃的 baseURLsShareOrigin()】此前
+// POST /api/agent/models 曾经把"这次请求的 baseURL 是否与 settings 表里
+// 当前的 agent_base_url 同源"当作"用户已经决定信任这个地址"的证据，藉此
+// 允许省略 apiKey 时静默回落到已存/环境变量的 key。这个信任锚点本身就是
+// 同一个 PUT /api/settings 面可写的——攻击者（典型场景：XSS）只需要两次
+// 请求就能把它变成一条完整明文 key 外带通道：第一次 PUT 把 agent_base_url
+// 改成攻击者自己的地址（只需 agent_provider + agent_base_url 两个字段），
+// "同源"判定随之立刻变为真；第二次 POST /api/agent/models 省略 apiKey，
+// 校验通过，已存 key 解密后直接发给攻击者服务器（该端点还刻意不经过
+// config.enabled 门，enabled=false 时同样成立）。也就是说，"与已保存值
+// 是否一致"这类可以被同一权限面在同一时刻改写的值，从来不是一个可靠的
+// 信任锚点——不再复用它。现在只保留一种可以自动回落的情形：
+// provider === 'deepseek-official'，因为它的 baseURL 已经被
+// validateBaseURL() 钉死成官方域常量（DEEPSEEK_OFFICIAL_HOST），不存在
+// "指向任意主机"的可能，不依赖 settings 表里任何可被同一 PUT 面改写的值。
+// openai-completions 的 baseURL 天然是用户自定义、可被攻击者用同一条
+// PUT 通道随时改写，因此该 provider 下拉取模型必须显式在请求体里带上
+// apiKey，不再提供任何形式的静默回落——见 src/routes/agent.js 该端点的
+// 具体判断分支。
+
+// 【2026-08-23 复审修复】isPrivateOrLoopbackHost() 只对 URL 解析出来的
+// hostname 字符串做黑名单匹配，注释里一直如实写着"不做 DNS 解析"——这意味
+// 着任何一个字符串看起来"人畜无害"、实际解析到回环/内网地址的公网注册域名
+// （复审探针实测：`https://localtest.me:8443/v1`，一个真实存在、可以签发
+// 有效证书的公网域名，DNS 却把它解析到 127.0.0.1；同类现成域名还有
+// `*.traefik.me`、`*.local.gd`）都能跳过上面 validateBaseURL() 的全部校验。
+// 纯字符串黑名单结构性地堵不住这类攻击——必须在真正发起网络连接前，对
+// hostname 做一次真实 DNS 解析，逐条核对解析结果，再把连接钉死在这次解析
+// 出来、已经核对过的具体地址上（而不是把 hostname 交给下层网络库，让它自己
+// 重新解析一次——两次解析之间的窗口正是经典的 DNS rebinding 攻击面：查的时
+// 候是一个地址，连的时候 TTL 已过、换成了另一个）。
+//
+// resolvePinnedAddress() 就是这道"连接期解析 + 钉 IP"闸门：调用方
+// （src/routes/agent.js 的 POST /agent/models）必须在 validateBaseURL()
+// 通过之后、真正发起请求之前调用它，拿到的 address 原样传给
+// fetchProviderModels() 的 pinnedAddress 参数——实际 TCP 连接直接打到这个
+// 地址，不再由 http/https 模块重新走一次 DNS（见 models-client.js 里
+// pinnedAddress 的用法）。validateBaseURL() 的纯字符串黑名单继续保留，
+// 作为不需要网络 I/O 的快速失败层（两层互补，不是互相替代）。
+//
+// 一个 hostname 可能解析出多条记录（A/AAAA 各若干条）：只要其中**任何一条**
+// 落在内网/回环范围，整体拒绝——不是"挑一条公网地址凑合过关"。同一个
+// hostname 同时应答公网地址与内网地址本身就是可疑信号（也堵住"多条 A 记录
+// 里混一条私网地址，指望下层库随机/顺序选中公网那条通过检查、下次连接又选
+// 中私网那条"这种基于多值 DNS 应答的绕过思路）。
+//
+// lookupImpl 是依赖注入点（同本文件其它地方、supervisor.js 的 spawnFn 一
+// 个风格）：生产环境用真实 `dns.promises.lookup`，测试传入假实现验证"任意
+// 一条私网地址即整体拒绝"这条规则，不需要在自检里发起真实网络请求。
+export async function resolvePinnedAddress(hostname, { lookupImpl = dns.promises.lookup } = {}) {
+  // dns.lookup 不接受 WHATWG URL 给 IPv6 字面量套上的方括号（`[::1]`）——
+  // 字面 IP 本来就不需要真的发起 DNS 查询，dns.lookup 对字面 IP 会直接原样
+  // 返回，不产生任何网络 I/O。
+  const bareHost = String(hostname ?? '').replace(/^\[|\]$/g, '');
+  let records;
   try {
-    return new URL(String(a ?? '')).origin === new URL(String(b ?? '')).origin;
+    records = await lookupImpl(bareHost, { all: true, verbatim: true });
   } catch {
-    return false;
+    return { ok: false, error: 'baseURL 域名无法解析，请检查地址是否正确' };
   }
+  if (!Array.isArray(records) || records.length === 0) {
+    return { ok: false, error: 'baseURL 域名无法解析，请检查地址是否正确' };
+  }
+  const unsafe = records.find((record) => isPrivateOrLoopbackHost(String(record?.address ?? '')));
+  if (unsafe) {
+    return { ok: false, error: 'baseURL 解析后指向内网/回环地址，已拒绝（该域名可能被指向了本机或内网 IP）' };
+  }
+  const [{ address, family }] = records;
+  return { ok: true, address, family };
 }
 
 // settings 表里的键名。设置路由只 PUT/GET 这五个键，其余一律丢弃——与

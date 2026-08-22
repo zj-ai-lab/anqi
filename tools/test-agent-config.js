@@ -22,6 +22,7 @@ const {
   getStoredApiKey,
   agentKeyStatus,
   PROVIDER_CANONICAL_KEY_ENV,
+  resolvePinnedAddress,
 } = await import('../src/agent/config.js');
 const { encryptSecret, resolveMasterKey } = await import('../src/lib/secret-box.js');
 
@@ -321,4 +322,50 @@ assert.deepEqual(agentKeyStatus(), { configured: false, keySource: 'none' }, 'en
 
 clearAgentSettings();
 db.prepare('DELETE FROM settings WHERE key = ?').run(AGENT_SETTINGS_KEYS.apiKeyEncrypted);
+
+// 18) 【红线回归，2026-08-23 复审新增】resolvePinnedAddress()：validateBaseURL()
+//     的 isPrivateOrLoopbackHost() 只做字符串匹配，不做 DNS 解析——任何一个
+//     字符串看起来合法、实际解析到内网/回环的公网域名（复审探针实测
+//     `localtest.me` 真实解析到 127.0.0.1）都能跳过它。这里不发起真实网络
+//     DNS 查询（沙箱环境不一定有出网权限，也不该让单元测试依赖真实互联网状
+//     态），改用注入的假 lookupImpl 验证 resolvePinnedAddress() 自身的判定
+//     规则：任意一条解析结果落在内网/回环范围即整体拒绝，即使同时存在一条
+//     公网地址（多值 DNS 应答本身就是可疑信号，不能"挑一条凑合过关"）。
+{
+  // 18a) 全部解析到公网地址 → 放行，返回第一条记录。
+  const allPublic = async () => [{ address: '203.0.113.10', family: 4 }, { address: '203.0.113.11', family: 4 }];
+  const okResult = await resolvePinnedAddress('api.example.com', { lookupImpl: allPublic });
+  assert.deepEqual(okResult, { ok: true, address: '203.0.113.10', family: 4 });
+
+  // 18b) 全部解析到内网/回环地址（模拟 localtest.me 这类域名）→ 拒绝。
+  const allPrivate = async () => [{ address: '127.0.0.1', family: 4 }];
+  const rejectedAllPrivate = await resolvePinnedAddress('localtest.me', { lookupImpl: allPrivate });
+  assert.equal(rejectedAllPrivate.ok, false);
+  assert.ok(rejectedAllPrivate.error);
+
+  // 18c) 混合应答（一条公网 + 一条内网）→ 同样整体拒绝，不是"挑安全的那条用"。
+  const mixed = async () => [{ address: '203.0.113.10', family: 4 }, { address: '169.254.169.254', family: 4 }];
+  const rejectedMixed = await resolvePinnedAddress('rebinding.example.com', { lookupImpl: mixed });
+  assert.equal(rejectedMixed.ok, false, '解析结果里只要出现一条内网/回环地址，整体必须拒绝');
+
+  // 18d) IPv6 回环/链路本地同样覆盖（与 isPrivateOrLoopbackHost() 现有判定
+  //      复用同一套规则,这里只确认接线正确,不重新验证每条 IPv6 地址段）。
+  const ipv6Private = async () => [{ address: '::1', family: 6 }];
+  const rejectedIpv6 = await resolvePinnedAddress('v6.example.com', { lookupImpl: ipv6Private });
+  assert.equal(rejectedIpv6.ok, false);
+
+  // 18e) DNS 查询本身失败（ENOTFOUND 之类）→ 安全失败,同样拒绝而不是抛出。
+  const throwing = async () => { throw Object.assign(new Error('queryA ENOTFOUND'), { code: 'ENOTFOUND' }); };
+  const rejectedThrow = await resolvePinnedAddress('does-not-exist.invalid', { lookupImpl: throwing });
+  assert.equal(rejectedThrow.ok, false);
+
+  // 18f) hostname 带 IPv6 字面量方括号（WHATWG URL 解析产物）时,传给
+  //      lookupImpl 的必须是去掉方括号之后的裸地址——否则字面 IP 会被误当
+  //      成域名字符串,解析失败。
+  let receivedHost = null;
+  const capturing = async (host) => { receivedHost = host; return [{ address: '203.0.113.10', family: 4 }]; };
+  await resolvePinnedAddress('[2001:db8::1]', { lookupImpl: capturing });
+  assert.equal(receivedHost, '2001:db8::1', 'IPv6 字面量的方括号必须先剥掉再交给 lookupImpl');
+}
+
 console.log('agent config 自检全部通过');

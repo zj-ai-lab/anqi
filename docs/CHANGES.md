@@ -91,7 +91,7 @@
 
 上面这批功能落地后经过一轮对抗复审，发现并修复了以下问题（均已合入本条目描述的同一个 beta.2 工作树，未单独发版）：
 
-- **`POST /api/agent/models` 堵住 key 外带通道**：该端点刻意不经过 `agent_enabled` 门（配置期"保存前先测 key"的正当设计），但此前 `apiKey` 省略时会无条件回落到 env/本机存储的 key，再把它当 Bearer 发给请求体里调用方指定的任意 `baseURL`——绕过了 `GET /api/settings` 只回末 4 位掩码这层保护。修复：新增 `baseURLsShareOrigin()`，只有 `deepseek-official`（baseURL 已被钉死成官方域）或 `openai-completions` 且这次 `baseURL` 与已保存的 `agent_base_url` 同源时才允许回落，否则要求请求体显式带 `apiKey`。
+- **`POST /api/agent/models` 堵住 key 外带通道**（当时的修复方案本身仍留有一个洞，二次复审已实证复现并真正修复，见下方"二次复审修复"）：该端点刻意不经过 `agent_enabled` 门（配置期"保存前先测 key"的正当设计），但此前 `apiKey` 省略时会无条件回落到 env/本机存储的 key，再把它当 Bearer 发给请求体里调用方指定的任意 `baseURL`——绕过了 `GET /api/settings` 只回末 4 位掩码这层保护。当时的修复：新增 `baseURLsShareOrigin()`，只有 `deepseek-official`（baseURL 已被钉死成官方域）或 `openai-completions` 且这次 `baseURL` 与已保存的 `agent_base_url` 同源时才允许回落，否则要求请求体显式带 `apiKey`。
 - **`fetchProviderModels()` 不再跟随 3xx 重定向**：`baseURL` 只在第一跳做过 SSRF 校验，默认 `redirect:'follow'` 会让一个已通过校验的公网地址用 302 把请求带进内网。改为 `redirect:'manual'`，3xx 显式拒绝为 `upstream_redirect_blocked`。
 - **`validateBaseURL()` 黑名单补漏**：新增拦截云元数据主机名（`metadata.google.internal`/`metadata.goog`/`*.internal`）、IPv4-compatible IPv6（`::a.b.c.d` 归一化后的纯十六进制形式，与已处理的 IPv4-mapped `::ffff:a.b.c.d` 不同）、`0.0.0.0/8`、RFC 2544 基准测试段 `198.18.0.0/15`。
 - **公网地址强制 https**：内网/回环地址已被整体拒绝，能通过该校验的 host 按定义就是公网地址，此前仍接受 `http:`，key 会明文过网；现与 android-v1.1.0 同一条规则对齐。
@@ -101,6 +101,13 @@
 - **`secret.key` 纳入 `tools/backup.cjs` 备份**：此前该脚本只备份 `anjian.db`，现在同步备份 `secret.key`（若存在）；`SELF-HOSTING.md` 补充 `ANJIAN_SECRET`/`secret.key` 的配置参考与备份说明（此前完全没有文档提及这两者）。
 - **`baseURL` 拒绝查询参数/片段**：`models-client.js` 用字符串拼接 `${baseURL}/models`，带 `?`/`#` 的 baseURL 会把这个后缀拼进错误位置（探针实测 `/v1#frag` 结尾时 `/models` 被静默吞掉）。`validateBaseURL()` 现在直接拒绝这类输入。
 - **`ANJIAN_SECRET` 强度校验与派生算法加固**：长度校验（≥32 字节）之外新增字符多样性校验（至少 8 种不同字符，挡住 `'a'.repeat(32)`/32 个空格这类"够长但明显非随机"的输入）；派生算法从裸 `sha256`（无 salt、可被彩虹表复用、对短口令几乎不设防）改为 `scrypt`（固定应用层 salt + 加重的成本参数），并按 passphrase 精确值做进程内缓存以抵消 scrypt 引入的计算开销；`src/lib/startup-config.js` 新增进程启动时的校验（此前要等用户第一次保存 key 才会以一个 500 暴露配置错误，比 `ANJIAN_USER`/`ANJIAN_PASS_HASH`/`ANJIAN_INTERNAL_KEY` 这几个同样重要的凭据晚了一大截）。
+
+### 二次复审修复（本轮，上一轮复审的两处遗留红线）
+
+上一轮"复审修复"合入之后又经过一轮独立对抗复审，实证复现并修复了以下两处更深的问题（详见 [agent-gates.md](agent-gates.md) 门禁 9）：
+
+- **`POST /api/agent/models` 的"可信来源"门本身可以被同一权限面绕过**：上一轮把"这次的 `baseURL` 与已保存的 `agent_base_url` 同源"当作允许省略 `apiKey` 回落的信任凭据，但这个凭据本身就是同一个 `PUT /api/settings` 面可写的值——攻击者（典型场景 XSS）只需要两次请求：① `PUT` 把 `agent_base_url` 改成自己的地址（只需 `agent_provider`+`agent_base_url` 两个字段）；② 省略 `apiKey` 的 `POST /api/agent/models`，此时"同源"判定立刻为真，已存的完整明文 key 被解密后发给攻击者服务器——且这一切在 `agent_enabled=false` 时同样成立。**真正的修复**：`baseURLsShareOrigin()` 连同这条"同源即信任"分支整段删除，现在只保留 `provider === 'deepseek-official'`（baseURL 钉死官方域常量，不依赖 settings 表里任何攻击者可写的值）一种可以省略 `apiKey` 的情形；`openai-completions` 一律要求请求体显式带 `apiKey`。
+- **`validateBaseURL()` 的内网/回环拦截只做字符串匹配、不做 DNS 解析**：任何一个字符串看起来是合法公网域名、实际却解析到回环/内网地址（探针实测 `localtest.me` 真实解析到 127.0.0.1，属于这类现成的公网注册域名）都能跳过全部字符串黑名单校验。**修复**：新增 `resolvePinnedAddress()`（`src/agent/config.js`）——在真正发起请求前对 hostname 做一次真实 DNS 解析，任意一条记录落在内网/回环范围即整体拒绝；解析出的地址原样传给重写为 Node 核心 `http`/`https` 模块的 `fetchProviderModels()`（新参数 `pinnedAddress`），实际 TCP 连接直接打到这个已核对过的具体地址，不再让下层网络库重新解析一次 hostname，消除两次解析之间的 DNS rebinding 窗口；`Host` 头与 TLS SNI 仍使用原始 hostname（虚拟主机路由/证书校验的正确性要求，与安全边界分离）。字符串黑名单继续保留作为快速失败层。
 
 ### 已知边界（非本轮范围）
 
