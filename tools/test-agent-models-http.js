@@ -61,7 +61,11 @@ const fetchModels = makeFakeFetchModels();
 // config.js 单独覆盖，不在这里重复。
 function makeFakeResolvePinnedAddress() {
   const calls = [];
-  let nextResult = { ok: true, address: '203.0.113.1', family: 4 };
+  // addresses：resolvePinnedAddress() 现在还带回全部通过校验的候选地址
+  // （2026-08-23 四次复审新增，见 src/agent/config.js 顶部注释）——路由层
+  // 把整个数组转交给 fetchModels() 的 pinnedAddresses 参数,这里的假实现同
+  // 步带上这个字段,不只是 address/family 两个向后兼容字段。
+  let nextResult = { ok: true, address: '203.0.113.1', family: 4, addresses: [{ address: '203.0.113.1', family: 4 }] };
   const fn = async (hostname) => {
     calls.push(hostname);
     return nextResult;
@@ -132,12 +136,15 @@ try {
     assert.match(data.error, /内网|回环/);
     assert.equal(fetchModels.calls.length, before, 'DNS 钉住拒绝时不应该调用 fetchModels');
     assert.ok(resolvePinnedAddress.calls.includes('looks-public-but-resolves-private.example.com'), '路由必须真的调用了 resolvePinnedAddress()，不是摆设');
-    resolvePinnedAddress.setResult({ ok: true, address: '203.0.113.1', family: 4 }); // 复位
+    resolvePinnedAddress.setResult({ ok: true, address: '203.0.113.1', family: 4, addresses: [{ address: '203.0.113.1', family: 4 }] }); // 复位
   }
 
   // ---- 4) 合法请求：apiKey 直接在请求体里给出,优先于任何已存配置；实际
-  //      连接目标（pinnedAddress）必须来自 resolvePinnedAddress() 的返回
-  //      值，原样透传给 fetchModels() ----
+  //      连接目标（pinnedAddresses）必须来自 resolvePinnedAddress() 的返回
+  //      值，原样透传给 fetchModels()（2026-08-23 四次复审：从单地址
+  //      pinnedAddress 换成全部候选地址 pinnedAddresses——路由层只取每条
+  //      候选的 address 字符串，family 目前没有消费方需要，见 src/routes/
+  //      agent.js 该处注释）----
   {
     fetchModels.setResult({ models: ['deepseek-chat', 'deepseek-reasoner'] });
     const { status, data } = await postModels({ provider: 'deepseek-official', baseURL: '', apiKey: 'sk-request-body-key' });
@@ -146,7 +153,7 @@ try {
     assert.equal(fetchModels.calls.length, 1);
     assert.equal(fetchModels.calls[0].apiKey, 'sk-request-body-key', 'apiKey 应该直接透传请求体里的值给 fetchModels');
     assert.equal(fetchModels.calls[0].baseURL, 'https://api.deepseek.com', 'baseURL 留空时 deepseek-official 应该自动带出官方域');
-    assert.equal(fetchModels.calls[0].pinnedAddress, '203.0.113.1', 'resolvePinnedAddress() 解析出的地址必须原样传给 fetchModels()');
+    assert.deepEqual(fetchModels.calls[0].pinnedAddresses, ['203.0.113.1'], 'resolvePinnedAddress() 解析出的候选地址列表必须原样（只取 address）传给 fetchModels()');
     assert.ok(!JSON.stringify(data).includes('sk-request-body-key'), '响应体不能包含 apiKey');
   }
 

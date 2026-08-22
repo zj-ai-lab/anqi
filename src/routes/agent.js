@@ -254,7 +254,14 @@ export function createAgentRouter(supervisor, {
 
     let result;
     try {
-      result = await fetchModels({ baseURL, apiKey, pinnedAddress: pinResult.address });
+      // 【2026-08-23 四次复审修复】传全部候选地址（pinnedAddresses，纯字符
+      // 串数组——resolvePinnedAddress() 的 addresses 是 {address,family} 对
+      // 象数组，这里只取 address，family 目前没有消费方需要），不再只传首
+      // 条——见 src/agent/config.js resolvePinnedAddress() 与
+      // src/agent/models-client.js fetchProviderModels() 顶部注释：全部候选
+      // 都已经通过同一套内网/回环核对，只在"连接层面失败"时才依次换下一个，
+      // 不是安全边界的放宽。
+      result = await fetchModels({ baseURL, apiKey, pinnedAddresses: (pinResult.addresses || []).map((a) => a.address) });
     } catch (error) {
       // fetchProviderModels() 的所有错误分支都带 .code（见
       // src/agent/models-client.js），message 本身已经是脱敏过的中文提

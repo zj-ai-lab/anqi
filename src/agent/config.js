@@ -93,7 +93,12 @@ function expandIPv6Groups(addr) {
   return [...head, ...Array(missing).fill('0'), ...tail];
 }
 
-export function isPrivateOrLoopbackHost(hostname) {
+// opts.skipRfc2544Bench：见下方 198.18.0.0/15 那一条判断——默认 false（对
+// baseURL 字符串本身的校验保持原有尺度），resolvePinnedAddress() 对"DNS 解析
+// 结果"这一层单独传 true（2026-08-23 三次复审修复，详见 resolvePinnedAddress()
+// 顶部注释）。
+export function isPrivateOrLoopbackHost(hostname, opts = {}) {
+  const { skipRfc2544Bench = false } = opts;
   let lower = hostname.toLowerCase().replace(/^\[|\]$/g, '');
   // 尾点 FQDN（如 "localhost."、"api.localhost."）——WHATWG URL 会原样保留
   // 这个尾部的点（`new URL('http://LOCALHOST./v1').hostname === 'localhost.'`），
@@ -139,7 +144,23 @@ export function isPrivateOrLoopbackHost(hostname) {
   // 地址registry"里的段，与上面几条一并堵上，理由相同（不是真正可达的公网
   // 地址，允许它没有正当理由，反而可能撞到宿主环境里恰好用这段做内部测试
   // 网络的服务）。
-  if (/^198\.(18|19)\./.test(lower)) return true;
+  //
+  // 【2026-08-23 三次复审修复】这一条只在 skipRfc2544Bench!==true 时生效——
+  // Surge/Clash/ClashX 等透明代理的 fake-ip 模式默认就把**任意域名**解析成
+  // 这个网段里的哨兵地址（Clash 默认 fake-ip-range 是 198.18.0.1/16），复审
+  // 探针在开着 Surge 的本机实测：example.com/localtest.me/api.deepseek.com
+  // 全部解析到 198.18.x.x。resolvePinnedAddress() 对"DNS 解析结果"复用这同
+  // 一个函数时如果不放开这一条，会把"用户开着任意 fake-ip 代理"整体误判成
+  // "baseURL 指向内网"，POST /api/agent/models 这条旗舰易用性流程因此对所有
+  // 开代理的用户 100% 失败——而放开它并不削弱 SSRF 边界：这段地址本来就不
+  // 路由到公网，一个远程 DNS 应答把域名指向这里，实际能连到的对象只取决于
+  // 本机代理软件自己怎么拦截/转发这段流量（分析同一台机器上本来就受信任的
+  // 软件），不构成"攻击者借 DNS 把请求引到*别的*内网服务"这条真正的 SSRF
+  // 路径。baseURL **字符串本身**直接写成这个网段的字面 IP（validateBaseURL()
+  // 走的是默认参数、skipRfc2544Bench 仍是 false）继续按原样拒绝——那是用户
+  // 自己敲进来的字面量，与"DNS 解析结果恰好落在这个网段"是两件不同的事，
+  // 前者继续没有正当理由放行。
+  if (!skipRfc2544Bench && /^198\.(18|19)\./.test(lower)) return true;
   // CGNAT 100.64.0.0/10（100.64.0.0 - 100.127.255.255）——常见于云厂商/隧道
   // 内网出口，不拦会让 baseURL 指到同一 CGNAT 网段内的其它内部服务。
   const cgnatMatch = /^100\.(\d{1,3})\./.exec(lower);
@@ -178,7 +199,7 @@ export function isPrivateOrLoopbackHost(hostname) {
       const lo = parseInt(groups[7], 16);
       if (!Number.isNaN(hi) && !Number.isNaN(lo)) {
         const embeddedIPv4 = [hi >> 8, hi & 0xff, lo >> 8, lo & 0xff].join('.');
-        if (isPrivateOrLoopbackHost(embeddedIPv4)) return true;
+        if (isPrivateOrLoopbackHost(embeddedIPv4, opts)) return true;
       }
     }
   }
@@ -285,6 +306,23 @@ export function validateBaseURL(baseURLRaw, provider) {
 // lookupImpl 是依赖注入点（同本文件其它地方、supervisor.js 的 spawnFn 一
 // 个风格）：生产环境用真实 `dns.promises.lookup`，测试传入假实现验证"任意
 // 一条私网地址即整体拒绝"这条规则，不需要在自检里发起真实网络请求。
+//
+// 【2026-08-23 三次复审修复】上面这道"任意一条不安全即整体拒绝"的判定改用
+// `{ skipRfc2544Bench: true }` 调 isPrivateOrLoopbackHost()——RFC 2544 基准
+// 测试段 198.18.0.0/15 在**这一层**（已经真实发起 DNS 解析之后）不再算作
+// 不安全，理由见 isPrivateOrLoopbackHost() 里那一条判断上方的详细注释；
+// validateBaseURL() 对 baseURL 字符串本身的校验不受影响，仍然拒绝这段地址
+// 的字面量。
+//
+// 【2026-08-23 四次复审修复】此前只取 `records[0]` 当唯一的钉住目标，其余
+// 全部通过校验的记录被直接丢弃——如果首条记录恰好不可达（常见场景：
+// verbatim:true 保留系统返回顺序,双栈域名先给出 AAAA 而宿主机只有 IPv4
+// 出口),之前是直接 504 network_error,不会像 undici/fetch 或普通
+// http.request(hostname) 那样有 Happy Eyeballs/多记录重试的机会。现在把
+// **全部**通过校验的记录（去重、保序）一并放进 `addresses`,交给
+// fetchProviderModels() 按顺序逐个尝试（见 models-client.js）；`address`/
+// `family` 两个字段保留向后兼容（等于 `addresses[0]`),调用方可以只取首条,
+// 也可以用完整列表做故障转移。
 export async function resolvePinnedAddress(hostname, { lookupImpl = dns.promises.lookup } = {}) {
   // dns.lookup 不接受 WHATWG URL 给 IPv6 字面量套上的方括号（`[::1]`）——
   // 字面 IP 本来就不需要真的发起 DNS 查询，dns.lookup 对字面 IP 会直接原样
@@ -299,12 +337,24 @@ export async function resolvePinnedAddress(hostname, { lookupImpl = dns.promises
   if (!Array.isArray(records) || records.length === 0) {
     return { ok: false, error: 'baseURL 域名无法解析，请检查地址是否正确' };
   }
-  const unsafe = records.find((record) => isPrivateOrLoopbackHost(String(record?.address ?? '')));
+  const unsafe = records.find((record) => isPrivateOrLoopbackHost(String(record?.address ?? ''), { skipRfc2544Bench: true }));
   if (unsafe) {
-    return { ok: false, error: 'baseURL 解析后指向内网/回环地址，已拒绝（该域名可能被指向了本机或内网 IP）' };
+    return { ok: false, error: 'baseURL 解析后指向内网/回环地址，已拒绝（该域名可能被指向了本机或内网 IP；如果你在使用代理软件的 fake-ip/透明代理功能，请检查其接管的地址段设置）' };
   }
-  const [{ address, family }] = records;
-  return { ok: true, address, family };
+  // 去重、保序：同一 hostname 的 A/AAAA 记录里可能出现重复的 (address,family)
+  // 组合（不同 resolver 行为各异），去重不影响"任意一条不安全即整体拒绝"这条
+  // 判断（发生在上面，对原始 records 做），只影响下发给调用方的候选列表。
+  const seen = new Set();
+  const addresses = [];
+  for (const record of records) {
+    const address = String(record?.address ?? '');
+    const family = record?.family;
+    const key = `${family}|${address}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    addresses.push({ address, family });
+  }
+  return { ok: true, address: addresses[0].address, family: addresses[0].family, addresses };
 }
 
 // settings 表里的键名。设置路由只 PUT/GET 这五个键，其余一律丢弃——与

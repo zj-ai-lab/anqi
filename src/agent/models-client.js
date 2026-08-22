@@ -82,44 +82,11 @@ function extractModelIds(parsedBody) {
   return ids;
 }
 
-// 主入口：baseURL 必须是调用方已经校验过的、去掉尾部斜杠的绝对 URL
-// （validateBaseURL() 的 normalized 值）。
-//   - pinnedAddress（可选）：调用方对 baseURL 的 hostname 做完真实 DNS 解析
-//     + 内网/回环核对之后（resolvePinnedAddress()）拿到的具体 IP——原样
-//     作为本次请求的 TCP 连接目标，不再触发第二次 DNS 查询,借此消除两次
-//     解析之间的 rebinding 窗口。省略时按 hostname 走一次普通解析连接
-//     （仅供本模块自身的单元测试使用,生产路径`总是`传入 pinnedAddress，
-//     见 src/routes/agent.js）。
-//   - requestImpl（可选）：默认按协议选 node:http 或 node:https，测试可以
-//     传入其它兼容 `.request(options, callback)` 的实现（同仓库其它地方的
-//     依赖注入风格），目前的自检直接用真实本地 http 服务器,不需要替换这个
-//     参数,但保留注入点。
-export async function fetchProviderModels({
-  baseURL,
-  apiKey,
-  timeoutMs = DEFAULT_TIMEOUT_MS,
-  maxBytes = DEFAULT_MAX_BYTES,
-  pinnedAddress,
-  requestImpl,
-}) {
-  let target;
-  try {
-    target = new URL(`${baseURL}${MODELS_PATH_SUFFIX}`);
-  } catch {
-    throw modelsError('network_error', '连接模型服务失败，请检查网络与 baseURL');
-  }
-
-  const isHttps = target.protocol === 'https:';
-  const transport = requestImpl || (isHttps ? https : http);
-  // 【安全边界】connectHost 决定字节实际流向哪台机器：有 pinnedAddress 时
-  // 直接连它（不再解析 hostname）；没有时退化成原始 hostname（由本次调用
-  // 触发一次普通的 DNS 解析,仅测试路径会走到这里）。
-  const connectHost = pinnedAddress || target.hostname;
-  // 【正确性,与安全无关】Host 请求头必须仍然是原始 hostname——很多第三方
-  // OpenAI 兼容网关/反向代理按 Host 头做虚拟主机路由,连去裸 IP 会直接 404
-  // 或路由到错误的后端,这与 SSRF 无关,是纯粹的协议正确性要求。
-  const hostHeader = target.port ? `${target.hostname}:${target.port}` : target.hostname;
-
+// 单次连接尝试：connectHost 是这次实际要打的 TCP 目标（钉住的某一个具体
+// 地址，或者省略 pinnedAddress 时的原始 hostname）。抽成独立函数是为了让
+// 主入口 fetchProviderModels() 可以对"多个候选地址"逐个重试（见下方
+// MAX_PINNED_ADDRESS_ATTEMPTS 的说明），而不必复制这一整段连接/解析逻辑。
+async function attemptOnce({ target, isHttps, transport, connectHost, hostHeader, apiKey, timeoutMs, maxBytes }) {
   const options = {
     method: 'GET',
     host: connectHost,
@@ -201,6 +168,82 @@ export async function fetchProviderModels({
   } finally {
     clearTimeout(timer);
   }
+}
+
+// 【2026-08-23 四次复审新增】一个 hostname 通过 resolvePinnedAddress() 核对
+// 后可能带回多条候选地址（见该函数顶部注释）；这里只对**前面这几条**依次
+// 重试——DNS 正常不会返回几十条记录,给一个小上限只是防止极端情形下把一次
+// "拉模型列表"的用户操作拖成"挨个尝试几十个地址"的长时间等待,不是安全边界
+// （每一条候选都已经在 resolvePinnedAddress() 里核对过,不存在"多试几个就
+// 多一分风险"这回事）。
+const MAX_PINNED_ADDRESS_ATTEMPTS = 4;
+
+// 主入口：baseURL 必须是调用方已经校验过的、去掉尾部斜杠的绝对 URL
+// （validateBaseURL() 的 normalized 值）。
+//   - pinnedAddresses（可选，数组）：调用方对 baseURL 的 hostname 做完真实
+//     DNS 解析 + 内网/回环核对之后（resolvePinnedAddress()）拿到的**全部**
+//     候选地址——依次尝试连接（Happy-Eyeballs 风格的故障转移，2026-08-23
+//     四次复审新增：此前只钉死首条记录,该记录一旦不可达就直接 504,不会像
+//     普通 DNS 解析那样有机会试第二条）。只在遇到"连接层面"失败
+//     （network_error/timeout，即从未真正拿到一个 HTTP 响应）时才换下一个
+//     候选;一旦某个地址真的给出了 HTTP 响应（哪怕是 401/404/5xx 这类应用层
+//     错误），说明连接目标本身没问题,立即把这个错误原样抛给调用方,不再
+//     尝试其余候选——那些"错误"是关于这个服务本身的（key 不对/没有
+//     /models 接口/上游出错）,换一个 IP 重试解决不了,反而可能把用户的
+//     真实错误原因掩盖成一条不相关的"最后一次尝试凑巧超时"。
+//   - pinnedAddress（可选，字符串，向后兼容单地址调用方/自身单元测试）：
+//     等价于 `pinnedAddresses: [pinnedAddress]`。两者都省略时按 hostname
+//     走一次普通解析连接（仅供本模块自身的单元测试使用,生产路径`总是`
+//     传入 pinnedAddresses，见 src/routes/agent.js）。
+//   - requestImpl（可选）：默认按协议选 node:http 或 node:https，测试可以
+//     传入其它兼容 `.request(options, callback)` 的实现（同仓库其它地方的
+//     依赖注入风格），目前的自检直接用真实本地 http 服务器,不需要替换这个
+//     参数,但保留注入点。
+export async function fetchProviderModels({
+  baseURL,
+  apiKey,
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  maxBytes = DEFAULT_MAX_BYTES,
+  pinnedAddress,
+  pinnedAddresses,
+  requestImpl,
+}) {
+  let target;
+  try {
+    target = new URL(`${baseURL}${MODELS_PATH_SUFFIX}`);
+  } catch {
+    throw modelsError('network_error', '连接模型服务失败，请检查网络与 baseURL');
+  }
+
+  const isHttps = target.protocol === 'https:';
+  const transport = requestImpl || (isHttps ? https : http);
+  // 【正确性,与安全无关】Host 请求头必须仍然是原始 hostname——很多第三方
+  // OpenAI 兼容网关/反向代理按 Host 头做虚拟主机路由,连去裸 IP 会直接 404
+  // 或路由到错误的后端,这与 SSRF 无关,是纯粹的协议正确性要求。
+  const hostHeader = target.port ? `${target.hostname}:${target.port}` : target.hostname;
+
+  // 【安全边界】candidates 决定字节实际流向哪(几)台机器：有 pinnedAddresses/
+  // pinnedAddress 时只从这个已核对过的列表里选,不再解析 hostname；两者都
+  // 省略时退化成原始 hostname（由本次调用触发一次普通的 DNS 解析,仅测试
+  // 路径会走到这里）。
+  const candidates = Array.isArray(pinnedAddresses) && pinnedAddresses.length > 0
+    ? pinnedAddresses.slice(0, MAX_PINNED_ADDRESS_ATTEMPTS)
+    : [pinnedAddress || target.hostname];
+
+  let lastError;
+  for (let i = 0; i < candidates.length; i++) {
+    const connectHost = candidates[i];
+    try {
+      return await attemptOnce({ target, isHttps, transport, connectHost, hostHeader, apiKey, timeoutMs, maxBytes });
+    } catch (error) {
+      const isLast = i === candidates.length - 1;
+      const isConnectionLevel = error?.code === 'network_error' || error?.code === 'timeout';
+      if (!isConnectionLevel || isLast) throw error;
+      lastError = error; // 只是记录,循环体内已经判断过不是最后一个候选
+    }
+  }
+  // 理论上走不到这里（循环体的最后一次迭代必然 throw），保留作为防御性兜底。
+  throw lastError || modelsError('network_error', '连接模型服务失败，请检查网络与 baseURL');
 }
 
 // 路由层的错误 → HTTP 状态码映射，与 fetchProviderModels() 抛出的 .code
