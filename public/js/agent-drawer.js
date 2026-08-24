@@ -40,6 +40,7 @@
 //   - 'interaction/pending' / 'interaction/expired'：origin 'supervisor'，
 //     approval 卡片（允许一次/拒绝）与 question 卡片（受限答案表单）。
 import { api, el, toast } from './api.js';
+import { renderMarkdownInto } from './markdown.js';
 
 const STATUS_LABEL = {
   disabled: '未启用', starting: '启动中', ready: '就绪', running: '运行中',
@@ -329,7 +330,7 @@ export async function mountAgentDrawer(caseId) {
         state.currentBubbleText = '';
       }
       state.currentBubbleText += chunk.text;
-      state.currentBubble.textContent = state.currentBubbleText;
+      renderMarkdownInto(state.currentBubble, state.currentBubbleText);
       scrollLogDown();
     });
     es.addEventListener('assistant/message', (e) => {
@@ -341,7 +342,7 @@ export async function mountAgentDrawer(caseId) {
       if (!text) return;
       if (!state.currentBubble) state.currentBubble = appendMsg('agent-msg-assistant', '');
       state.currentBubble.classList.remove('is-streaming');
-      state.currentBubble.textContent = text;
+      renderMarkdownInto(state.currentBubble, text);
       state.currentBubble = null;
       state.currentBubbleText = '';
       scrollLogDown();
