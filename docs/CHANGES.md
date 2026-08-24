@@ -8,8 +8,9 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **2.7.0-beta.2** | 未发布（工作树 2026-08-24） | 案件文件夹正式成为 AI 项目：建案可选择/创建 workspace，打开案件助理自动绑定。安全 Markdown 渲染恢复；DSH 升至 `0.1.1-rc.2`，默认 project 档恢复受案件边界保护的文件工具，full 档恢复命令、jobs、goal、subagent、workflow、Ralph 与 web；支持受信任 Cordis patch 热更新，并加入上游版本统一升级与 parity/真实启动门禁。延续本 beta 的界面填 key、供应商预设、模型列表和加密存储易用性改造。 |
-| **2.7.0-beta.1** | 未发布（工作树 2026-08-22） | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
+| **2.7.0-beta.3** | 2026-08-24 | 案件文件夹正式成为 AI 项目：建案可选择/创建 workspace，打开案件助理自动绑定。安全 Markdown 渲染恢复；DSH 升至 `0.1.1-rc.2`，默认 project 档恢复受案件边界保护的文件工具，full 档恢复命令、jobs、goal、subagent、workflow、Ralph 与 web；支持受信任 Cordis patch 热更新，并加入上游版本统一升级与 parity/真实启动门禁。 |
+| **2.7.0-beta.2** | 2026-08-23 | AI 助理设置面支持界面加密保存 API key、供应商预设、拉取模型列表与 `apiKeyEnv` 高级选项；修复上游认证失败被误判为案齐登录过期。 |
+| **2.7.0-beta.1** | 2026-08-22 | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |
 | **2.4.0** | 2026-08-11 | 费用页案卡堆、状态色带与粘性抬头收缩；自托管 Noto Sans/Serif SC 可变字体 |
@@ -62,11 +63,9 @@
 
 ---
 
-## 未发布 → 2.7.0-beta.2 — AI 助理设置面易用性改造（分支 `feat/agent-sidecar`，尚未合并 `main`）
+## 2.7.0-beta.3 — 案件工作区与完整 DSH
 
-**状态：`feat/agent-sidecar` 分支上功能迭代阶段，服务端与前端设置页 UI 均已落地（前端见下方「前端设置页」小节）；尚未合并 `main`。**
-
-**背景**：beta.1 的设置面要求用户先在系统里设好环境变量、再把变量名填进界面——这对公开版用户不可用。本轮目标：只填一个 API key → 选一个供应商（baseURL 自动带出）→ 拉取该 key 可用的模型列表 → 下拉选一个 → 保存。
+**状态：`feat/agent-sidecar` 分支发布候选，计划于 2026-08-24 以 `v2.7.0-beta.3` 预发布；尚未合并 `main`。**
 
 ### 功能
 
@@ -75,6 +74,20 @@
 - **恢复 DSH 文件与完整能力**：运行时从 `0.1.0-rc.7` 升至 `0.1.1-rc.2`。默认 `project` 档恢复 `read/read_image/write/edit/glob/grep`，但标准文件工具全部被 canonical containment 钉在当前案件夹；`glob/grep` 因绕过 `ctx.fs` 另有执行守卫。显式 `full` 档恢复上游 bash/jobs/goal/subagent/workflow/Ralph/web 等能力，继续保留案齐正式表只读/提案写入边界，并明示 shell 与联网的扩大权限。
 - **上游插件兼容与热更新**：完整档高级设置可指定一个已审查的绝对路径 `cordis.patch.yml`；案齐 launcher 用上游 Cordis patch + HMR 在现有 worker 上挂载、卸载或更新第三方插件。插件等同本机 Node 代码，拒绝相对路径、缺失文件、非普通文件和符号链接；依赖 DSH Web Client UI 插槽的插件仍需另做抽屉前端适配。
 - **上游更新门禁**：新增 `npm run agent:update-runtime -- <exact-version>`，统一更新 140 个 direct/override pin 和 lockfile；真实运行 project/full JSON-RPC boot、workspace containment、插件热卸载和 `dsh-base` parity，失败自动恢复旧 manifest/lock/依赖。上游新增 base row 未挂载或未明确归类会直接令门禁失败，不再静默漏能力。
+
+### 升级与兼容
+
+- migration 017 只为历史案件补齐缺失的 `folder_path`；不会移动、复制或删除同步盘里的既有案件材料。
+- AI 助理仍默认关闭；只有显式选择 `full` 档才会开放 shell、联网与上游完整工具面，第三方 Cordis patch 仅应指向已审查的本机配置。
+- 本版为预发布版；可直接从 `v2.7.0-beta.2` 升级，回退前应按发行手册备份数据库与案件文件夹。
+
+## 2.7.0-beta.2 — AI 助理设置面易用性改造（分支 `feat/agent-sidecar`，尚未合并 `main`）
+
+**状态：已于 2026-08-23 以 `v2.7.0-beta.2` 预发布；尚未合并 `main`。**
+
+**背景**：beta.1 的设置面要求用户先在系统里设好环境变量、再把变量名填进界面——这对公开版用户不可用。本轮目标：只填一个 API key → 选一个供应商（baseURL 自动带出）→ 拉取该 key 可用的模型列表 → 下拉选一个 → 保存。
+
+### 功能
 
 - **界面直接填 key，AES-256-GCM 静态加密落库**：新增 `src/lib/secret-box.js`——加密主密钥优先取 env `ANJIAN_SECRET`（须至少 32 字节 UTF-8 熵，另需字符多样性达标，不足/单一重复字符直接拒绝；`scrypt`（固定应用层 salt + 加重成本参数）派生出 32 字节 key，按 passphrase 精确值做进程内缓存以抵消 scrypt 引入的计算开销——具体强度校验与派生算法演进见下方"复审修复"小节），否则用数据目录下的 `secret.key`（首次自动生成 32 随机字节、写盘 `mode:0o600` 后再显式 `chmodSync` 一次钉死权限位，父目录已存在时不改其权限）。密文格式 `v1:<nonce base64>:<tag base64>:<密文 base64>`，GCM 认证加密——密钥错误或密文被篡改时 `decryptSecret()` 直接抛错，不会安静吐出乱码明文。
 - **取值优先级链（关键）**：`src/agent/config.js` 新增 `resolveAgentApiKey(config)`——`agent_api_key_env` 指向的环境变量若存在且非空 → 用它，`source:'env'`（保证现有 Docker/桌面部署零改动继续工作）；否则取界面存的加密 key（`getStoredApiKey()`，解密失败/格式非法一律安全失败为 `null`，不抛出）；两者都没有 → `source:'none'`。`agentReady()`/新增的 `agentKeyStatus()` 均基于这条链，`enabled=false` 时仍在任何 key 解析之前短路（与既有红线同一条判断）。
@@ -168,9 +181,9 @@
 - 数据结构新增一个 settings 键 `agent_api_key_encrypted`（无 migration，`settings` 是既有 key-value 表）；未配置时该键不存在，不影响任何既有功能。
 - **worker 启动路径与 `POST /api/agent/models` 共同的残余 key 外带面**：`openai-completions` 下 `agent_base_url` 客户端可写，`src/agent/supervisor.js` 的 `buildSpawnEnv()` 会把已存明文 key 与该 baseURL 一起注入子进程；`POST /api/agent/models` 则要求该 provider 下必须显式带 `apiKey`（见上方"二次复审修复"）。两条路径现在都只过字符串层 `validateBaseURL()`，不再有"一条路径比另一条更安全"的落差（见上方"减法"小节）。GA 前应评估是否需要对 `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key 重新确认。
 
-## 未发布 → 2.7.0-beta.1 — AI 助理 sidecar（分支 `feat/agent-sidecar`，尚未合并 `main`）
+## 2.7.0-beta.1 — AI 助理 sidecar（分支 `feat/agent-sidecar`，尚未合并 `main`）
 
-**状态：`feat/agent-sidecar` 分支上功能迭代 + 打包验证阶段，尚未合并 `main`、尚未发行任何 Release/DMG 下载链接；本条目随分支一起进入 `main` 前必须核对是否需要更新——若分支被放弃或大改，本条目也要相应撤除/改写。**
+**状态：已于 2026-08-22 以 `v2.7.0-beta.1` 预发布；尚未合并 `main`。**
 
 ### 功能
 
