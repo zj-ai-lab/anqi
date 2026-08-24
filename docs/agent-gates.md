@@ -24,8 +24,10 @@
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
 - 第 37–38 步：打包清单守卫、Electron 桌面版接线守卫（与 sidecar 具体逻辑无关，只是同一批改造
   顺带触碰到的接线面）。
-- 第 39 步：sidecar 时代就有的前端行为冒烟（`tools/smoke-agent-frontend.js`）——counts.agent
-  特性探测门、agent_* 五键往返、SSE 帧到 DOM 映射静态审查。
+- 第 39 步：sidecar 前端行为冒烟（`tools/test-agent-markdown.js` +
+  `tools/smoke-agent-frontend.js`）——assistant Markdown 纯解析与 fake-DOM 安全回归（原始 HTML
+  不执行、危险协议不链接、图片不自动请求），以及 counts.agent 特性探测门、agent_* 五键往返、
+  SSE 帧到 DOM 映射静态审查。
 - 第 40 步：beta.2「界面填 key」易用性改造的前端半边（`tools/smoke-agent-profile-frontend.js`）
   ——「用户中心 · AI 助理」设置面新控件/联动逻辑的静态审查，加上真实 server.js 固定端口 3013 上
   agent_api_key 掩码往返、apiKeyEnv 优先级、本地假 `/models` 服务器的整合冒烟。
