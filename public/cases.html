@@ -48,7 +48,7 @@
     <summary>新建案件</summary>
     <form id="new-case-form">
       <div class="formgrid">
-        <label class="f">案件名（= 案件夹名）<input name="name" required placeholder="张三诉李四民间借贷纠纷"></label>
+        <label class="f">案件名称<input name="name" required placeholder="张三诉李四民间借贷纠纷"></label>
         <label class="f">程序<select name="procedure" id="nc-procedure"></select></label>
         <label class="f">阶段<select name="stage" id="nc-stage"></select></label>
         <label class="f">案号<input name="case_no" placeholder="立案前可空"></label>
@@ -58,7 +58,9 @@
         <label class="f">我方地位<input name="client_role" placeholder="原告 / 被告 / 申请人……"></label>
         <label class="f">对方<input name="opponent" placeholder="李四"></label>
         <label class="f">收案日<input type="date" name="accepted_at"></label>
-        <label class="f">案件夹路径<input name="folder_path" placeholder="案件夹根目录下的相对路径"></label>
+        <label class="f">案件工作区<select name="folder_path" id="nc-folder-path">
+          <option value="">自动创建同名案件文件夹</option>
+        </select></label>
         <label class="f">备注<input name="note"></label>
       </div>
       <button class="btn primary" type="submit">建案</button>
@@ -68,6 +70,6 @@
   <!-- 由 cases.js 整块重建：按程序分组，每组 = 一个 .group-title + 一个 .case-grid -->
   <div id="case-list"></div>
 </main>
-<script type="module" src="/js/cases.js?v=1.7.5.1"></script>
+<script type="module" src="/js/cases.js?v=2.7.0.2"></script>
 </body>
 </html>

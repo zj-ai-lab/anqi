@@ -12,6 +12,22 @@ await mountNav();
 
 const meta = await api('/meta');
 
+const folderSelect = document.getElementById('nc-folder-path');
+try {
+  const workspaces = await api('/case-folders');
+  if (!workspaces.configured) {
+    folderSelect.disabled = true;
+    folderSelect.options[0].textContent = '未配置案件文件根（仍按案件名保存指针）';
+  } else {
+    for (const folder of workspaces.folders.filter((item) => item.bound_case_id == null)) {
+      folderSelect.append(el('option', { value: folder.name }, `使用已有：${folder.name}`));
+    }
+  }
+} catch {
+  folderSelect.disabled = true;
+  folderSelect.options[0].textContent = '案件文件根暂不可用';
+}
+
 // 新建案件表单：程序 → 阶段联动
 const procSel = document.getElementById('nc-procedure');
 const stageSel = document.getElementById('nc-stage');

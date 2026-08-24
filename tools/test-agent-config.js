@@ -89,6 +89,22 @@ result = loadAgentConfig();
 assert.equal(result.enabled, true);
 assert.equal(result.runtimeProvider, 'anqi-openai');
 
+// 9.5) 第三方 Cordis patch 只在 full 档读取；必须是绝对路径的普通 YAML
+// 文件，project 档即使保留了历史路径也不能触碰它。
+setSetting(AGENT_SETTINGS_KEYS.pluginPatch, '/definitely/missing/cordis.patch.yml');
+setSetting(AGENT_SETTINGS_KEYS.capabilityMode, 'project');
+assert.equal(loadAgentConfig().enabled, true, 'project 档不得读取/加载插件 patch');
+setSetting(AGENT_SETTINGS_KEYS.capabilityMode, 'full');
+assert.equal(loadAgentConfig().enabled, false, 'full 档必须拒绝不存在的插件 patch');
+const pluginPatch = path.join(scratch, 'cordis.patch.yml');
+fs.writeFileSync(pluginPatch, '[]\n');
+setSetting(AGENT_SETTINGS_KEYS.pluginPatch, pluginPatch);
+result = loadAgentConfig();
+assert.equal(result.enabled, true);
+assert.equal(result.pluginPatch, pluginPatch);
+setSetting(AGENT_SETTINGS_KEYS.pluginPatch, '');
+setSetting(AGENT_SETTINGS_KEYS.capabilityMode, 'project');
+
 // 10) apiKeyEnv 格式合法但是保留名/保留前缀——必须拒绝，防止把 anqi 自身的
 //     内部密钥（ANJIAN_INTERNAL_KEY 之类）当模型 provider 的 Authorization
 //     bearer 发给用户填的 baseURL。

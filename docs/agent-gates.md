@@ -17,31 +17,33 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 45 步（步号区间随本轮新增的第 41 步整体顺延，与上一版记录相比 41 步之后
-全部 +1；下面按当前实际步号记录，不再有任何步号被两句话各认领一次的歧义）：
+`npm run check` 当前 46 步；下面按当前实际步号记录：
 
-- 第 30–36 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
+- 第 31–37 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
-- 第 37–38 步：打包清单守卫、Electron 桌面版接线守卫（与 sidecar 具体逻辑无关，只是同一批改造
+- 第 38–39 步：打包清单守卫、Electron 桌面版接线守卫（与 sidecar 具体逻辑无关，只是同一批改造
   顺带触碰到的接线面）。
-- 第 39 步：sidecar 前端行为冒烟（`tools/test-agent-markdown.js` +
+- 第 40 步：sidecar 前端行为冒烟（`tools/test-agent-markdown.js` +
   `tools/smoke-agent-frontend.js`）——assistant Markdown 纯解析与 fake-DOM 安全回归（原始 HTML
-  不执行、危险协议不链接、图片不自动请求），以及 counts.agent 特性探测门、agent_* 五键往返、
+  不执行、危险协议不链接、图片不自动请求），以及 counts.agent 特性探测门、agent_* 配置往返、
   SSE 帧到 DOM 映射静态审查。
-- 第 40 步：beta.2「界面填 key」易用性改造的前端半边（`tools/smoke-agent-profile-frontend.js`）
+- 第 41 步：设置面前端回归（`tools/smoke-agent-profile-frontend.js`）
   ——「用户中心 · AI 助理」设置面新控件/联动逻辑的静态审查，加上真实 server.js 固定端口 3013 上
   agent_api_key 掩码往返、apiKeyEnv 优先级、本地假 `/models` 服务器的整合冒烟。
-- 第 41 步（2026-08-23 复审新增）：`tools/test-agent-model-options.js`——拉取模型下拉框默认
+- 第 42 步：`tools/test-agent-model-options.js`——拉取模型下拉框默认
   选中项的纯逻辑单测（命中/未命中/空列表/无 preferValue 四类场景），修复"外来旧值冒充默认选中
   项"那条前端红线（详见本文件对应门禁条目）。
-- 第 42 步：preset 工具面机械守卫（不得再挂载模型侧文件读取工具，与「界面填 key」改造无关，
-  是同一分支上另一条独立守卫，顺延到这个步号）。
-- 第 43–45 步：beta.2「界面填 key」易用性改造守卫（服务端）——secret-box 静态加密自检、
+- 第 43 步：上游 base parity、案件 workspace containment、project/full 真实 JSON-RPC 启动，
+  以及第三方 Cordis patch 在既有 worker 内热挂载/卸载。
+- 第 44–46 步：secret-box 静态加密自检、
   `POST /api/agent/models` 的网络层（本地假服务器：OpenAI 兼容格式解析、超时/大小上限、
   3xx 重定向拦截）与路由层（provider/baseURL SSRF 字符串校验 + apiKey 取值优先级）回归。
-  **【2026-08-23 减法】** 此前第 44/45 步还各自覆盖一层"连接期 DNS 解析 + IP 钉住"
-  （`resolvePinnedAddress()`）——该层已随其全部接线一起整体移除（决策与理由见
-  `docs/CHANGES.md` 与本文件门禁 9），两步描述已同步更新，步号本身不变（45 步）。
+
+> **2026-08-24 现行口径**：本文后部保留的 rc.7、无文件工具与“read 没有 containment”文字是
+> 当时取证的历史记录。当前基线已升至 `0.1.1-rc.2`，并恢复文件工具：案齐自有 filesystem
+> provider 覆盖标准读写路径，额外的执行守卫覆盖上游直接调用 ripgrep 的 glob/grep；绝对路径、
+> `..` 和越界符号链接均有真实回归。默认 `project` 档不发布 shell/联网/子 Agent，显式 `full`
+> 档恢复上游完整能力；完整档 shell 与受信任第三方插件拥有更宽宿主权限，属于已明示边界。
 
 ---
 
@@ -83,6 +85,11 @@
   收口为"工具不存在"级别，不再是"工具存在但依赖 persona 劝阻"。GA 若要恢复
   文件读取能力，必须先给 read 路径补上显式 containment，不能只靠 persona
   约束重新打开这条面。
+  **2026-08-24 恢复并补强**：上述前置条件现已满足。`dsh-anqi-fs` 对标准文件
+  provider 的 resolve/stat/lstat/read/stream/readBytes/list/write/edit 统一做 canonical
+  containment，`dsh-anqi-workspace-guard` 再拦截绕过 provider 直调 ripgrep 的 glob/grep。
+  `tools/test-agent-workspace-guard.js` 对相对、绝对、`..` 与外链符号链接逐项实跑；
+  `tools/test-agent-runtime-composition.js` 真实启动 project/full 两档并核对发布工具集合。
 
 ## 门禁 2 · `enabled=false` 在 credential、MCP、prewarm、spawn 之前短路
 
@@ -179,16 +186,18 @@
 
 ## 门禁 3 · 每个 worker 的 session、真实 `cwd` 和 case 权限不可被 prompt 改写
 
-- **结构** — `cwd` 只来自 `resolveCaseDirectory(filesRoot, case.name)`（禁 symlink、必须在
-  `ANJIAN_FILES_ROOT` 下且与 `cases.name` 精确对应），模型没有任何输入能影响它。
+- **结构** — `cwd` 只来自 `resolveCaseDirectoryForCase(filesRoot, caseRow)`，最终由
+  `cases.folder_path` 指向 `ANJIAN_FILES_ROOT` 下的单层真实目录（禁 symlink）；案件标题与
+  目录指针相互独立，模型没有任何输入能影响绑定。
 - **结构** — `sessionId` 由 supervisor 铸造（`anqi-${randomUUID()}`）并在 **spawn 之前**
   `bindSession()` 登记；worker 终态收尾时 `unbindSession()`。
-- **结构** — skill 根不接受用户 YAML：`preset/anqi/agent.cordis.yml` 的 `customSkillDirs`
-  对 `DSH_ANQI_SKILLS_ROOT` 缺失显式抛错；`verifyTrustedSkillsRoot()` 拒绝符号链接与非常规条目，
-  每次启动拷进独立 0700 临时目录，退出即删。
-- **结构** — 无 shell/web/subagent/workflow/ralph：`anqi.cordis.yml` 刻意不挂
-  `dsh-permission-presets`（该插件会 inject `shell`），`sandbox-policy.mode: read-only` +
-  `user-approval.policy: never`。
+- **结构** — skill 根不接受案件 YAML：supervisor 用 `verifyTrustedSkillsRoot()` 拒绝符号链接与
+  非常规条目，每次启动拷进独立 0700 临时目录；preset 通过上游 `bundledSkillDir` 的 trusted-host
+  通道读取，退出即删。
+- **结构+机械** — 默认 `project` 档不挂 shell/web/subagent/workflow/ralph；显式 `full` 档才恢复
+  这些上游能力。两档标准文件工具始终经过案齐 canonical containment；full 的 shell/第三方插件
+  具备更宽宿主权限，设置页与部署文档均明示。`tools/test-agent-runtime-composition.js` 对两档真实
+  JSON-RPC preflight 工具集分别断言。
 - **机械** — `tools/test-agent-supervisor.js` 场景 2/3：案件夹不存在、案件夹是 symlink，
   两条都拒绝且**未 spawn**；场景 11：`bindSession/unbindSession` 确实接线。
 - **动态**（2026-08-22）— 真实模型 turn：明确要求"读取另一案（王五诉赵六买卖合同纠纷）的
@@ -254,12 +263,10 @@
   而不是仅在 FakeChild 回放下才成立。
   证据：`/private/tmp/.../scratchpad/wf-logs/gates/g4-first-header-mcp-tool.log`
   （原始抓流 `g1-g4-sse.log` turn 1 / `g4-retry2-sse.log` turn 1）。
-  ⚠️ **工具集已于 07c0630 后收窄**（移除 fs 读取工具 `read`/`read_image`/`glob`/
-  `grep`，见 preset 变更）：上面这条 [动态] 证据里"`header.tools` 恰好 13 个"
-  的样本是收窄**之前**采集的，收窄之后首 header 的工具总数会变少（不是本文
-  重新动态取证得出的数字，这里没有、也不应该谎称已经重新跑过）。收窄之后
-  首 header 的正确性以 preflight/`tools/check.sh` 第 42 步机械守卫为准（该守卫在本条目记录时是第 41 步，随后续新增步骤顺延到当前的第 42 步）；下一次
-  做 model-backed 取证时需要重新抓一次首 header 样本，刷新这里的工具计数。
+  ⚠️ **历史样本说明**：上面“13 个工具”的模型驱动样本来自旧组合，不代表当前数量。
+  现行工具面以 `tools/check.sh` 第 43 步为准：它真实启动 project/full 两档，核对
+  preflight 的 skill 与工具集合，并验证 Cordis patch 热挂载/卸载；下一次做 model-backed
+  取证时再刷新这里的具体工具计数。
 
 ## 门禁 5 · approval / question 的 allow / reject / answer / timeout / disconnect / shutdown 全部 session-bound、one-shot、fail-closed
 
@@ -485,9 +492,9 @@
 ## 门禁 10 · 关闭 sidecar 不改变现有 inbox、deadline、event 和任务主线行为
 
 - **机械** — `npm run check` 第 1–29 步（sidecar 之前的全部既有回归）在本分支保持全绿。
-- **结构** — 无 migration：`src/migrations/` 与 `main` 完全一致（最高仍是 `016`），
-  唯一新状态是 `settings` 表里可能多出的 `agent_*` 五个键；与 2.6.0 可互换回退。
-- **结构** — 主线接口只做加法：`/api/counts` 增 `agent` 布尔；`/api/settings` 白名单增 5 键；
+- **结构+机械** — migration 017 只把历史空 `folder_path` 一次性物化为当时的 `name`，
+  不改期限、事件、收费、任务或收件箱；`tools/test-migration-017.js` 覆盖升级与失败回滚。
+- **结构** — 主线接口只做加法：`/api/counts` 增 `agent` 布尔；`/api/settings` 增 agent 配置；
   `today.js` 的收件卡片文案分叉只在 `source === 'agent-propose'` 时生效。
 - ⚠️ **一处非零加法**：`src/lib/digest.js` 的 `shares_pending` 投影新增了 `s.case_id` 列，
   因此 `/api/digest` 与 `/internal/digest` 的该分桶行在**关闭 sidecar 时也会**多出一个
@@ -543,11 +550,9 @@
 2. ~~**`write`/`edit` 工具名仍对模型可见**：rc.7 的 `@deepseek-ai/dsh-tool-fs` 不可拆分只读子集，
    只能靠 `sandbox-policy.mode: read-only` + `user-approval.policy: never` 拒绝，
    不是"工具不存在"级别的保证（见 `preset/anqi/agent.cordis.yml` 顶部注释）。~~
-   **已由 2026-08-22 处置解决**：preset 已整体不再挂载 `@deepseek-ai/dsh-tool-fs`，
-   `write`/`edit`（以及 `read`/`read_image`）四个工具名现在对模型完全不可见，
-   不再是"可见但被沙箱拒绝"，而是"工具不存在"级别；本条保留作历史记录，
-   不再是当前状态。
-3. **[结构+]** **`read`/`glob` 对绝对路径没有 containment——这是本轮修复直接调用真实
+   **历史处置（已被 2026-08-24 方案取代）**：2026-08-22 曾整体移除文件工具；当前已经
+   恢复 read/read_image/write/edit，并以案齐自有 filesystem provider 强制案件目录边界。
+3. ~~**[结构+]** **`read`/`glob` 对绝对路径没有 containment——这是本轮修复直接调用真实
    vendor 代码验证出的发现，不是猜测**：`@deepseek-ai/dsh-fs-sandbox` 的
    `SandboxedFileSystem` 只重写了 `writeText`/`editText`（`checkedTarget()`
    只在这两个方法里生效），`resolve`/`stat`/`readText`/`streamText` 全部原样
@@ -577,7 +582,11 @@
    不得再出现这两个包名，防止未来无人重新评估这条围栏就把它们加回来。
    GA 若要恢复文件读取能力，必须先给 read 路径补上显式 containment（例如
    包一层校验绝对路径必须仍解析在 workspaceRoot 下），不能只靠 persona
-   约束。
+   约束。~~
+   **已由 2026-08-24 处置解决**：`dsh-anqi-fs` 覆盖上游标准文件读写 provider，
+   `dsh-anqi-workspace-guard` 覆盖绕过 provider 的 glob/grep；真实回归对绝对路径、`..`、
+   同级案件与符号链接逃逸均断言拒绝。当前仍需明确区分：`full` 档的 shell 与受信任插件
+   是主动开放的宿主代码能力，不受标准文件工具 provider 的边界承诺约束。
 4. **打包体积**：本轮 bundle 的是全闭包而非 trace-derived 最小闭包，双架构 DMG 均较
    2.6.0 基线（140,389,719 B）显著增大——arm64 200,356,527 B（+42.71%）、
    x64 205,187,873 B（+46.16%），依赖裁剪留给 GA（见 `CHANGES.md`）。

@@ -128,6 +128,7 @@ let timelineExpanded = false;
 let timelineItems = [];
 let timelineFilter = 'all';
 let feeFilesEnabled = false;
+let stopFolderWatch = () => {};
 
 const daysTo = (dateStr, today = todayStr()) => Math.round((new Date(dateStr) - new Date(today)) / 86400000);
 
@@ -185,6 +186,75 @@ document.getElementById('c-status').addEventListener('change', (e) => {
 document.getElementById('edit-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   await patchCase(Object.fromEntries(new FormData(e.target).entries()));
+});
+
+async function loadWorkspacePicker() {
+  const select = document.getElementById('case-workspace-select');
+  const note = document.getElementById('case-workspace-note');
+  const bindButton = document.getElementById('case-workspace-bind');
+  const createButton = document.getElementById('case-workspace-create');
+  const current = bundle?.case?.folder_path || bundle?.case?.name || '';
+  try {
+    const result = await api('/case-folders');
+    select.replaceChildren();
+    if (!result.configured) {
+      select.append(el('option', { value: current }, '未配置案件文件根'));
+      select.disabled = true;
+      bindButton.disabled = true;
+      createButton.disabled = true;
+      note.textContent = '当前部署未配置 ANJIAN_FILES_ROOT；请先配置案件文件根。';
+      return;
+    }
+    const available = result.folders.filter((folder) => folder.bound_case_id == null || folder.bound_case_id === Number(id));
+    if (!available.some((folder) => folder.name === current)) {
+      available.unshift({ name: current, bound_case_id: Number(id), missing: true });
+    }
+    for (const folder of available) {
+      const label = folder.name === current
+        ? `${folder.name}${folder.missing ? '（当前指针，目录缺失）' : '（当前）'}`
+        : folder.name;
+      select.append(el('option', { value: folder.name }, label));
+    }
+    select.value = current;
+    select.disabled = false;
+    bindButton.disabled = select.options.length === 0;
+    createButton.disabled = false;
+    note.textContent = `当前项目：${current}。案件夹就是本案 AI 助理的工作目录；换绑不移动、不复制、也不删除原文件。`;
+  } catch (error) {
+    select.replaceChildren(el('option', { value: current }, current || '案件工作区不可用'));
+    select.disabled = true;
+    bindButton.disabled = true;
+    createButton.disabled = true;
+    note.textContent = `案件工作区读取失败：${error.message || error}`;
+  }
+}
+
+async function bindWorkspace(folderPath, create) {
+  const name = String(folderPath || '').trim();
+  if (!name) { toast('请先选择或填写案件工作区'); return; }
+  const previous = bundle.case.folder_path || bundle.case.name;
+  if (name !== previous && !confirm(`把本案 Agent 项目从「${previous}」切换到「${name}」？原文件不会移动或删除，正在运行的助理会停止。`)) return;
+  const result = await api(`/cases/${id}/workspace`, {
+    method: 'PUT',
+    body: { folder_path: name, create },
+  });
+  toast(result.workspace.created ? '案件工作区已创建并绑定 ✓' : '案件工作区已绑定 ✓');
+  document.getElementById('case-workspace-new').value = '';
+  await load();
+  stopFolderWatch();
+  stopFolderWatch = watchFolder();
+}
+
+document.getElementById('case-workspace-bind').addEventListener('click', async () => {
+  try {
+    await bindWorkspace(document.getElementById('case-workspace-select').value, false);
+  } catch { /* api() 已显示服务端错误；避免留下 unhandled rejection */ }
+});
+document.getElementById('case-workspace-create').addEventListener('click', async () => {
+  const input = document.getElementById('case-workspace-new');
+  try {
+    await bindWorkspace(input.value || bundle.case.name, true);
+  } catch { /* api() 已显示服务端错误；避免留下 unhandled rejection */ }
 });
 
 async function uploadFile(file, { dir = '法院文书', entity = '', entityId = '' } = {}) {
@@ -1059,7 +1129,7 @@ function render() {
   if (c.stage_days > 30) sd.append(el('span', { class: 'chip c-amber' }, '偏久 · 考虑推进或核对状态'));
 
   const ef = document.getElementById('edit-form');
-  for (const f of ['name', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent', 'accepted_at', 'folder_path', 'note', 'legalrag_url']) {
+  for (const f of ['name', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent', 'accepted_at', 'note', 'legalrag_url']) {
     if (ef.elements[f]) ef.elements[f].value = c[f] || '';
   }
   efProc.value = c.procedure;
@@ -1634,7 +1704,12 @@ function watchFolder() {
   };
 
   let es;
-  try { es = new EventSource(`/api/cases/${id}/files/events`); } catch { startPoll(); return; }
+  const onVisibility = () => { if (!document.hidden) loadFiles(); };
+  try { es = new EventSource(`/api/cases/${id}/files/events`); } catch {
+    startPoll();
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => { stopPoll(); document.removeEventListener('visibilitychange', onVisibility); };
+  }
 
   es.addEventListener('ready', (e) => {
     const d = JSON.parse(e.data || '{}');
@@ -1647,7 +1722,12 @@ function watchFolder() {
   es.onerror = () => { liveOk = false; startPoll(); };  // EventSource 自己会重连，轮询只是保底
 
   // 从 Finder 拖完文件切回浏览器——立刻对一次，不等推送
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) loadFiles(); });
+  document.addEventListener('visibilitychange', onVisibility);
+  return () => {
+    stopPoll();
+    es.close();
+    document.removeEventListener('visibilitychange', onVisibility);
+  };
 }
 
 async function uploadInto(files, dir) {
@@ -1713,13 +1793,13 @@ if (drop) {
 async function load() {
   bundle = await api(`/cases/${id}`);
   render();
-  await Promise.all([loadFees(), loadShares()]);
+  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker()]);
   await Promise.all([loadFiles(), loadFileCandidates()]);
 }
 
 document.addEventListener('anjian:changed', load);
 await load();
-watchFolder();
+stopFolderWatch = watchFolder();
 
 // AI 助理抽屉：counts.agent=false（未启用/未配置）时 mountAgentDrawer() 自己
 // 整块不渲染（特性探测模式同 nav.js 对 c.llm 的既有用法），本文件不重复判断。

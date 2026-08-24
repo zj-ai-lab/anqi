@@ -8,7 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
-| **2.7.0-beta.2** | 未发布（工作树 2026-08-23） | AI 助理设置面易用性改造：界面直接填 API key（AES-256-GCM 静态加密存储）、供应商预设自动带出 baseURL、新增 `POST /api/agent/models` 拉取可用模型列表；apiKeyEnv 退居可选高级项，env 优先/本机保存兜底的取值链保证既有 Docker/桌面部署零改动。前端（用户中心 · AI 助理面板）随之重做：供应商切换自动带出/锁定 baseURL、API Key 密码框按「环境变量提供/已保存掩码/未配置」三态展示且留空提交不覆盖已存 key、Model 拉取成功后手填输入框切换为下拉（保留手填兜底）、apiKeyEnv 折进默认收起的「高级选项」。**编排方人工验收发现并修复一处 UX 缺陷**：`POST /api/agent/models` 此前把上游供应商认证失败也回 HTTP 401，被前端全局 401 拦截误判成"anqi 会话过期"直接跳登录页——填错一个字符的 key 就被踢出设置页，永远看不到写好的中文提示；现改用 502，并在前端加一层"响应体带业务 code 才不跳转"的纵深防御 |
+| **2.7.0-beta.2** | 未发布（工作树 2026-08-24） | 案件文件夹正式成为 AI 项目：建案可选择/创建 workspace，打开案件助理自动绑定。安全 Markdown 渲染恢复；DSH 升至 `0.1.1-rc.2`，默认 project 档恢复受案件边界保护的文件工具，full 档恢复命令、jobs、goal、subagent、workflow、Ralph 与 web；支持受信任 Cordis patch 热更新，并加入上游版本统一升级与 parity/真实启动门禁。延续本 beta 的界面填 key、供应商预设、模型列表和加密存储易用性改造。 |
 | **2.7.0-beta.1** | 未发布（工作树 2026-08-22） | AI 助理 sidecar 首个可分发 beta：Electron DMG 内置 runtime/assets，默认关闭，数据结构与 2.6.0 完全一致、可互换回退 |
 | **2.6.0** | 2026-08-17 | 开源转换与首次公开候选：AGPL-3.0-only、去混淆与归属/治理材料，两批安全加固，Electron 与公开发行 workflow 更新；Android 改为用户配置自托管服务器，补齐产品 README、当前 UI 截图、图标产线和公开边界中性化；期限规则表经作者核准（review=approved） |
 | **2.5.0** | 2026-08-14 | LegalRAG 收费候选持久去重闭环：strict typed key 三态匹配、人工 alias、跨来源继承、正式收费编辑/删除边界；无 migration |
@@ -71,7 +71,10 @@
 ### 功能
 
 - **案件助理回复恢复 Markdown 阅读层级**：此前 `agent-drawer.js` 对流式 chunk 和最终 `assistant/message` 都直接写 `textContent`，导致 `#`、`**`、列表、引用、代码围栏和表格原样印在对话里。现新增零依赖、DOM-only 的安全 Markdown 渲染器，覆盖标题、段落、强调/删除线、代码、引用、列表/任务列表、表格与安全链接；原始 HTML 永不执行，`javascript:` 等危险协议不生成链接，图片语法只显示来源链接而不自动请求远端资源。流式与最终消息走同一渲染路径，并新增纯解析回归测试。
-- **明确内置 DSH 的产品边界**：当前是钉住 `0.1.0-rc.7`、按案隔离的受控 JSON-RPC sidecar，不是完整 DSH Web profile；shell/web/subagent/workflow/ralph 与模型侧文件读取是有意移除的 beta 能力。运行时 Cordis 插件可在源码/权限/依赖/版本审查后钉入自有 preset，依赖 DSH Web Client、用户 profile、`DSH_HOME` 或插件市场的社区插件当前不能直接安装使用。
+- **案件夹正式成为 Agent 项目**：`cases.folder_path` 从“有字段但读路径不用”改为文件桥、款项凭证、LegalRAG 与 DSH supervisor 共用的稳定 workspace 指针；migration 017 把历史空值按案件名物化。新建案件可自动创建同名案件夹或选择同步盘已有目录，案件详情可换绑未占用目录；换绑只改指针，不移动、不复制、不删除原文件，并先停止该案 worker。
+- **恢复 DSH 文件与完整能力**：运行时从 `0.1.0-rc.7` 升至 `0.1.1-rc.2`。默认 `project` 档恢复 `read/read_image/write/edit/glob/grep`，但标准文件工具全部被 canonical containment 钉在当前案件夹；`glob/grep` 因绕过 `ctx.fs` 另有执行守卫。显式 `full` 档恢复上游 bash/jobs/goal/subagent/workflow/Ralph/web 等能力，继续保留案齐正式表只读/提案写入边界，并明示 shell 与联网的扩大权限。
+- **上游插件兼容与热更新**：完整档高级设置可指定一个已审查的绝对路径 `cordis.patch.yml`；案齐 launcher 用上游 Cordis patch + HMR 在现有 worker 上挂载、卸载或更新第三方插件。插件等同本机 Node 代码，拒绝相对路径、缺失文件、非普通文件和符号链接；依赖 DSH Web Client UI 插槽的插件仍需另做抽屉前端适配。
+- **上游更新门禁**：新增 `npm run agent:update-runtime -- <exact-version>`，统一更新 140 个 direct/override pin 和 lockfile；真实运行 project/full JSON-RPC boot、workspace containment、插件热卸载和 `dsh-base` parity，失败自动恢复旧 manifest/lock/依赖。上游新增 base row 未挂载或未明确归类会直接令门禁失败，不再静默漏能力。
 
 - **界面直接填 key，AES-256-GCM 静态加密落库**：新增 `src/lib/secret-box.js`——加密主密钥优先取 env `ANJIAN_SECRET`（须至少 32 字节 UTF-8 熵，另需字符多样性达标，不足/单一重复字符直接拒绝；`scrypt`（固定应用层 salt + 加重成本参数）派生出 32 字节 key，按 passphrase 精确值做进程内缓存以抵消 scrypt 引入的计算开销——具体强度校验与派生算法演进见下方"复审修复"小节），否则用数据目录下的 `secret.key`（首次自动生成 32 随机字节、写盘 `mode:0o600` 后再显式 `chmodSync` 一次钉死权限位，父目录已存在时不改其权限）。密文格式 `v1:<nonce base64>:<tag base64>:<密文 base64>`，GCM 认证加密——密钥错误或密文被篡改时 `decryptSecret()` 直接抛错，不会安静吐出乱码明文。
 - **取值优先级链（关键）**：`src/agent/config.js` 新增 `resolveAgentApiKey(config)`——`agent_api_key_env` 指向的环境变量若存在且非空 → 用它，`source:'env'`（保证现有 Docker/桌面部署零改动继续工作）；否则取界面存的加密 key（`getStoredApiKey()`，解密失败/格式非法一律安全失败为 `null`，不抛出）；两者都没有 → `source:'none'`。`agentReady()`/新增的 `agentKeyStatus()` 均基于这条链，`enabled=false` 时仍在任何 key 解析之前短路（与既有红线同一条判断）。
@@ -100,7 +103,7 @@
 - `tools/test-agent-settings.js`/`tools/test-agent-http.js` 同步更新：`agent_api_key_env` 留空的新允许行为、`agent_api_key` 的加密落库/掩码回显/清空、`/agent/status` 新增 `apiKey` 字段的形状。
 - `tools/smoke-agent-profile-frontend.js`：设置页前端冒烟——新控件静态审查（四组控件齐全、`apiKeyEnv` 确实折进默认收起的 `details`）、`profile.js` 五条交互逻辑命中、真实 server 进程上跑 `agent_api_key` 明文入参 → 加密落库 → GET/PUT 只回掩码的往返、`apiKeyEnv` 优先级、显式空串清空，以及本地假 `/models` 服务器的解析形状与「回环地址即使显式带 apiKey 也照样 400」两条断言。
 - `tools/test-agent-model-options.js`：下拉框默认选中项的纯逻辑自检（命中/未命中/空列表四类场景）。
-- `tools/check.sh` 增至 45 步（详见 [agent-gates.md](agent-gates.md)）。
+- `tools/check.sh` 增至 46 步（详见 [agent-gates.md](agent-gates.md)）。
 
 ### 复审修复（本轮，红线/SSRF/工程卫生）
 

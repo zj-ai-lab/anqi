@@ -15,6 +15,7 @@
     "check": "npm run rebuild:node && bash tools/check.sh",
     "qa:finance": "bash tools/run-finance-ui-qa.sh",
     "rebuild:node": "npm rebuild better-sqlite3",
+    "agent:update-runtime": "node tools/update-dsh-runtime.mjs",
     "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
     "icon:build": "bash tools/build-icon.sh",
     "electron:dev": "npm run electron:rebuild && electron .",

@@ -11,7 +11,7 @@ import { ensureCandidateFact } from './candidate-facts.js';
 import {
   normalizeRelativeFilePath,
   openSecureFile,
-  resolveCaseDirectory,
+  resolveCaseDirectoryForCase,
   walkSecureFiles,
 } from './secure-files.js';
 import {
@@ -47,10 +47,10 @@ function nowCN(offsetMs = 0) {
 }
 
 function caseAndFile(caseId, relPath) {
-  const row = db.prepare('SELECT id,name,status FROM cases WHERE id=?').get(caseId);
+  const row = db.prepare('SELECT id,name,folder_path,status FROM cases WHERE id=?').get(caseId);
   if (!row) throw new Error('案件不存在');
   if (!process.env.ANJIAN_FILES_ROOT) throw new Error('未配置 ANJIAN_FILES_ROOT');
-  const context = resolveCaseDirectory(process.env.ANJIAN_FILES_ROOT, row.name);
+  const context = resolveCaseDirectoryForCase(process.env.ANJIAN_FILES_ROOT, row);
   if (!context.exists) throw new Error('文件不存在');
   const rel = normalizeRelativeFilePath(relPath);
   const opened = openSecureFile(context, rel);
@@ -154,7 +154,7 @@ export function reconcileLegalRagFiles({ bootstrap = false } = {}) {
   ).get();
   const establishBaseline = bootstrap || !alreadyBootstrapped;
   const cases = db.prepare(
-    `SELECT c.id,c.name FROM cases c
+    `SELECT c.id,c.name,c.folder_path FROM cases c
       LEFT JOIN legalrag_case_links l ON l.case_id=c.id
      WHERE c.status!='closed' AND COALESCE(l.sync_enabled,1)=1`
   ).all();
@@ -162,7 +162,7 @@ export function reconcileLegalRagFiles({ bootstrap = false } = {}) {
   let queued = 0;
   for (const caseRow of cases) {
     let context;
-    try { context = resolveCaseDirectory(process.env.ANJIAN_FILES_ROOT, caseRow.name); } catch { continue; }
+    try { context = resolveCaseDirectoryForCase(process.env.ANJIAN_FILES_ROOT, caseRow); } catch { continue; }
     if (!context.exists) continue;
     const current = currentFiles(caseRow.id);
     const byPath = new Map(current.map((row) => [row.rel_path, row]));
@@ -427,7 +427,8 @@ async function pollProcessing() {
 
 async function registerNext() {
   const row = db.prepare(
-    `SELECT f.*,c.name AS case_name FROM legalrag_files f JOIN cases c ON c.id=f.case_id
+    `SELECT f.*,COALESCE(NULLIF(TRIM(c.folder_path),''),c.name) AS case_name
+       FROM legalrag_files f JOIN cases c ON c.id=f.case_id
       WHERE f.sync_status='queued' AND (f.next_attempt_at='' OR f.next_attempt_at<=?)
       ORDER BY f.priority DESC,f.id LIMIT 1`
   ).get(nowCN());

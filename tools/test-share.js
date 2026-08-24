@@ -30,7 +30,7 @@ assert.equal(computeShare(5000, 100), 5000, '整额 100%');
 assert.equal(computeShare(1000, 12.34), 123.4, '两位小数比例');
 
 // ── B. 收讫联动 + digest 口径（临时 DB，migrations 已跑到当前版本）──
-assert.equal(db.pragma('user_version', { simple: true }), 16, 'migration 应至 016');
+assert.equal(db.pragma('user_version', { simple: true }), 17, 'migration 应至 017');
 
 const caseId = db
   .prepare("INSERT INTO cases (name, procedure, stage) VALUES ('张三诉李四民间借贷（测试）', '一审', '待裁判')")

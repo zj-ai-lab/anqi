@@ -24,7 +24,7 @@
 //     spawn 前短路同一条红线的两处必要延伸（编排方人工验收发现的运行时缺
 //     口，此前只验证过"从未启动过"，没覆盖"运行中被关掉"，见
 //     docs/agent-gates.md 门禁 2/10 补记）。
-//   - 案件夹必须在 ANJIAN_FILES_ROOT 下且与 case.name 精确对应、禁 symlink——
+//   - 案件夹必须是 ANJIAN_FILES_ROOT 下由 case.folder_path 指向的真实单层目录、禁 symlink——
 //     直接复用 src/lib/secure-files.js 的 resolveCaseDirectory()（files.js/
 //     fees.js 已经在用的同一份实现），不重新发明一套路径校验。
 //   - key 的值永不进 UI/DB/HTTP/SSE/日志/错误串/仓库——spawn 用最小 env
@@ -54,7 +54,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
-import { resolveCaseDirectory } from '../lib/secure-files.js';
+import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
 import { loadAgentConfig, resolveAgentApiKey } from './config.js';
 import { bindSession, unbindSession } from './session-registry.js';
 
@@ -96,9 +96,7 @@ const RUNTIME_DIR = resolveAgentSubdir('runtime');
 // 问题，权限允许写不代表允许写。
 const AGENT_DIR_IS_PACKAGED = ASSETS_DIR !== path.join(__dirname, 'assets');
 const CORDIS_CONFIG = path.join(ASSETS_DIR, 'anqi.cordis.yml');
-const DSH_BIN = path.join(
-  RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-sdk-jsonrpc-demo', 'lib', 'bin.js'
-);
+const DSH_BIN = path.join(ASSETS_DIR, 'bin.mjs');
 const TRUSTED_SKILLS_ROOT = path.join(ASSETS_DIR, 'skills');
 const REQUIRED_SKILL_NAME = 'anqi-case-brief';
 const REQUIRED_SKILL_FILE = path.join(TRUSTED_SKILLS_ROOT, REQUIRED_SKILL_NAME, 'SKILL.md');
@@ -194,9 +192,9 @@ function ensureAssetsNodeModulesLink() {
 }
 
 // 设计稿 §3.1 要求固定记录的字段之一：DSH 版本。initialize 的 wire 协议不
-// 回传版本号，rc.7 也没有单独的 version RPC，所以在模块加载时读一次自己钉死
+// 回传版本号，当前 wire 也没有单独的 version RPC，所以在模块加载时读一次自己钉死
 // 的运行时依赖版本（package.json 里的 "version" 字段，与 runtime/package.json
-// 锁定的 0.1.0-rc.7 一致），失败也不阻塞——status() 里用 'unknown' 兜底。
+// 锁定版本一致），失败也不阻塞——status() 里用 'unknown' 兜底。
 function readDshVersion() {
   try {
     const pkgPath = path.join(
@@ -287,7 +285,7 @@ function timeoutPromise(ms, message) {
 }
 
 // ---- 受信任 skill 根的校验与隔离拷贝（移植自 driver.mjs，逻辑未改动）----
-// customSkillDirs 指向的目录不能含符号链接、不能被案件夹或用户配置污染；每次
+// bundledSkillDir 指向的宿主可信目录不能含符号链接、不能被案件夹或用户配置污染；每次
 // 启动都拷到一个新的 0700 临时目录里喂给 DSH，worker 退出后立即删除。
 function verifyTrustedSkillsRoot() {
   let rootStat;
@@ -392,6 +390,11 @@ function buildSpawnEnv({ config, apiKeyValue, internalKeyEnv, internalKeyValue, 
     [config.canonicalKeyEnv]: apiKeyValue,
     DSH_BASE_URL: config.baseURL,
     DSH_MODEL: config.model,
+    DSH_CAPABILITY_MODE: config.capabilityMode,
+    // project 档只读文件；full 档沿用上游默认 workspace-write + ask。
+    // anqi filesystem provider 无论哪档都继续拒绝标准文件工具越出案件夹。
+    DSH_PERMISSION_MODE: config.capabilityMode === 'full' ? 'workspace-write' : 'read-only',
+    ...(config.pluginPatch ? { DSH_PLUGIN_PATCH: config.pluginPatch } : {}),
     DSH_CWD: caseCwd,
     DSH_ANQI_SKILLS_ROOT: skillsRoot,
     DSH_SESSION_ROOT: sessionRoot,
@@ -646,7 +649,7 @@ export class AgentSupervisor {
     interactionTtlMs = DEFAULT_INTERACTION_TTL_MS,
     spawnFn = spawn,
     loadConfigFn = loadAgentConfig,
-    resolveCaseDirectoryFn = resolveCaseDirectory,
+    resolveCaseDirectoryFn = resolveCaseDirectoryForCase,
     actor = 'agent-supervisor',
   } = {}) {
     this.filesRoot = filesRoot;
@@ -862,16 +865,16 @@ export class AgentSupervisor {
       return { status: 'error', caseId, error: 'internal_key_missing' };
     }
 
-    // 2) 案件夹校验：必须在 ANJIAN_FILES_ROOT 下、与 case.name 精确对应、不是
+    // 2) 案件夹校验：必须在 ANJIAN_FILES_ROOT 下、与 case.folder_path 精确对应、不是
     //    symlink——复用既有的 secure-files.resolveCaseDirectory，不重新发明。
-    const caseRow = db.prepare('SELECT id, name FROM cases WHERE id = ?').get(caseId);
+    const caseRow = db.prepare('SELECT id, name, folder_path FROM cases WHERE id = ?').get(caseId);
     if (!caseRow) {
       audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'case_not_found');
       return { status: 'error', caseId, error: 'case_not_found' };
     }
     let dirContext;
     try {
-      dirContext = this.resolveCaseDirectoryFn(this.filesRoot, caseRow.name);
+      dirContext = this.resolveCaseDirectoryFn(this.filesRoot, caseRow);
     } catch (error) {
       audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `cwd_invalid:${error.code || error.message}`);
       return { status: 'error', caseId, error: 'cwd_invalid' };
@@ -936,7 +939,7 @@ export class AgentSupervisor {
 
     let child;
     try {
-      child = this.spawnFn(process.execPath, [DSH_BIN, CORDIS_CONFIG], {
+      child = this.spawnFn(process.execPath, ['--expose-internals', DSH_BIN, CORDIS_CONFIG], {
         cwd: ASSETS_DIR,
         env,
         stdio: ['pipe', 'pipe', 'pipe'],
@@ -1077,7 +1080,7 @@ export class AgentSupervisor {
       return { turnId };
     } catch (error) {
       // 超时、取消、turn 异常结束（非 completed 的 reason）都必须真正打断在飞
-      // 的模型调用——cancelTurn() 上方注释已经解释过：rc.7 没有 turn 级取消
+      // 的模型调用——cancelTurn() 上方注释已经解释过：当前 wire 没有 turn 级取消
       // 协议，唯一手段是终止整个 worker 进程，防止一个已经判定失败的 turn
       // 之后还悄悄跑到 anqi_inbox_propose。之前这里只把 status 改回 ready、
       // 从不 abort/kill，导致超时后子进程继续跑，迟到的 running/idle/turn-end
@@ -1126,7 +1129,7 @@ export class AgentSupervisor {
     }
   }
 
-  // rc.7 的 JSON-RPC 面没有 turn 级别的取消方法——stock/我们扩展后的 server
+  // 当前 JSON-RPC 面没有 turn 级别的取消方法——stock/我们扩展后的 server
   // 都只认 initialize/session/*/shutdown（见 @deepseek-ai/dsh-sdk-jsonrpc-
   // server 源码 handleRequest），没有 turn/cancel 这一档。本地 abort 能让
   // 调用方立刻解除阻塞、不把之后到达的任何输出当成完成，但后台 DSH 进程仍
@@ -1408,7 +1411,7 @@ export class AgentSupervisor {
     worker.emit(wireType, this._redactEventData(worker, event.data), 'wire');
 
     if (event.type === 'request/header') {
-      // 只在这个 worker 生命周期里第一次看到 request/header 时才记录——rc.7
+      // 只在这个 worker 生命周期里第一次看到 request/header 时才记录——当前 wire 中
       // 同一个首个 turn 内，工具/技能集合发生变化（例如懒加载技能命中）会
       // 追加一条 reason:'change' 的后续 request/header（agent-loop/lib/
       // index.js:715），事件字段结构与 reason:'initial' 完全相同。之前这里
@@ -1440,7 +1443,7 @@ export class AgentSupervisor {
     const state = worker._turnResolvers;
     if (!state || !state.sawRunning || !state.sawIdle || !state.sawEnd) return;
     if (!worker.firstTurnChecked) {
-      // rc.7 的 wire 形状：request/header 的 event.data = { header: EpochHeader,
+      // 当前 wire 形状：request/header 的 event.data = { header: EpochHeader,
       // reason }（@deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js 的
       // 'request/header' 类型、@deepseek-ai/dsh-sdk-jsonrpc-server/lib/index.js
       // 原样透传 session event）——tools 在 data.header.tools 而不是 data.tools。

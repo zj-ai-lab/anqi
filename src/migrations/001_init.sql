@@ -3,7 +3,7 @@
 
 CREATE TABLE cases (
   id               INTEGER PRIMARY KEY,
-  name             TEXT NOT NULL UNIQUE,        -- = 案件夹名 = registry key（§9.3 对齐，铁律 5）
+  name             TEXT NOT NULL UNIQUE,        -- 人类可读案件标题
   case_no          TEXT NOT NULL DEFAULT '',
   cause            TEXT NOT NULL DEFAULT '',
   court            TEXT NOT NULL DEFAULT '',
@@ -15,7 +15,7 @@ CREATE TABLE cases (
   stage_entered_at TEXT NOT NULL DEFAULT (date('now','+8 hours')),
   status           TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','shelved','closed')),
   accepted_at      TEXT NOT NULL DEFAULT '',
-  folder_path      TEXT NOT NULL DEFAULT '',
+  folder_path      TEXT NOT NULL DEFAULT '',    -- ANJIAN_FILES_ROOT 下的单层 workspace 名
   sol_starts_on    TEXT NOT NULL DEFAULT '',    -- 诉讼时效起算日（P1 引擎用，DESIGN Q2）
   note             TEXT NOT NULL DEFAULT '',
   created_at       TEXT NOT NULL DEFAULT (datetime('now','+8 hours')),

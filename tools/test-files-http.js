@@ -64,11 +64,14 @@ try {
     name: '  示例文件案  ', procedure: '一审', client: '张三', cause: '示例纠纷',
   })).data;
   assert.equal(created.name, '示例文件案');
+  assert.equal(created.folder_path, '示例文件案');
   const caseId = created.id;
-  await request('PATCH', `/api/cases/${caseId}`, { name: '../改名逃逸' }, 400);
+  const renamed = (await request('PATCH', `/api/cases/${caseId}`, { name: '../仅是显示标题' })).data;
+  assert.equal(renamed.name, '../仅是显示标题');
+  assert.equal(renamed.folder_path, '示例文件案', '改案件标题不得隐式切换工作区');
 
   const caseRoot = path.join(filesRoot, created.name);
-  fs.mkdirSync(caseRoot);
+  assert.equal(fs.statSync(caseRoot).isDirectory(), true, '建案必须自动创建同名案件工作区');
   let result = await request(
     'PUT',
     `/api/cases/${caseId}/files?dir=${encodeURIComponent('法院文书')}&name=${encodeURIComponent('材料 中文.txt')}`,
@@ -153,14 +156,41 @@ try {
   assert.equal(result.data.file.rel_path, '财务凭证/收款凭证(2).pdf');
 
   const linkedCase = (await request('POST', '/api/cases', { name: '链接案件', procedure: '一审' })).data;
+  fs.rmdirSync(path.join(filesRoot, linkedCase.folder_path));
   fs.symlinkSync(outside, path.join(filesRoot, linkedCase.name));
   await request('GET', `/api/cases/${linkedCase.id}/files`, undefined, 404, '');
 
   const missingCase = (await request('POST', '/api/cases', { name: '尚未建夹案件', procedure: '一审' })).data;
+  fs.rmdirSync(path.join(filesRoot, missingCase.folder_path));
   result = await request('GET', `/api/cases/${missingCase.id}/files`);
   assert.deepEqual(result.data, { exists: false, dir: '', dirs: [], files: [] });
 
-  console.log('files HTTP tests: case names + symlink boundaries + exclusive uploads + voucher paths passed');
+  fs.mkdirSync(path.join(filesRoot, '同步盘已有案卷'));
+  const workspaceCase = (await request('POST', '/api/cases', {
+    name: '标题/与目录不同的案件', folder_path: '同步盘已有案卷', procedure: '一审',
+  })).data;
+  assert.equal(workspaceCase.name, '标题/与目录不同的案件', '案件标题不是文件路径，可与目录规则解耦');
+  assert.equal(workspaceCase.folder_path, '同步盘已有案卷');
+  fs.writeFileSync(path.join(filesRoot, '同步盘已有案卷', '现有材料.txt'), '同步原件');
+  result = await request('GET', `/api/cases/${workspaceCase.id}/files`);
+  assert.equal(result.data.files.some((file) => file.name === '现有材料.txt'), true, '文件桥必须读取 folder_path 指向的工作区');
+
+  result = await request('GET', '/api/case-folders');
+  const listed = result.data.folders.find((folder) => folder.name === '同步盘已有案卷');
+  assert.equal(listed.bound_case_id, workspaceCase.id, '目录选择器必须标出已绑定案件');
+  await request('POST', '/api/cases', {
+    name: '不得重复绑定', folder_path: '同步盘已有案卷', procedure: '一审',
+  }, 409);
+
+  result = await request('PUT', `/api/cases/${workspaceCase.id}/workspace`, {
+    folder_path: '重新绑定的新工作区', create: true,
+  });
+  assert.equal(result.data.workspace.created, true);
+  assert.equal(result.data.case.folder_path, '重新绑定的新工作区');
+  assert.equal(fs.existsSync(path.join(filesRoot, '同步盘已有案卷', '现有材料.txt')), true, '换绑不得移动或删除旧工作区');
+  assert.equal(fs.statSync(path.join(filesRoot, '重新绑定的新工作区')).isDirectory(), true);
+
+  console.log('files HTTP tests: auto/create/select workspaces + symlink boundaries + exclusive uploads + voucher paths passed');
 } finally {
   child.kill('SIGTERM');
   fs.closeSync(log);

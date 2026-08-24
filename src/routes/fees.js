@@ -6,7 +6,7 @@ import { todayCN, isDate } from '../lib/dates.js';
 import {
   openSecureFile,
   removeSecureCreatedFile,
-  resolveCaseDirectory,
+  resolveCaseDirectoryForCase,
   sanitizeUploadFileName,
   writeUniqueSecureFile,
 } from '../lib/secure-files.js';
@@ -79,7 +79,10 @@ function vouchersForFees(fees) {
     let missing = false;
     if (FILES_ROOT && fee) {
       try {
-        const context = resolveCaseDirectory(FILES_ROOT, fee.case_name || fee.case_name_for_files || '');
+        const context = resolveCaseDirectoryForCase(FILES_ROOT, {
+          name: fee.case_name || fee.case_name_for_files || '',
+          folder_path: fee.case_folder_path || fee.case_folder_path_for_files || '',
+        });
         if (!context.exists) {
           missing = true;
         } else {
@@ -99,7 +102,7 @@ function vouchersForFees(fees) {
 r.get('/fees/overview', (req, res) => {
   const today = todayCN();
   const rows = db.prepare(
-    `SELECT f.*, c.name AS case_name, c.status AS case_status FROM fee_items f
+    `SELECT f.*, c.name AS case_name, c.folder_path AS case_folder_path, c.status AS case_status FROM fee_items f
      JOIN cases c ON c.id = f.case_id
      ORDER BY c.status = 'active' DESC, c.name, COALESCE(NULLIF(f.due_on,''),'9999'), f.id`
   ).all();
@@ -211,7 +214,7 @@ r.get('/fees/overview', (req, res) => {
 
 r.get('/cases/:id/fees', (req, res) => {
   const rows = db.prepare(
-    `SELECT f.*, c.name AS case_name_for_files
+    `SELECT f.*, c.name AS case_name_for_files, c.folder_path AS case_folder_path_for_files
        FROM fee_items f JOIN cases c ON c.id=f.case_id
       WHERE f.case_id = ? ORDER BY COALESCE(NULLIF(f.due_on,''),'9999'), f.id`
   ).all(req.params.id);
@@ -258,7 +261,7 @@ r.post('/cases/:id/fees', (req, res) => {
 
 r.put('/fees/:id/files', express.raw({ type: '*/*', limit: MAX_VOUCHER_SIZE }), (req, res) => {
   const fee = db.prepare(
-    `SELECT f.*, c.name AS case_name
+    `SELECT f.*, c.name AS case_name, c.folder_path AS case_folder_path
        FROM fee_items f JOIN cases c ON c.id=f.case_id
       WHERE f.id=?`
   ).get(req.params.id);
@@ -276,13 +279,16 @@ r.put('/fees/:id/files', express.raw({ type: '*/*', limit: MAX_VOUCHER_SIZE }), 
 
   let context;
   try {
-    context = resolveCaseDirectory(FILES_ROOT, fee.case_name);
+    context = resolveCaseDirectoryForCase(FILES_ROOT, {
+      name: fee.case_name,
+      folder_path: fee.case_folder_path,
+    });
   } catch (error) {
     const status = ['root_unconfigured', 'root_unavailable', 'root_invalid'].includes(error?.code) ? 503 : 400;
     return res.status(status).json({ error: error.message });
   }
   if (!context.exists) {
-    return res.status(404).json({ error: `案件夹不存在：${fee.case_name}（请先核对案件夹名称）` });
+    return res.status(404).json({ error: `案件夹不存在：${fee.case_folder_path || fee.case_name}（请先核对案件工作区）` });
   }
   let written;
   try {

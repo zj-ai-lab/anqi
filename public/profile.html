@@ -95,7 +95,7 @@
         <label class="settings-row" id="agent-enabled-row" style="cursor:pointer">
           <div>
             <div class="label">启用 AI 助理</div>
-            <div class="desc">开启后案件页会出现助理入口；模型只读本案数据、不能直写正式表，不算期限</div>
+            <div class="desc">开启后案件页会出现助理入口；案件夹就是项目，正式表仍只走人工裁决，不由模型计算期限</div>
           </div>
           <input type="checkbox" id="agent-enabled" aria-label="启用 AI 助理">
         </label>
@@ -105,7 +105,12 @@
               <option value="deepseek-official">deepseek-official（DeepSeek 官方）</option>
               <option value="openai-completions">openai-completions（自定义 OpenAI 兼容端点）</option>
             </select></label>
+            <label class="f">能力档位<select id="agent-capability-mode">
+              <option value="project">案件项目（文件限本案，不启用命令/联网）</option>
+              <option value="full">完整 DSH（命令、联网、子 Agent、工作流）</option>
+            </select></label>
           </div>
+          <p class="page-sub" id="agent-capability-note">案件项目档可读取本案文件，标准文件工具不能越出案件夹。</p>
           <div class="formrow">
             <label class="f grow">Base URL<input id="agent-base-url" placeholder="https://api.deepseek.com"></label>
           </div>
@@ -133,6 +138,10 @@
               <label class="f grow">API Key 环境变量名<input id="agent-api-key-env" placeholder="DEEPSEEK_API_KEY" autocomplete="off" spellcheck="false"></label>
             </div>
             <p class="page-sub">这里填的只是<b>变量名</b>，不是 key 本身——若该环境变量在启动环境（systemd/launchd/.env 之类）里存在且非空，优先级高于上面在界面填的 key；留空则完全用界面保存的 key。</p>
+            <div class="formrow">
+              <label class="f grow">DSH 插件 patch 文件<input id="agent-plugin-patch" placeholder="/绝对路径/cordis.patch.yml" autocomplete="off" spellcheck="false"></label>
+            </div>
+            <p class="page-sub">仅完整档加载。支持上游 Cordis patch / 第三方 DSH 插件，并监听文件热更新；插件等同在本机执行代码，只填写你已审查且信任的普通 YAML 文件。</p>
           </details>
         </div>
         <div class="formrow">

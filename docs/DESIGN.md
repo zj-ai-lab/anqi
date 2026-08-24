@@ -38,7 +38,7 @@ case CLI ─────────────────► /api
 SQLite，migration 走编号 SQL。以下是核心表结构示意；现行字段与约束以 `src/migrations/` 为准：
 
 ```sql
--- 案件。name 同时作为配置文件根下的单层案件夹名；兼容既有持久化标识
+-- 案件。name 是人读的案件标题；folder_path 是配置文件根下的单层案件工作区名
 CREATE TABLE cases (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,          -- 例「张三诉李四民间借贷」（示例）
@@ -52,7 +52,7 @@ CREATE TABLE cases (
   stage_entered_at TEXT,              -- 进入当前阶段日 → 「停留 N 天」信号（D6）
   status TEXT NOT NULL DEFAULT 'active',  -- active|shelved|closed（shelved 语义同 registry）
   accepted_at TEXT,                   -- 收案日
-  folder_path TEXT,                   -- 外部案件夹指针
+  folder_path TEXT,                   -- ANJIAN_FILES_ROOT 下的单层案件工作区名
   note TEXT,
   created_at TEXT, updated_at TEXT
 );
@@ -348,9 +348,11 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 ## 8.5 案件文件桥（0.5.0；双向同步 1.0.0）
 
-**铁律：案件夹是唯一文件真相源，本系统不建第二文件仓。**
+**铁律：案件夹是唯一文件真相源，本系统不建第二文件仓；同一个案件夹同时就是本案 Agent workspace。**
 
-- 部署者将本地磁盘或同步软件管理的目录挂载为 `ANJIAN_FILES_ROOT`；`cases.name` 是该根目录下的单层案件夹名。案件创建与改名共用同一 validator：去掉首尾空白后必须非空、非 `.`/`..`、非隐藏名，不含 `/`、`\\`、NUL/控制字符，且 UTF-8 文件名不超过 255 bytes。
+- 部署者将本地磁盘或同步软件管理的目录挂载为 `ANJIAN_FILES_ROOT`；`cases.folder_path` 是该根目录下的单层案件夹名，`cases.name` 只承担人读标题。两者在建案时默认同名，但此后互不跟随：改案件标题不搬目录，换工作区也不改标题。历史空 `folder_path` 以 `name` 回填一次后固定。
+- 已配置 `ANJIAN_FILES_ROOT` 时，新建案件必须同时选择一个根下既有文件夹，或由服务端原子创建一个新文件夹；桌面版默认总是配置该根。未配置文件根的兼容部署仍可建案，但只保存待物化的 `folder_path` 指针，文件区与 Agent 明确不可用，不伪装成已有目录。案件详情可重新绑定根下未被其他案件占用的真实目录；换绑只改指针、不移动、不复制、不删除任何文件，并先停掉该案正在运行的 Agent worker。目录选择器只列 `ANJIAN_FILES_ROOT` 的单层真实目录，隐藏项、符号链接和非目录不出现；Web/自托管版不接受浏览器提交任意宿主绝对路径。
+- 工作区名 validator：去掉首尾空白后必须非空、非 `.`/`..`、非隐藏名，不含 `/`、`\\`、NUL/控制字符，且 UTF-8 文件名不超过 255 bytes。同一工作区最多绑定一个案件；案件标题可重名与否继续由案件表自己的约束决定。
 - 能力：网页浏览案件夹（面包屑单层列目录）/ 上传（PUT 原始字节流，零依赖；白名单子目录：法院文书/立案材料/证据整理/客户沟通/办案过程/人工终稿；重名自动 (2) 不覆盖）/ 取流预览（PDF/图片 inline，html 以纯文本回防存储 XSS，nosniff）。
 - `attachments` 表只存**引用**（case_id + entity/entity_id + rel_path）：事件可挂多份文书，时间线出 📎 签；删除仅解除引用，永不删文件本体（不可逆操作留给人）。
 - 文件 API、款项凭证和 LegalRAG reconciliation/排队必须共用 `src/lib/secure-files.js`，禁止各自复制词法 `safeJoin`。配置根先 `realpath` 成可信锚；案件夹、每级中间目录和目标均以 `lstat` 拒绝符号链接，真实路径须留在案件夹内，并在操作前后复核 `dev/ino` 身份。读取用 `O_NOFOLLOW` 打开已验证文件描述符并绑定 inode；新文件用 `O_CREAT|O_EXCL|O_NOFOLLOW` 原子抢占名称，冲突才尝试 `(2)`，绝不先 `exists` 后覆盖。目录列表和 LegalRAG 扫描忽略符号链接。读取类端点把穿越、绝对路径、符号链接、越界真实路径和路径竞态统一回成 404，不向探测者区分安全拒绝与文件不存在；案件名、上传名等写入类非法输入仍回 400，供界面明确纠正。另有 60MB 上限、文件名清洗和会话/静态 token 鉴权。
@@ -371,7 +373,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 ### LegalRAG 派生桥（1.5.0）——同一原件，不再重复上传
 
-- 案齐与可选的 LegalRAG 服务挂载同一棵部署者配置的案件夹树；案齐只把 `cases.name + rel_path` 送到受信任接口，LegalRAG 验证真实路径仍在共享案件根后才登记原件。案件名精确匹配优先；没有精确项时，只允许唯一候选且仅差末尾“案”字的兼容映射。不会经 HTTP 再复制一份文件。
+- 案齐与可选的 LegalRAG 服务挂载同一棵部署者配置的案件夹树；案齐用 `cases.folder_path + rel_path` 定位共享原件并送到受信任接口，LegalRAG 验证真实路径仍在共享案件根后才登记。历史名称映射只用于旧数据兼容，不再把可改的案件标题当目录键；不会经 HTTP 再复制一份文件。
 - 案齐上传成功后立即写持久化队列；外部新增或覆盖由每 2 分钟一次的轻量 reconciliation 补漏。扫描按案件一次性载入当前 revision 后在内存比对，未变化文件零 DB 写入，避免大案件夹制造 WAL 写放大。首次启用只为存量文件建立 `observed` 基线，**不自动把历史全量送去 OCR**；旧文件可逐个点「立即处理」。
 - LegalRAG 用 `case + checksum` 识别与手动上传相同的内容：已有解析直接认领共享路径，不重复 OCR。同一路径内容变化追加 `source_revision`，旧 revision 保留但退出正常列表和检索；任何清理函数都不得删除共享案件根下的原件。
 - 状态机固定为 `observed → queued → registering → processing → ready → extracting → review`；网络/解析失败最多自动重试三次，之后显示 `failed` 供人工重试。文件消失只标 `missing`，不删 LegalRAG 解析结果或案齐正式记录。
@@ -428,19 +430,24 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 ## 8.8 内置 DSH 案件助理（2.7.0 beta）
 
-内置能力是钉住 `@deepseek-ai/dsh-* 0.1.0-rc.7` 的**案件专用 JSON-RPC sidecar**，不是把上游 DSH Web 应用原样嵌进案齐。每案由 supervisor 固定一个 worker、session 与真实案件夹 `cwd`；模型可见面只装配受信任 skill、会话 todo、ask-user 与案齐领域工具。当前 beta 明确不装配 shell、web、subagent、workflow、ralph，也因上游文件读取 containment 缺口移除了 read/read_image/glob/grep。这个差异是隐私与写入边界，不是安装包漏文件。
+目标形态是**每案一个完整 DSH 项目**：`cases.folder_path` 指向的真实案件夹就是 session `cwd`、文件工具根、命令工作目录与 workspace instructions 起点；在该案件页打开助理时自动绑定，无需再次选择路径。supervisor 仍固定 session→case→workspace，任何对话文本或模型工具参数都不能切换案件绑定。
 
-因此，上游/社区插件分三类处理：
+运行时采取“上游基线 + 案齐薄覆盖”，不再长期手抄一份删减版组合：
 
-- 只依赖同代 Cordis/DSH agent 服务的运行时插件，经过源码、权限、依赖与版本兼容审查后，可以作为案齐自有资产钉版本并加入受控 preset；不承诺任意 npm/GitHub 插件即装即用。
-- 依赖 DSH Web Client 插槽、`web` profile、`DSH_HOME`、用户 `cordis.patch.yml` 或插件市场的 UI/管理插件，当前内置版不能直接使用，因为这些宿主面没有启动。
-- 会扩大案件读取、网络访问、执行或写入能力的插件，不得绕过既有 session→case 绑定、人工裁决和确定性期限边界；是否开放必须逐项设计与验收，不能由用户包在 worker 启动时自行改写安全配置。
+- 跟随同一版本的上游 `dsh-base` 能力面，保留文件、命令/jobs、goal/plan、subagent、workflow、Ralph、web search、skill、todo、ask-user 等标准能力；案齐只追加案件 persona、`anqi_*` 领域工具、JSON-RPC 交互桥和 workspace containment。上游新增能力应通过基线版本升级自然进入兼容性测试，而不是再人工复制一遍插件清单。
+- 权限不是永久删包，而是显式运行档位。默认 `project`：只发布本案 read/read_image/glob/grep、受 read-before-write 保护的写/改、skill/todo/ask-user 与案齐领域工具，不发布 shell、联网、goal、subagent、workflow/Ralph；`full`：启用上游完整 shell/jobs/goal/subagent/workflow/Ralph/web 能力，沿用 `workspace-write + ask`，并在设置页明确提示命令进程仍可能读取当前 OS 用户可读的案件夹外内容、联网能力会把查询发送到相应服务。档位变化或运行时配置变化必须终止既有 worker，下一次打开按新配置重建。
+- 上游 `dsh-fs-sandbox` 的 `workspace-write` 只约束写/改，官方文档明确读取不受该 mode 限制；因此案齐不能直接把它当成案件读取边界。`project` 档使用案齐自有的 filesystem provider 覆盖 `resolve/stat/read/readBytes/listDir/write/edit`，对 canonical target 做真实路径 containment，拒绝绝对路径、`..` 与符号链接逃逸；`full` 档也继续用该 provider 约束标准文件工具，只有显式开放的 shell 是更宽的宿主能力。
+- 期限、事件、收费与正式任务仍不是普通项目文件：DSH 无论处于哪一档都没有这些表的直接数据库写权。它只能读案齐白名单投影，并通过 `anqi_inbox_propose` 产生待人工裁决的 task 建议；确定性期限和财务计算边界不变。
+
+运行时随 App 分发一份统一钉版本、已验收的 bundled closure；当前基线为 `0.1.1-rc.2`。`npm run agent:update-runtime -- <exact-version>` 会一次修改全部 DSH direct/override pin、重新解析 lockfile，并依次运行 base-parity、workspace containment、project/full 真实 JSON-RPC boot 与插件热更新门禁；任一步失败会恢复旧 manifest/lock 并 `npm ci` 回旧闭包。上游 `dsh-base` 新增 row 若未挂载或未明确归类，parity 门直接失败，不能静默继续阉割。运行时二进制版本升级仍随案齐发版并重启 worker，不把未经兼容验证的 npm `next` 直接热替换进已签名 App。
+
+社区插件在设置页高级项中填写一个已审查的绝对路径 `cordis.patch.yml`；仅 `full` 档把它作为案齐强制组合之上的上游 Cordis patch 加载，并用官方 HMR 监听文件，现有 worker 可原地挂载、卸载或更新插件。插件就是本机 Node 代码，必须视为与当前用户等权的可信扩展：它理论上能绕过应用级 provider，因此界面明确警告且拒绝相对路径、缺失文件、非普通文件与符号链接。依赖完整 DSH Web Client 插槽的 UI 插件不会自动出现在案齐对话抽屉里，除非另做前端适配；`project` 档完全不读取插件 patch。
 
 案件助理对话的 assistant 文本按安全 Markdown 子集渲染：标题、段落、粗体/斜体/删除线、行内与围栏代码、引用、有序/无序/任务列表、表格及 HTTP(S)/mailto 链接。渲染器只用 DOM 节点组装，不解释原始 HTML；危险协议不生成链接，Markdown 图片只显示为可点击的来源链接而不自动请求远端资源。流式 chunk 可反复重绘当前气泡，最终 `assistant/message` 仍以权威完整文本收口；用户输入、系统行和工具摘要继续按纯文本显示。
 
 ## 9. 外部集成边界
 
-1. `cases.name` 是配置文件根下的单层案件夹名，也是可选外部服务的稳定案件键；`status=shelved` 表示搁置。
+1. `cases.folder_path` 是配置文件根下的单层案件工作区名，也是共享文件服务的稳定目录键；`cases.name` 是人读标题；`status=shelved` 表示搁置。
 2. 外部自动化优先使用 `/internal/digest` 与 `/internal/cases/byname/:name` 读取结构化状态，并只通过 `/internal/inbox` 投递固定白名单内的异步建议。API 不可达时是否降级由外部工具自行决定，不属于本仓运行时。
 3. CLI 或其他受信任工具可在人工确认事实后调用公开的人面 API；不得绕过事件入口直接制造派生期限。
 4. **LegalRAG 衔接**（1.5.0）：
@@ -495,7 +502,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 | A23 | 缺鉴权配置必须拒绝启动；开发无鉴权只留显式回环逃生口 | 隐式“没配账号就是 dev”会把配置遗漏变成裸奔，且与监听地址组合后可扩散到局域网。`ANJIAN_UNSAFE_NO_AUTH=1` 只在非 production + 明确回环 IP 生效并告警，让测试仍可零凭据运行，同时把生产默认改为 fail-closed。|
 | A24 | 文件 API、凭证与 LegalRAG 共用一套真实路径边界 | 只做 `path.resolve` 前缀比较会跟随案件根、中间目录或目标符号链接，`exists→write` 还会产生覆盖竞态。共享 helper 把案件名单一分量、root realpath、逐级 lstat、真实路径 containment、inode 复核、no-follow 读取与 exclusive create 钉成同一契约；新文件仍保留重名 `(2)` 的用户语义。|
 | A25 | Android 壳由用户配置唯一服务器 origin，不内置项目部署坐标 | 自托管客户端不能把维护者实例当产品默认；严格 origin 比较阻断伪同源深链，切换清会话阻断跨实例凭据串用。动态局域网地址无法用 manifest 静态枚举，因此 cleartext 能力在壳层开放、目的地由 Activity 确定性白名单收窄；公网仍强制 HTTPS。|
-| A26 | 内置 DSH 是案件专用受控 sidecar，不是完整 Web profile 或通用插件宿主 | per-case 隔离、人工确认和最小工具面优先于上游功能齐全；第三方运行时插件只能经审查后钉版本纳入 preset，依赖 Web Client/插件市场的插件当前不兼容。对话 Markdown 用 DOM 安全子集渲染，不执行 HTML、不自动加载远端图片。|
+| A26 | 内置 DSH 以案件 workspace 为边界，默认收敛但提供显式完整档与可信插件 patch | project 档只发布本案文件/技能/待办/问人及案齐领域工具；full 档恢复上游命令、jobs、goal、subagent、workflow、Ralph、web，并可 HMR trusted Cordis patch。标准文件工具始终经过 canonical containment，shell/第三方代码的更宽宿主权限必须在界面明示。依赖 Web Client 插槽的插件仍需另做前端适配。对话 Markdown 用 DOM 安全子集渲染，不执行 HTML、不自动加载远端图片。|
 
 ## 12. 初始未决问题（现状）
 

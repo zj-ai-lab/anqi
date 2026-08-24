@@ -15,7 +15,7 @@ import {
   listSecureDirectory,
   normalizeRelativeFilePath,
   openSecureFile,
-  resolveCaseDirectory,
+  resolveCaseDirectoryForCase,
   sanitizeUploadFileName,
   writeUniqueSecureFile,
 } from '../lib/secure-files.js';
@@ -62,7 +62,7 @@ function mustCase(req, res) {
   const c = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
   if (!c) { res.status(404).json({ error: '案件不存在' }); return null; }
   try {
-    const context = resolveCaseDirectory(ROOT, c.name);
+    const context = resolveCaseDirectoryForCase(ROOT, c);
     return { c, context };
   } catch (error) {
     securePathFailure(res, error, '文件或目录不存在', {

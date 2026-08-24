@@ -2,12 +2,14 @@ import { Router } from 'express';
 import { db, audit } from '../db.js';
 import {
   AGENT_SETTINGS_KEYS,
+  ALLOWED_AGENT_CAPABILITY_MODES,
   ALLOWED_PROVIDERS,
   ENV_NAME_RE,
   agentKeyStatus,
   isReservedEnvName,
   loadAgentConfig,
   resolveAgentApiKey,
+  validateAgentPluginPatch,
   validateBaseURL,
 } from '../agent/config.js';
 import { encryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
@@ -19,18 +21,17 @@ import { encryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.j
 const MAX_API_KEY_LENGTH = 4096;
 
 // 系统设置（键值）。「用户中心 · 个人设置」六个抬头字段——纯展示信息，不进
-// 期限引擎、不进任何计算、无 LLM 通道；加上 DSH sidecar 的 agent_* 五键
-// （设计稿 §1 白名单：enabled/provider/baseURL/model/apiKeyEnv）。
+// 期限引擎、不进任何计算、无 LLM 通道；加上 DSH sidecar 的 agent_* 运行配置键。
 //
-// 白名单是硬门：PUT 只认下面这十一个键，其余**直接丢弃**（不报错、不落库）。
-// agent_* 五键额外过一遍类型/格式校验（与 src/agent/config.js 的
+// 白名单是硬门：PUT 只认下面列出的个人字段与 agent 配置，其余**直接丢弃**（不报错、不落库）。
+// agent_* 运行配置额外过一遍类型/格式校验（与 src/agent/config.js 的
 // loadAgentConfig() 共用同一份 provider 枚举/环境变量名正则/baseURL 协议与
 // 域策略——两处一旦各写一份就会出现"设置页存得进去，但 supervisor 启动时
 // 又被拒绝"的不一致），校验不过整批 PUT 直接 400、一个键都不落；apiKeyEnv
 // 全程只存变量名，本文件不读取、不返回、不缓存该变量名对应的环境变量值。
 //
 // 设置侧联动（设计稿 §1「enabled=false 必须在……spawn 子进程之前短路返回」
-// 与门禁 2/10「关掉即不存在」的另一半）：这批 PUT 一旦把 agent_* 五键落库成
+// 与门禁 2/10「关掉即不存在」的另一半）：这批 PUT 一旦把 agent_* 配置落库成
 // 一份 config.enabled 为假的状态，必须同时终止所有已经在跑的 live worker——
 // 否则「设置页关掉开关」与「worker 真的停下来」是两件不同步的事，编排方人工
 // 验收正是在这条缝隙上实测复现的红线（已启动的 DSH 子进程在关掉开关 14 分钟
@@ -48,13 +49,8 @@ const MAX_API_KEY_LENGTH = 4096;
 // apiKeyEnv 尤其如此：loadAgentConfig() 只校验变量名格式与保留名，从不读取
 // process.env[apiKeyEnv] 是否真的存在，那是 agentReady() 的职责）。
 //
-// 范围边界（已知、非本轮红线，留作后续跟进）：这条联动只在配置变成
-// disabled 时才收敛 live worker；配置仍然 enabled 的改动（例如把
-// agent_model 从 A 改成 B）不会重建或重启 live worker——PUT 本身会 200、
-// GET /api/settings 会显示新值，但已经在跑的 worker 是拿着 spawn 那一刻的
-// 旧值继续跑的，"设置页显示的模型"与"worker 实际在用的模型"会静默不一致，
-// 直到该 worker 因为别的原因（案件关闭、进程重启等）自然回收。这与「关掉即
-// 不存在」是同一条 settings↔supervisor 缝隙的另一半，但不在本轮任务范围内。
+// 任一影响 sidecar 组合或凭据的字段发生变化时，既有 worker 也必须停止；
+// 下一次打开案件助理时用新配置启动，避免设置页展示值与存活 worker 实际值分叉。
 //
 // 本文件因此改成工厂函数 createSettingsRouter(supervisor)——与
 // src/routes/agent.js 的 createAgentRouter(supervisor) 同一种接线方式：
@@ -110,6 +106,20 @@ export function createSettingsRouter(supervisor) {
         return { ok: false, error: `agent_provider 必须是 ${[...ALLOWED_PROVIDERS].join(' 或 ')}` };
       }
       values.agent_provider = provider;
+    }
+
+    if (touches('agent_capability_mode')) {
+      const capabilityMode = String(body.agent_capability_mode ?? '').trim();
+      if (!ALLOWED_AGENT_CAPABILITY_MODES.has(capabilityMode)) {
+        return { ok: false, error: 'agent_capability_mode 必须是 project 或 full' };
+      }
+      values.agent_capability_mode = capabilityMode;
+    }
+
+    if (touches('agent_plugin_patch')) {
+      const result = validateAgentPluginPatch(body.agent_plugin_patch);
+      if (!result.ok) return { ok: false, error: `agent_plugin_patch: ${result.error}` };
+      values.agent_plugin_patch = result.normalized;
     }
 
     if (touches('agent_model')) {
@@ -183,7 +193,7 @@ export function createSettingsRouter(supervisor) {
 
   // GET/PUT /api/settings 共用的响应体构造：
   //   - settings 表的原始行原样带出（六个人工字段 + agent_enabled/provider/
-  //     baseURL/model/apiKeyEnv 五个白名单字段），但把 agent_api_key_encrypted
+  //     capabilityMode/baseURL/model/apiKeyEnv/pluginPatch 等白名单字段），但把 agent_api_key_encrypted
   //     这一行剔除——密文本身虽不是明文，但没有正当理由顺手带出去。
   //   - 额外附三个只读计算字段供前端展示："配置来自哪里/是否已配置/掩码"，
   //     一律经 resolveAgentApiKey()（同 loadAgentConfig() 取值链完全同源）
@@ -212,6 +222,7 @@ export function createSettingsRouter(supervisor) {
 
   r.put('/settings', async (req, res) => {
     const body = req.body || {};
+    const previousCapabilityMode = readAgentSetting(AGENT_SETTINGS_KEYS.capabilityMode).trim() || 'project';
 
     let agentValues = {};
     const touchesAnyAgentKey = AGENT_BODY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key));
@@ -230,6 +241,18 @@ export function createSettingsRouter(supervisor) {
         .map((k) => [k, String(body[k] ?? '')]),
       ...Object.entries(agentValues),
     ];
+    const runtimeRestartKeys = new Set([
+      AGENT_SETTINGS_KEYS.capabilityMode,
+      AGENT_SETTINGS_KEYS.provider,
+      AGENT_SETTINGS_KEYS.baseURL,
+      AGENT_SETTINGS_KEYS.model,
+      AGENT_SETTINGS_KEYS.apiKeyEnv,
+      AGENT_SETTINGS_KEYS.apiKeyEncrypted,
+      AGENT_SETTINGS_KEYS.pluginPatch,
+    ]);
+    const runtimeConfigChanged = pairs.some(([key, value]) => (
+      runtimeRestartKeys.has(key) && readAgentSetting(key) !== value
+    ));
     // 逐键 upsert，整体一个事务：要么这一批键全落，要么一个都不落。
     const written = db.transaction((rows) => {
       for (const [k, v] of rows) upsert.run(k, v);
@@ -254,8 +277,14 @@ export function createSettingsRouter(supervisor) {
     // 把它改成一个当前环境里并不存在的变量名并不会触发这里的 stopAll()。
     if (touchesAnyAgentKey) {
       const config = loadAgentConfig();
-      if (!config.enabled && supervisor && typeof supervisor.stopAll === 'function') {
-        const reason = config.error ? `disabled-by-settings:${config.error}` : 'disabled-by-settings';
+      const capabilityModeChanged = written.includes(AGENT_SETTINGS_KEYS.capabilityMode)
+        && config.enabled
+        && config.capabilityMode !== previousCapabilityMode;
+      if ((!config.enabled || runtimeConfigChanged) && supervisor && typeof supervisor.stopAll === 'function') {
+        const reason = capabilityModeChanged
+          ? `capability-mode-changed:${previousCapabilityMode}->${config.capabilityMode}`
+          : runtimeConfigChanged && config.enabled ? 'agent-runtime-config-changed'
+          : config.error ? `disabled-by-settings:${config.error}` : 'disabled-by-settings';
         // 这里是同步 await：这次 PUT 的响应要等 stopAll() 真正跑完才返回，
         // 是刻意的取舍——响应到达即代表 worker 真的停了，前端不需要再轮询
         // 确认，回归测试也不用为"设置已落库但 worker 还在收尾"这种时序补

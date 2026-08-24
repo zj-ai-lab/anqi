@@ -135,6 +135,34 @@ try {
     assert.equal(status, 200);
   }
 
+  // ---- 能力档位 + trusted DSH plugin patch ----
+  {
+    const { status } = await put({ agent_capability_mode: 'danger-full-access' });
+    assert.equal(status, 400);
+  }
+  {
+    const { status } = await put({ agent_capability_mode: 'full' });
+    assert.equal(status, 200);
+  }
+  {
+    const { status } = await put({ agent_plugin_patch: 'relative.patch.yml' });
+    assert.equal(status, 400);
+  }
+  const pluginPatch = path.join(scratch, 'trusted.cordis.patch.yml');
+  fs.writeFileSync(pluginPatch, '[]\n');
+  {
+    const { status } = await put({ agent_plugin_patch: pluginPatch });
+    assert.equal(status, 200);
+    assert.equal((await get()).agent_plugin_patch, pluginPatch);
+  }
+  const pluginLink = path.join(scratch, 'linked.patch.yml');
+  fs.symlinkSync(pluginPatch, pluginLink);
+  {
+    const { status } = await put({ agent_plugin_patch: pluginLink });
+    assert.equal(status, 400, '插件 patch 不能通过符号链接换目标');
+  }
+  await put({ agent_plugin_patch: '', agent_capability_mode: 'project' });
+
   // ---- model 非空 ----
   {
     const { status, data } = await put({ agent_model: '   ' });

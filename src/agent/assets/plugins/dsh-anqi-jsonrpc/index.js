@@ -1,5 +1,5 @@
-// 扩展 JSON-RPC server：subclass HarnessSdkJsonRpcServer 只为补上 stock rc.7
-// server 缺的三件事（移植自 anqi-spike-dsh，逻辑未改动，仅头注释更新——细节
+// 扩展 JSON-RPC server：subclass HarnessSdkJsonRpcServer 只为补上当前 stock
+// server 缺的三件事（最初移植自 anqi-spike-dsh，细节
 // 见 spikes/dsh-agent/REPORT.md §9 踩坑 #7/#8/#9/#19/#20、§13.1）：
 //
 //   1. session/create 时通过 setup(agentCtx) 真正 mount 'anqi' preset（stock
@@ -288,6 +288,13 @@ class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
         if (afterVersion !== beforeVersion) continue;
         await waitForChange(afterVersion);
       }
+    } catch (error) {
+      const visible = observation?.tools?.visibleNames?.join(',') || '(none)';
+      const skills = observation?.skills?.names?.join(',') || '(none)';
+      throw new Error(
+        `session/preflight did not become ready; visible tools=[${visible}] skills=[${skills}]`,
+        { cause: error },
+      );
     } finally {
       disposeToolsListener();
       disposeSkillsListener();

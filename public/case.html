@@ -69,10 +69,18 @@
               <label class="f">我方地位<input name="client_role" placeholder="原告 / 被告 / 申请人"></label>
               <label class="f">对方<input name="opponent" placeholder="李四"></label>
               <label class="f">收案日<input type="date" name="accepted_at"></label>
-              <label class="f">案件夹路径<input name="folder_path" placeholder="张三诉李四民间借贷纠纷"></label>
               <label class="f">程序<select name="procedure"></select></label>
               <label class="f">阶段<select name="stage"></select></label>
             </div>
+            <div class="formrow workspace-picker" id="case-workspace-picker">
+              <label class="f grow">Agent 项目 / 案件工作区<select id="case-workspace-select"></select></label>
+              <button class="btn" type="button" id="case-workspace-bind">绑定所选文件夹</button>
+            </div>
+            <div class="formrow">
+              <label class="f grow">新建工作区<input id="case-workspace-new" placeholder="默认使用案件名"></label>
+              <button class="btn" type="button" id="case-workspace-create">新建并绑定</button>
+            </div>
+            <p class="page-sub" id="case-workspace-note">案件夹就是本案 AI 助理的项目目录；换绑不移动、不复制、也不删除原文件。</p>
             <div class="formrow">
               <label class="f grow">LegalRAG 案件库链接<input name="legalrag_url" placeholder="https://legalrag.example.com/…"></label>
               <label class="f grow">备注<input name="note"></label>
@@ -400,6 +408,6 @@
 
   </div>
 </main>
-<script type="module" src="/js/case.js?v=1.8.1"></script>
+<script type="module" src="/js/case.js?v=2.7.0.2"></script>
 </body>
 </html>

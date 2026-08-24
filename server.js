@@ -6,7 +6,7 @@ import './src/db.js';
 import { apiAuth, pageAuth, internalAuth } from './src/middleware/auth.js';
 import { errorHandler } from './src/middleware/errors.js';
 import authRouter from './src/routes/auth.js';
-import casesRouter from './src/routes/cases.js';
+import { createCasesRouter } from './src/routes/cases.js';
 import recordsRouter from './src/routes/records.js';
 import viewsRouter from './src/routes/views.js';
 import feesRouter from './src/routes/fees.js';
@@ -68,6 +68,7 @@ const agentRouter = createAgentRouter(agentSupervisor);
 // 唯一同时持有 agentSupervisor 构造权和两个路由挂载权的地方，接线方式与
 // agentRouter 完全一致。
 const settingsRouter = createSettingsRouter(agentSupervisor);
+const casesRouter = createCasesRouter(agentSupervisor);
 
 app.use('/api', authRouter); // /api/login /api/logout（自带限速，不过会话门）
 app.use(

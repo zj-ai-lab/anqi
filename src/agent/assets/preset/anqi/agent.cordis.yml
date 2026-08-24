@@ -1,26 +1,9 @@
 # anqi 案件助理的模型可见工具面（preset-owned，只在 exact agent scope 挂载）。
 #
-# 工具面故意只留「skill、todo、ask-user + dsh-anqi 三工具」：没有
-# bash/web/subagent/workflow/ralph 中的任何一个（设计稿 §3.1），且自 2026-08-22
-# 起也不再挂载任何模型侧文件读取工具（read/read_image/glob/grep）。
-#
-# 处置背景（产品决策，2026-08-22，详见 docs/agent-gates.md 门禁 1/3「已知限制」
-# §3）：门禁取证直接调用本仓库生产实际装配的 `@deepseek-ai/dsh-fs-sandbox`
-# （`SandboxedFileSystem`）发现，它只对 write/edit 做了 containment
-# （`checkedTarget()` 只在这两个方法里生效），`resolve`/`readText`/`streamText`
-# 全部原样继承自 `LocalFileSystem`——对绝对路径没有任何围栏：模型只要给
-# `read`/`glob` 传一个绝对路径，就能读到案件夹以外任意宿主可读文件，唯一防线
-# 是这份文件里 persona 的文本劝阻，不是代码强制。在 DSH 上游提供可配置的 read
-# containment 之前，编排方决策是 beta 从这里整体移除 `@deepseek-ai/dsh-tool-fs`
-# （read/read_image/write/edit）与 `@deepseek-ai/dsh-tool-fs-search`
-# （glob/grep），把这条缺口在模型可见面上收口到"工具不存在"级别，不再依赖
-# sandbox-policy/user-approval 拒绝 + persona 劝阻这套组合兜底。GA 若要恢复
-# 文件读取能力，必须先给 read 路径补上显式 containment（例如包一层校验绝对
-# 路径必须仍解析在 workspaceRoot 下），不能只靠 persona 约束。
-#
-# `../../anqi.cordis.yml` 里的 `sandbox-policy`/`fs-sandbox`/`user-approval`
-# 三个宿主服务作为纵深防御继续保留（不因为这里不再请求 fs 工具就撤掉），但在
-# 当前工具面下已经没有任何模型可达路径会触发它们。
+# 标准文件工具恢复完整挂载。它们依赖的 provider 不是上游原样
+# dsh-fs-sandbox，而是 ../../plugins/dsh-anqi-fs：read/read_image/glob/grep 与
+# write/edit 全部先 canonicalize 并强制留在当前案件 workspace。project 档下
+# sandbox mode=read-only，full 档才允许本案内的受观察写/改。
 #
 # `dsh-anqi` 这一行必须用 preset-owned 相对名 `../../plugins/dsh-anqi/index.js`
 # （相对本文件所在目录解析，即 assets/plugins/dsh-anqi/index.js）。注意引用
@@ -47,24 +30,27 @@
       默认使用简体中文作答，并明确区分「案卷事实」「你的推断」「你的建议」三类
       内容，不要把推断或建议包装成事实。
 
-# customSkillDirs 目前恰好是 fail-closed 的（缺省时 process.env.DSH_ANQI_
-# SKILLS_ROOT 是 undefined，dsh-skill-filesystem/lib/index.js 内部对
-# undefined 调用 resolve() 会抛 TypeError），但这依赖的是第三方包一处未文档
-# 化的实现细节，不是这里显式断言的结果——与 ../../anqi.cordis.yml 里
-# workspaceRoot/fs-sandbox.cwd/mcp cwd 三处对 DSH_CWD 缺失显式抛错的写法不
-# 一致。设计稿 §3.1「不得接受用户 YAML 提供的 skill root」与那三处对 cwd 的
-# 要求同级，这里改成同样的显式守卫，不再依赖上游包"当前版本恰好会抛错"。
+# bundledSkillDir 走上游的 trusted-host 读取通道：技能包位于应用资源/宿主临时
+# 目录，不在案件 workspace 内，不能让通用 read 工具为了加载技能而放宽案件
+# containment。路径仍由 supervisor 唯一注入并显式 fail-closed。
 - id: skill-filesystem
   name: '@deepseek-ai/dsh-skill-filesystem'
   config:
     providerName: anqi-filesystem
     includeDefaultRoots: false
     watchFollowSymlinks: false
-    customSkillDirs:
-      - !!js (() => { if (!process.env.DSH_ANQI_SKILLS_ROOT) throw new Error('DSH_ANQI_SKILLS_ROOT is required'); return process.env.DSH_ANQI_SKILLS_ROOT; })()
+    bundledSkillDir: !!js (() => { if (!process.env.DSH_ANQI_SKILLS_ROOT) throw new Error('DSH_ANQI_SKILLS_ROOT is required'); return process.env.DSH_ANQI_SKILLS_ROOT; })()
 
 - id: tool-skill
   name: '@deepseek-ai/dsh-tool-skill'
+
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
 
 - id: tool-todo
   name: '@deepseek-ai/dsh-tool-todo'

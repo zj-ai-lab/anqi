@@ -69,6 +69,16 @@ export function normalizeCaseDirectoryName(value) {
   return name;
 }
 
+// cases.name 是案件标题；folder_path 才是 ANJIAN_FILES_ROOT 下的工作区名。
+// 兼容迁移前的空值：在 017 migration 尚未跑过的独立 fixture/旧备份上仍以
+// name 作为一次性 fallback，但所有新写入都会把 folder_path 物化为非空值。
+export function caseDirectoryName(caseRow) {
+  if (typeof caseRow === 'string') return normalizeCaseDirectoryName(caseRow);
+  if (!caseRow || typeof caseRow !== 'object') return null;
+  return normalizeCaseDirectoryName(caseRow.folder_path)
+    || normalizeCaseDirectoryName(caseRow.name);
+}
+
 export function normalizeRelativeFilePath(value, { allowEmpty = false, rejectHidden = true } = {}) {
   const raw = String(value ?? '');
   if (CONTROL_CHARS.test(raw) || raw.includes('\\') || path.posix.isAbsolute(raw)) {
@@ -109,6 +119,17 @@ export function resolveFilesRoot(configuredRoot) {
   return { absolute: real, identity: identityRecord(real, stat) };
 }
 
+export function ensureFilesRoot(configuredRoot) {
+  if (!configuredRoot) throw pathError('root_unconfigured', '未配置文件根（ANJIAN_FILES_ROOT）');
+  const configured = path.resolve(configuredRoot);
+  try {
+    fs.mkdirSync(configured, { recursive: true, mode: 0o700 });
+  } catch (error) {
+    throw pathError('root_unavailable', '文件根无法创建或访问', error);
+  }
+  return resolveFilesRoot(configured);
+}
+
 export function resolveCaseDirectory(configuredRoot, caseName) {
   const name = normalizeCaseDirectoryName(caseName);
   if (!name) throw pathError('invalid_case_name', '案件名必须是单一、非隐藏的目录名称');
@@ -144,6 +165,65 @@ export function resolveCaseDirectory(configuredRoot, caseName) {
     caseRootIdentity: identityRecord(real, realStat),
     exists: true,
   };
+}
+
+export function resolveCaseDirectoryForCase(configuredRoot, caseRow) {
+  const directoryName = caseDirectoryName(caseRow);
+  if (!directoryName) throw pathError('invalid_case_name', '案件工作区必须是单一、非隐藏的目录名称');
+  return resolveCaseDirectory(configuredRoot, directoryName);
+}
+
+// 只列文件根的直接子目录。这里返回的是可绑定 workspace 候选，不递归、不跟随
+// symlink，也不把隐藏目录暴露给浏览器。
+export function listCaseDirectories(configuredRoot) {
+  const root = ensureFilesRoot(configuredRoot);
+  const names = [];
+  for (const entry of fs.readdirSync(root.absolute, { withFileTypes: true })) {
+    const name = normalizeCaseDirectoryName(entry.name);
+    if (!name || !entry.isDirectory() || entry.isSymbolicLink()) continue;
+    const absolute = path.join(root.absolute, name);
+    let stat;
+    try { stat = fs.lstatSync(absolute); } catch { continue; }
+    if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
+    let real;
+    try { real = fs.realpathSync.native(absolute); } catch { continue; }
+    if (!containedBy(root.absolute, real) || real !== absolute) continue;
+    names.push(name);
+  }
+  names.sort((left, right) => left.localeCompare(right, 'zh-CN'));
+  return { filesRoot: root.absolute, names };
+}
+
+export function ensureCaseDirectory(configuredRoot, requestedName) {
+  const name = normalizeCaseDirectoryName(requestedName);
+  if (!name) throw pathError('invalid_case_name', '案件工作区必须是单一、非隐藏的目录名称');
+  const filesRoot = ensureFilesRoot(configuredRoot);
+  const target = path.join(filesRoot.absolute, name);
+  verifyIdentities([filesRoot.identity]);
+  let created = false;
+  try {
+    fs.mkdirSync(target, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if (error?.code !== 'EEXIST') throw error;
+  }
+  const context = resolveCaseDirectory(filesRoot.absolute, name);
+  if (!context.exists) throw pathError('not_found', '案件工作区创建后不可见');
+  verifyIdentities([filesRoot.identity, context.caseRootIdentity]);
+  return { context, created };
+}
+
+// 只用于“先建目录、后插案件行”的失败回滚。必须仍是刚才创建的同一个 inode，
+// 且目录为空；任何外部同步进来的内容都会让 rmdir 失败并被保留。
+export function removeCreatedCaseDirectory(context) {
+  if (!context?.exists || !context.caseRootIdentity) return false;
+  try {
+    verifyIdentities([context.filesRootIdentity, context.caseRootIdentity]);
+    fs.rmdirSync(context.caseRoot);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function requireCaseDirectory(context) {

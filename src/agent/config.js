@@ -1,9 +1,9 @@
 // DSH sidecar 设置白名单读取。
 //
-// 只认下面五个键（设计稿 §1 的白名单）：enabled / provider / baseURL / model /
-// apiKeyEnv。键值都存在既有的 settings key-value 表（迁移 014，见
+// 只认下面七个运行配置键：enabled / capabilityMode / provider / baseURL /
+// model / apiKeyEnv / pluginPatch。键值都存在既有的 settings key-value 表（迁移 014，见
 // src/routes/settings.js 的既有用法——那张表本身不做键名约束，白名单永远在
-// 应用层）；本文件是这五个 agent_* 键的唯一读路径，src/routes/settings.js 的
+// 应用层）；本文件是这些 agent_* 键的唯一读路径，src/routes/settings.js 的
 // agent_* PUT 校验直接复用这里导出的规则，不重新实现一份。
 //
 // 硬规则（红线，见任务书）：
@@ -20,6 +20,8 @@
 //     保留前缀/名称——见下面 isReservedEnvName 的注释。
 import { db } from '../db.js';
 import { decryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // 以下几个常量/函数均导出：src/routes/settings.js 的 agent_* 白名单 PUT 校验
 // 与这里的 loadAgentConfig() 必须共用同一套规则（provider 枚举、apiKeyEnv
@@ -27,7 +29,27 @@ import { decryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.j
 // 悄悄跑偏——那样迟早出现"设置页存进去的值合法，但 supervisor 启动时又被
 // 拒绝"或反过来"设置页挡不住、只能在 spawn 前才发现"的不一致。
 export const ALLOWED_PROVIDERS = new Set(['deepseek-official', 'openai-completions']);
+export const ALLOWED_AGENT_CAPABILITY_MODES = new Set(['project', 'full']);
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+export function validateAgentPluginPatch(value) {
+  const filename = String(value ?? '').trim();
+  if (!filename) return { ok: true, normalized: '' };
+  if (filename.length > 4096 || /[\0-\x1f\x7f]/u.test(filename)) {
+    return { ok: false, error: '插件 patch 路径非法或过长' };
+  }
+  if (!path.isAbsolute(filename) || !/\.ya?ml$/i.test(filename)) {
+    return { ok: false, error: '插件 patch 必须是绝对路径的 .yml/.yaml 文件' };
+  }
+  let stat;
+  try { stat = fs.lstatSync(filename); } catch {
+    return { ok: false, error: '插件 patch 文件不存在或不可读取' };
+  }
+  if (stat.isSymbolicLink() || !stat.isFile()) {
+    return { ok: false, error: '插件 patch 必须是普通文件，不能是符号链接' };
+  }
+  return { ok: true, normalized: path.resolve(filename) };
+}
 
 // apiKeyEnv 保留名黑名单：这个键只应该指向"模型 provider 自己的 key 变量
 // 名"，绝不能被配成 anqi 自身进程里已经存在的内部/宿主变量名——否则
@@ -289,14 +311,16 @@ export function validateBaseURL(baseURLRaw, provider) {
 // localtest.me 一类）仍然能通过这层校验；这是本轮明确接受的取舍，见
 // docs/CHANGES.md 与 docs/agent-gates.md 门禁 9 的记录。
 //
-// settings 表里的键名。设置路由只 PUT/GET 这五个键，其余一律丢弃——与
+// settings 表里的键名。设置路由只 PUT/GET 这些键，其余一律丢弃——与
 // src/routes/settings.js 既有的白名单模式保持一致。
 export const AGENT_SETTINGS_KEYS = Object.freeze({
   enabled: 'agent_enabled',
+  capabilityMode: 'agent_capability_mode',
   provider: 'agent_provider',
   baseURL: 'agent_base_url',
   model: 'agent_model',
   apiKeyEnv: 'agent_api_key_env',
+  pluginPatch: 'agent_plugin_patch',
   // 界面填的 key 落库前用 src/lib/secret-box.js 加密后存在这一键——本文件
   // 与 settings.js 都不直接读它拼进 SELECT/PUT 白名单响应体（那样会把密文
   // 回显出去，虽然密文本身不是明文，但没有正当理由顺手带出去）；只有下面
@@ -327,8 +351,8 @@ function readSetting(key) {
 //     error 只在 enabled=true 的分支之后才可能出现，因为字段校验发生在
 //     enabled 门之后——调用方不应该把 error 当成"已启用但配置坏了"以外的
 //     含义来用。
-//   { enabled: true, provider, runtimeProvider, baseURL, model, apiKeyEnv } ——
-//     五个白名单字段全部合法；apiKeyEnv 仍然只是变量名，不含值。
+//   { enabled: true, capabilityMode, provider, runtimeProvider, baseURL, model,
+//     apiKeyEnv, pluginPatch } ——白名单字段全部合法；apiKeyEnv 仍然只是变量名，不含值。
 export function loadAgentConfig() {
   const enabledRaw = readSetting(AGENT_SETTINGS_KEYS.enabled);
   if (enabledRaw !== 'true') {
@@ -343,6 +367,22 @@ export function loadAgentConfig() {
 
   const model = readSetting(AGENT_SETTINGS_KEYS.model).trim();
   if (!model) return { enabled: false, error: 'model 未设置' };
+
+  // 旧数据库没有这一行时使用收敛的 project 档；只有设置页显式保存 full
+  // 才扩大到 shell/web/workflow/Ralph 等上游完整能力。
+  const capabilityMode = readSetting(AGENT_SETTINGS_KEYS.capabilityMode).trim() || 'project';
+  if (!ALLOWED_AGENT_CAPABILITY_MODES.has(capabilityMode)) {
+    return { enabled: false, error: 'capabilityMode 必须是 project 或 full' };
+  }
+
+  // 任意 DSH 插件都是宿主进程内代码，只在用户显式选择 full 档时加载。
+  // project 档保留设置值但不解析、不读取该文件，也不把路径传给 sidecar。
+  let pluginPatch = '';
+  if (capabilityMode === 'full') {
+    const patchResult = validateAgentPluginPatch(readSetting(AGENT_SETTINGS_KEYS.pluginPatch));
+    if (!patchResult.ok) return { enabled: false, error: patchResult.error };
+    pluginPatch = patchResult.normalized;
+  }
 
   // apiKeyEnv 现在是可选的高级选项（任务书设计 5）：公开版用户走「界面填 key
   // →加密存储」这条路，压根不需要碰环境变量；只有留空时才不校验格式——一旦
@@ -371,6 +411,8 @@ export function loadAgentConfig() {
     runtimeProvider: provider === 'openai-completions' ? 'anqi-openai' : 'deepseek-official',
     baseURL: parsed.toString().replace(/\/$/, ''),
     model,
+    capabilityMode,
+    pluginPatch,
     apiKeyEnv,
     // 子进程里固定要用的变量名——与 apiKeyEnv（"从宿主环境的哪个变量名读
     // 取"）是两个独立概念，见 PROVIDER_CANONICAL_KEY_ENV 顶部注释。

@@ -117,12 +117,15 @@ const agentSave = $('agent-save');
 
 if (agentEnabled && agentFields && agentSave) {
   const agentProvider = $('agent-provider');
+  const agentCapabilityMode = $('agent-capability-mode');
+  const agentCapabilityNote = $('agent-capability-note');
   const agentBaseUrl = $('agent-base-url');
   const agentBaseUrlNote = $('agent-base-url-note');
   const agentApiKey = $('agent-api-key');
   const agentApiKeyNote = $('agent-api-key-note');
   const agentApiKeyClear = $('agent-api-key-clear');
   const agentApiKeyEnv = $('agent-api-key-env');
+  const agentPluginPatch = $('agent-plugin-patch');
   const agentAdvanced = $('agent-advanced');
   const agentModel = $('agent-model');
   const agentModelLabel = $('agent-model-label');
@@ -163,6 +166,13 @@ if (agentEnabled && agentFields && agentSave) {
     // 跟 provider 有关，不能只在设置页首次加载时算一次。
     applyKeyUI();
   });
+
+  function syncCapabilityNote() {
+    agentCapabilityNote.textContent = agentCapabilityMode.value === 'full'
+      ? '完整档启用上游 shell/jobs/web/subagent/workflow/Ralph。标准文件工具仍限本案，但命令进程可能读取本机其他可读路径，联网查询会发送给相应服务；切换档位会停止现有助理会话。'
+      : '案件项目档可读取本案文件；文件工具不能越出案件夹，且不启用命令执行与联网搜索。';
+  }
+  agentCapabilityMode.addEventListener('change', syncCapabilityNote);
 
   // API Key 输入框的三种展示态（设计 2/3，keySource 三取值 env/stored/none，
   // 见 resolveAgentApiKey()）：env 时界面填写不生效、直接禁用输入框；stored
@@ -358,11 +368,14 @@ if (agentEnabled && agentFields && agentSave) {
 
   api('/settings').then((s) => {
     agentEnabled.checked = s.agent_enabled === 'true';
+    agentCapabilityMode.value = s.agent_capability_mode || 'project';
+    syncCapabilityNote();
     const provider = s.agent_provider || 'deepseek-official';
     agentProvider.value = provider;
     if (s.agent_model != null) agentModel.value = s.agent_model;
     if (s.agent_base_url != null) agentBaseUrl.value = s.agent_base_url;
     if (s.agent_api_key_env != null) agentApiKeyEnv.value = s.agent_api_key_env;
+    if (s.agent_plugin_patch != null) agentPluginPatch.value = s.agent_plugin_patch;
     applyProviderUI(provider);
     keySnapshot = {
       configured: !!s.agent_api_key_configured,
@@ -372,7 +385,7 @@ if (agentEnabled && agentFields && agentSave) {
     applyKeyUI();
     // 高级选项默认收起（设计 5）；已经存在一个变量名时自动展开，免得用户
     // 看不到「输入框被 env 锁死」这件事究竟是为什么。
-    if (agentApiKeyEnv.value.trim()) agentAdvanced.open = true;
+    if (agentApiKeyEnv.value.trim() || agentPluginPatch.value.trim()) agentAdvanced.open = true;
     syncAgentCollapse();
   }).catch(() => { applyKeyUI(); syncAgentCollapse(); /* 读不到就按关闭态展示，不拦着用户填 */ });
 
@@ -388,10 +401,12 @@ if (agentEnabled && agentFields && agentSave) {
       if (agentEnabled.checked) {
         body = {
           agent_enabled: true,
+          agent_capability_mode: agentCapabilityMode.value,
           agent_provider: agentProvider.value,
           agent_model: currentModelValue(),
           agent_base_url: agentBaseUrl.value.trim(),
           agent_api_key_env: agentApiKeyEnv.value.trim(),
+          agent_plugin_patch: agentPluginPatch.value.trim(),
         };
         // API Key：留空提交表示不修改（设计 2）——不在 body 里出现这个键，
         // 服务端 validateAgentFields() 对「未触及的键」完全不改写。只有
