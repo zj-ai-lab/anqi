@@ -426,6 +426,18 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 - 接口：`POST /api/cases/:id/files/process` 排高优先级任务；`GET /api/cases/:id/legalrag/candidates[?status=declined]` 读待确认或已忽略事实；`POST /api/legalrag/candidates/:id/accept|decline` 裁决；`POST /api/legalrag/candidates/:id/link-fee` 显式关联同案既有收费；`POST /api/legalrag/candidate-facts/:id/reopen` 撤销忽略。LLM 永远没有这些正式写入口的调用权。
 - 文件行“查看候选”必须按完整 `rel_path` 精确定位到包含该来源的候选卡；同文件多条候选同时高亮并聚焦第一张，跨文件合并事实可由任一来源定位，同名不同目录不得串位。连续点击时只允许最后一次请求取得滚动/焦点控制权；候选已被处理时只刷新并提示，不得跳去其他文件的卡片。
 
+## 8.8 内置 DSH 案件助理（2.7.0 beta）
+
+内置能力是钉住 `@deepseek-ai/dsh-* 0.1.0-rc.7` 的**案件专用 JSON-RPC sidecar**，不是把上游 DSH Web 应用原样嵌进案齐。每案由 supervisor 固定一个 worker、session 与真实案件夹 `cwd`；模型可见面只装配受信任 skill、会话 todo、ask-user 与案齐领域工具。当前 beta 明确不装配 shell、web、subagent、workflow、ralph，也因上游文件读取 containment 缺口移除了 read/read_image/glob/grep。这个差异是隐私与写入边界，不是安装包漏文件。
+
+因此，上游/社区插件分三类处理：
+
+- 只依赖同代 Cordis/DSH agent 服务的运行时插件，经过源码、权限、依赖与版本兼容审查后，可以作为案齐自有资产钉版本并加入受控 preset；不承诺任意 npm/GitHub 插件即装即用。
+- 依赖 DSH Web Client 插槽、`web` profile、`DSH_HOME`、用户 `cordis.patch.yml` 或插件市场的 UI/管理插件，当前内置版不能直接使用，因为这些宿主面没有启动。
+- 会扩大案件读取、网络访问、执行或写入能力的插件，不得绕过既有 session→case 绑定、人工裁决和确定性期限边界；是否开放必须逐项设计与验收，不能由用户包在 worker 启动时自行改写安全配置。
+
+案件助理对话的 assistant 文本按安全 Markdown 子集渲染：标题、段落、粗体/斜体/删除线、行内与围栏代码、引用、有序/无序/任务列表、表格及 HTTP(S)/mailto 链接。渲染器只用 DOM 节点组装，不解释原始 HTML；危险协议不生成链接，Markdown 图片只显示为可点击的来源链接而不自动请求远端资源。流式 chunk 可反复重绘当前气泡，最终 `assistant/message` 仍以权威完整文本收口；用户输入、系统行和工具摘要继续按纯文本显示。
+
 ## 9. 外部集成边界
 
 1. `cases.name` 是配置文件根下的单层案件夹名，也是可选外部服务的稳定案件键；`status=shelved` 表示搁置。
@@ -483,6 +495,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 | A23 | 缺鉴权配置必须拒绝启动；开发无鉴权只留显式回环逃生口 | 隐式“没配账号就是 dev”会把配置遗漏变成裸奔，且与监听地址组合后可扩散到局域网。`ANJIAN_UNSAFE_NO_AUTH=1` 只在非 production + 明确回环 IP 生效并告警，让测试仍可零凭据运行，同时把生产默认改为 fail-closed。|
 | A24 | 文件 API、凭证与 LegalRAG 共用一套真实路径边界 | 只做 `path.resolve` 前缀比较会跟随案件根、中间目录或目标符号链接，`exists→write` 还会产生覆盖竞态。共享 helper 把案件名单一分量、root realpath、逐级 lstat、真实路径 containment、inode 复核、no-follow 读取与 exclusive create 钉成同一契约；新文件仍保留重名 `(2)` 的用户语义。|
 | A25 | Android 壳由用户配置唯一服务器 origin，不内置项目部署坐标 | 自托管客户端不能把维护者实例当产品默认；严格 origin 比较阻断伪同源深链，切换清会话阻断跨实例凭据串用。动态局域网地址无法用 manifest 静态枚举，因此 cleartext 能力在壳层开放、目的地由 Activity 确定性白名单收窄；公网仍强制 HTTPS。|
+| A26 | 内置 DSH 是案件专用受控 sidecar，不是完整 Web profile 或通用插件宿主 | per-case 隔离、人工确认和最小工具面优先于上游功能齐全；第三方运行时插件只能经审查后钉版本纳入 preset，依赖 Web Client/插件市场的插件当前不兼容。对话 Markdown 用 DOM 安全子集渲染，不执行 HTML、不自动加载远端图片。|
 
 ## 12. 初始未决问题（现状）
 

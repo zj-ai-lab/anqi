@@ -70,6 +70,9 @@
 
 ### 功能
 
+- **案件助理回复恢复 Markdown 阅读层级**：此前 `agent-drawer.js` 对流式 chunk 和最终 `assistant/message` 都直接写 `textContent`，导致 `#`、`**`、列表、引用、代码围栏和表格原样印在对话里。现新增零依赖、DOM-only 的安全 Markdown 渲染器，覆盖标题、段落、强调/删除线、代码、引用、列表/任务列表、表格与安全链接；原始 HTML 永不执行，`javascript:` 等危险协议不生成链接，图片语法只显示来源链接而不自动请求远端资源。流式与最终消息走同一渲染路径，并新增纯解析回归测试。
+- **明确内置 DSH 的产品边界**：当前是钉住 `0.1.0-rc.7`、按案隔离的受控 JSON-RPC sidecar，不是完整 DSH Web profile；shell/web/subagent/workflow/ralph 与模型侧文件读取是有意移除的 beta 能力。运行时 Cordis 插件可在源码/权限/依赖/版本审查后钉入自有 preset，依赖 DSH Web Client、用户 profile、`DSH_HOME` 或插件市场的社区插件当前不能直接安装使用。
+
 - **界面直接填 key，AES-256-GCM 静态加密落库**：新增 `src/lib/secret-box.js`——加密主密钥优先取 env `ANJIAN_SECRET`（须至少 32 字节 UTF-8 熵，另需字符多样性达标，不足/单一重复字符直接拒绝；`scrypt`（固定应用层 salt + 加重成本参数）派生出 32 字节 key，按 passphrase 精确值做进程内缓存以抵消 scrypt 引入的计算开销——具体强度校验与派生算法演进见下方"复审修复"小节），否则用数据目录下的 `secret.key`（首次自动生成 32 随机字节、写盘 `mode:0o600` 后再显式 `chmodSync` 一次钉死权限位，父目录已存在时不改其权限）。密文格式 `v1:<nonce base64>:<tag base64>:<密文 base64>`，GCM 认证加密——密钥错误或密文被篡改时 `decryptSecret()` 直接抛错，不会安静吐出乱码明文。
 - **取值优先级链（关键）**：`src/agent/config.js` 新增 `resolveAgentApiKey(config)`——`agent_api_key_env` 指向的环境变量若存在且非空 → 用它，`source:'env'`（保证现有 Docker/桌面部署零改动继续工作）；否则取界面存的加密 key（`getStoredApiKey()`，解密失败/格式非法一律安全失败为 `null`，不抛出）；两者都没有 → `source:'none'`。`agentReady()`/新增的 `agentKeyStatus()` 均基于这条链，`enabled=false` 时仍在任何 key 解析之前短路（与既有红线同一条判断）。
 - **`agent_api_key_env` 退居可选高级项**：`loadAgentConfig()`/`PUT /api/settings` 的校验从"必须是合法环境变量名"改为"留空则跳过校验、非空仍必须合法且不得是保留名/前缀"——不再是 `enabled` 判定的必要条件，`provider`/`model`/`baseURL` 仍然必需。
