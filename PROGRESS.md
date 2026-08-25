@@ -105,3 +105,22 @@
 - `git diff --unified=0 -- tools/check.sh` 只有原文件第 439 行之后新增 21 行（第 47→53 步及对应脚本），旧 46 步断言、阈值、编号、命令均未改删。
 - `git diff --check` 无输出；tracked/untracked 变更逐项核对均在任务白名单，另含任务书明确要求随交付的 `PROGRESS.md`、`BLOCKED.md`。
 - 当前完成度：Phase 1→6 完成；Phase 0 桌面/代码完成但 Docker 真机构建仍被 daemon 挂死阻塞；2 档机制完成且按拍板默认关闭，判据/阈值待裁决。工作会话计数仍为 1/12。
+
+## 工作会话 2 — 2026-08-25
+
+### 断点审计与真实联网门禁（已完成）
+
+- 按本文件断点复核本地交付 commit `616aa06`、设计稿 Phase 0→6 完成项、终局四项红线输出及白名单 diff；没有重做已完成 Phase。完成审计确认唯一未取到的硬证据仍是 Docker 容器内真实 bwrap/Landlock 验收。
+- 新增手工外部门禁 `tools/test-agent-live-web.js`，与真实模型红线脚本相同，只使用隔离临时 DB/案件夹/sessions，凭据仅由 `secretctl run anjian.local` 注入；脚本不进入离线 `npm run check`，不打印 key 或搜索正文。
+- 三档真实联网：`deepseek-v4-flash` 在 full + approvalTier=3 的全新 worker 先调用必需 MCP，再逐字调用 `web_search {"queries":["最高人民法院 官方网站"]}`；真实结果含 8 个来源，`result=success`，且本回合没有 web_search 审批卡。
+- 一档真实审批：停止三档 worker、创建 full + approvalTier=1 的全新 worker；模型逐字调用 `web_search {"queries":["深圳市中级人民法院 官方网站"]}`，执行前实际生成 `tool=web_search` 卡，reason 精确为 `web_search query\n深圳市中级人民法院 官方网站`；宿主立即回 `outcome=rejected-before-search`，模型没有重试。
+- 脚本静态门禁：Node 22 `node --check tools/test-agent-live-web.js` 通过；`git diff --check` 无输出。
+- 完成上述取证后再跑 Node `v22.23.0` 全量 `npm run check`：实际退出码 0，`[53/53]`、`skipped=0`、结尾 `ALL GREEN ✅`；新增真实联网脚本保持外部门禁定位，没有把凭据/网络依赖伪装成离线绿灯。
+- 工作会话 2 另做一个本地交付提交 `test(agent): verify live web approval flow`；未 push、未 tag、未发布。工作会话 1 “仅一个本地交付 commit”的记录只描述当时断点，不再代表累计提交数。
+
+### P0 Docker 环境守候（仍被同一外部状态阻塞）
+
+- 只读列举本机容器运行时，仅有 `/usr/local/bin/docker`，没有 podman/colima/nerdctl/finch/container，可安全替代的本地 daemon 不存在。
+- Docker 当前 context 为 `desktop-linux`；其 endpoint 是 `unix:///Users/2_dogg/.docker/run/docker.sock`，`/var/run/docker.sock` 也符号链接到同一 Desktop socket，不存在漏检的第二个本地 engine。
+- 沙箱外直接执行 `curl --max-time 5 --unix-socket /Users/2_dogg/.docker/run/docker.sock http://localhost/_ping`，5 秒后仍为 0 bytes、退出码 28。与工作会话 1 相同的 daemon 挂死状态在连续 goal turn 2 再次复现。
+- 未重启 Docker Desktop（避免影响用户现有容器），未触碰 jackie 生产容器；环境恢复前无法诚实生成 Docker build/容器内真沙箱证据。当前工作会话计数：2/12。
