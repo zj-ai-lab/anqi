@@ -69,6 +69,7 @@ import { Router } from 'express';
 import { db, audit } from '../db.js';
 import {
   AGENT_SETTINGS_KEYS,
+  ALLOWED_AGENT_APPROVAL_TIERS,
   ALLOWED_PROVIDERS,
   agentKeyStatus,
   loadAgentConfig,
@@ -333,6 +334,26 @@ export function createAgentRouter(supervisor, {
     res.status(202).json({ accepted: true });
   });
 
+  // 每个 live session/案件的审批档临时旋钮。只接受 1/2/3；caseId 来自路由
+  // 且先查真实案件，session/worker 归属完全由 supervisor 内部决定。全局默认
+  // 仍在 /api/settings 的 agent_approval_tier，本端点不写 DB。
+  r.post('/cases/:id/agent/approval-tier', (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    const config = loadAgentConfig();
+    if (!config.enabled) return res.status(409).json({ error: 'AI 助理未启用', code: 'agent_disabled' });
+    const approvalTier = String(req.body?.approvalTier ?? '').trim();
+    if (!ALLOWED_AGENT_APPROVAL_TIERS.has(approvalTier)) {
+      return res.status(400).json({ error: 'approvalTier 必须是 1、2 或 3', code: 'invalid_tier' });
+    }
+    const result = supervisor.setApprovalTier(caseId, approvalTier);
+    if (!result.ok) {
+      return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: result.reason || 'unavailable' });
+    }
+    audit(req.actor, 'agent-approval-tier', 'agent-worker', caseId, `tier=${approvalTier}`);
+    return res.json(result);
+  });
+
   r.post('/cases/:id/agent/cancel', (req, res) => {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
@@ -384,7 +405,8 @@ export function createAgentRouter(supervisor, {
     // 次状态跃迁之后才挂上(例如 worker 早已 ready,'worker/ready' 广播已经
     // 错过),不补发这一帧,前端在连接建立瞬间只能拿到"未知",要等下一次真正
     // 的事件才恢复准确状态。下发安全投影,不带 sessionId/cwd/pid。
-    send('status', supervisor.publicStatus(caseId));
+    const snapshot = supervisor.publicStatus(caseId);
+    send('status', { ...snapshot, approvalTier: snapshot.approvalTier || config.approvalTier });
 
     // 转发的每一帧也要走同一条脱敏尺度:Worker.emit() 组装的内部事件形状是
     // { type, caseId, sessionId, at, origin, data }——sessionId 是 supervisor
@@ -439,12 +461,21 @@ export function createAgentRouter(supervisor, {
       // 内部的 APPROVAL_EXTERNAL_OUTCOMES 白名单校验——"受限 outcome"这条红线
       // 的权威判断留在 supervisor 一处,这里不重复维护第二份白名单。
       const outcome = body.outcome;
-      const result = supervisor.resolveApproval(caseId, interactionId, outcome);
+      const rememberTool = body.rememberTool;
+      if (rememberTool !== undefined && typeof rememberTool !== 'boolean') {
+        audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} approval:invalid_remember`);
+        return res.status(400).json({ error: 'rememberTool 必须是布尔值', code: 'invalid_remember' });
+      }
+      if (rememberTool === true && outcome !== 'allowed-once') {
+        audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} approval:invalid_remember`);
+        return res.status(400).json({ error: '只有允许操作才能记住本类放行', code: 'invalid_remember' });
+      }
+      const result = supervisor.resolveApproval(caseId, interactionId, outcome, { rememberTool: rememberTool === true });
       if (!result.ok) {
         audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} approval:${result.reason}`);
         return res.status(result.reason === 'invalid_outcome' ? 400 : 409).json({ error: '提交审批结果失败', code: result.reason });
       }
-      audit(req.actor, 'agent-interaction-answer', 'agent-interaction', null, `case=${caseId} approval:${outcome}`);
+      audit(req.actor, 'agent-interaction-answer', 'agent-interaction', null, `case=${caseId} approval:${outcome}${rememberTool === true ? ':remember-tool' : ''}`);
       return res.json({ ok: true });
     }
 

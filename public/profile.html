@@ -109,8 +109,14 @@
               <option value="project">案件项目（文件限本案，不启用命令/联网）</option>
               <option value="full">完整 DSH（命令、联网、子 Agent、工作流）</option>
             </select></label>
+            <label class="f">默认审批档<select id="agent-approval-tier">
+              <option value="1">1 · 谨慎（每步询问）</option>
+              <option value="2">2 · 智能（风险动作询问）</option>
+              <option value="3">3 · 放开（沙箱仍生效）</option>
+            </select></label>
           </div>
           <p class="page-sub" id="agent-capability-note">案件项目档可读取本案文件，标准文件工具不能越出案件夹。</p>
+          <p class="page-sub">这里设置新会话的默认值；案件抽屉里可临时切换当前案件会话。二档分类器在判据确认前按谨慎档处理。</p>
           <div class="formrow">
             <label class="f grow">Base URL<input id="agent-base-url" placeholder="https://api.deepseek.com"></label>
           </div>
@@ -123,7 +129,7 @@
           <p class="page-sub" id="agent-api-key-note"></p>
 
           <div class="formrow">
-            <label class="f grow" id="agent-model-label">Model<input id="agent-model" placeholder="deepseek-chat"></label>
+            <label class="f grow" id="agent-model-label">Model<input id="agent-model" value="deepseek-v4-flash" placeholder="deepseek-v4-flash"></label>
             <label class="f grow" id="agent-model-select-wrap" hidden>Model（从列表选择）<select id="agent-model-select"></select></label>
             <button class="btn" type="button" id="agent-fetch-models">拉取可用模型</button>
           </div>
@@ -141,7 +147,7 @@
             <div class="formrow">
               <label class="f grow">DSH 插件 patch 文件<input id="agent-plugin-patch" placeholder="/绝对路径/cordis.patch.yml" autocomplete="off" spellcheck="false"></label>
             </div>
-            <p class="page-sub">仅完整档加载。支持上游 Cordis patch / 第三方 DSH 插件，并监听文件热更新；插件等同在本机执行代码，只填写你已审查且信任的普通 YAML 文件。</p>
+            <p class="page-sub" id="agent-plugin-safety-note">仅完整档加载。支持上游 Cordis patch / 第三方 DSH 或 MCP 插件，并监听文件热更新；MCP 工具名形如 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>。插件与其启动的 server 等同在本机执行代码，只填写你已逐项审查且信任的普通 YAML 文件。案件项目档不加载第三方 patch，也不启用 bash/联网；新增或更新后必须通过 npm run check。</p>
           </details>
         </div>
         <div class="formrow">

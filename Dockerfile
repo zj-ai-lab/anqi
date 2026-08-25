@@ -10,6 +10,14 @@ FROM node:22-slim
 ENV NODE_ENV=production TZ=Asia/Shanghai HOST=0.0.0.0
 WORKDIR /app
 
+# DSH bash 的 Linux 首选沙箱后端。安装成功不等于可用：运行期仍由
+# dsh-anqi-sandbox 做功能探测；容器策略若不允许 user namespace，会继续尝试
+# 随 runtime npm 包分发的 Landlock launcher，两者都不能兑现读写隔离时严格
+# fail closed，绝不裸跑 bash。
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends bubblewrap \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY package.json package-lock.json* ./
 RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
 

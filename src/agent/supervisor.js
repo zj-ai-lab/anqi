@@ -55,7 +55,8 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
-import { loadAgentConfig, resolveAgentApiKey } from './config.js';
+import { ALLOWED_AGENT_APPROVAL_TIERS, loadAgentConfig, resolveAgentApiKey } from './config.js';
+import { createRiskClassifier } from './risk-classifier.js';
 import { bindSession, unbindSession } from './session-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -245,11 +246,21 @@ const DEFAULT_SESSION_ROOT = path.join(__dirname, '..', '..', 'data', 'agent-ses
 const TERMINAL_STATUSES = new Set(['stopped', 'crashed', 'error', 'disabled']);
 const LIVE_STATUSES = new Set(['starting', 'ready', 'running']);
 const APPROVAL_EXTERNAL_OUTCOMES = new Set(['allowed-once', 'rejected']);
+// 3 档绝不能写成“所有 approval 一律放行”：未知/未来工具仍必须问。每个 Phase
+// 只把已经完成专项验收的工具类型显式加入；Phase 2 加 web_search，Phase 4
+// 完成逐命令卡 + 真沙箱回归后才加 bash。这里的 allow 只免人工提示，绝不改变
+// DSH sandbox-policy（仍为 workspace-write）或案齐的 DB/他案物理隔离。
+const TIER3_AUTO_ALLOW_TOOLS = new Set(['web_search', 'bash']);
 
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 90_000;
 const DEFAULT_INTERACTION_TTL_MS = 2 * 60 * 1000;
 const MAX_EVENT_FIELD_CHARS = 4000;
+const MAX_UI_HISTORY_ITEMS = 200;
+// 审批卡必须展示将执行的完整命令/查询，而普通 SSE 字段的 4KB 上限会把它
+// 截断。pre-execute 插件用同一个 16KB 上限，超过就直接 deny；因此进入这里
+// 的合规 powerful action 可以完整展示，同时恶意子进程仍不能塞无限长字段。
+const MAX_APPROVAL_REASON_CHARS = 16 * 1024;
 // redactDeep 的总量兜底：逐叶子限长只保证单个字符串字段不超过
 // MAX_EVENT_FIELD_CHARS，但一个事件可以有成千上万个叶子（例如工具结果里一
 // 个超长数组，每个元素都是几百字符的短字符串）——探针曾用这种形状产出过一
@@ -349,6 +360,39 @@ function materializeTrustedSkillsRoot(sourceRoot) {
   }
 }
 
+function containedBy(root, target) {
+  const relative = path.relative(root, target);
+  return relative === '' || (
+    relative !== '..'
+    && !relative.startsWith(`..${path.sep}`)
+    && !path.isAbsolute(relative)
+  );
+}
+
+function databaseOverlapsWorkspace(caseRoot) {
+  // better-sqlite3 的 Database#name 是本进程真正打开的库文件，不重新读取
+  // process.env.DB_PATH，避免配置字符串与实际连接对象漂移。DB 已在 db.js import
+  // 时创建，realpath 可以把 symlink/相对路径都归一到真实文件身份。
+  let databasePath;
+  try {
+    databasePath = realpathSync(db.name);
+  } catch (error) {
+    // 测试替身可以在 better-sqlite3 连接仍打开时 unlink 临时 DB；此时库已没有
+    // 可供 bash 打开的文件系统入口，但仍按原始绝对坐标做 overlap 判定，不能
+    // 因为“路径消失”就跳过边界。生产 DB 若真的消失，后续严格 sandbox 插件
+    // 仍会在真实 sidecar 启动时 fail closed。
+    if (error?.code !== 'ENOENT') throw error;
+    databasePath = path.resolve(db.name);
+  }
+  return { overlaps: containedBy(caseRoot, databasePath), databasePath };
+}
+
+function materializeSandboxTempRoot() {
+  const root = mkdtempSync(path.join(tmpdir(), 'anqi-dsh-tmp-'));
+  chmodSync(root, 0o700);
+  return root;
+}
+
 // ---- sanitized spawn env ----
 // 白名单起步：只带子进程真正需要的少量宿主变量，不是 `{...process.env}`。
 const BASE_ENV_ALLOWLIST = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'TMP', 'TEMP', 'SystemRoot', 'windir'];
@@ -371,7 +415,20 @@ function electronSpawnEnv() {
   return process.versions?.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {};
 }
 
-function buildSpawnEnv({ config, apiKeyValue, internalKeyEnv, internalKeyValue, internalBaseURL, caseCwd, sessionId, sessionRoot, skillsRoot }) {
+function buildSpawnEnv({
+  config,
+  apiKeyValue,
+  internalKeyEnv,
+  internalKeyValue,
+  internalBaseURL,
+  caseCwd,
+  filesRoot,
+  databasePath,
+  sandboxTempRoot,
+  sessionId,
+  sessionRoot,
+  skillsRoot,
+}) {
   return {
     ...baseSpawnEnv(),
     ...electronSpawnEnv(),
@@ -396,6 +453,16 @@ function buildSpawnEnv({ config, apiKeyValue, internalKeyEnv, internalKeyValue, 
     DSH_PERMISSION_MODE: config.capabilityMode === 'full' ? 'workspace-write' : 'read-only',
     ...(config.pluginPatch ? { DSH_PLUGIN_PATCH: config.pluginPatch } : {}),
     DSH_CWD: caseCwd,
+    // 只供 dsh-anqi-sandbox 构造严格 profile；provider 挂载后会立即从 DSH
+    // 进程环境删除这三项，bash `env` 看不到正式库/文件根坐标。
+    DSH_ANQI_FILES_ROOT: filesRoot,
+    DSH_ANQI_DB_PATH: databasePath,
+    DSH_ANQI_SANDBOX_TMP: sandboxTempRoot,
+    // 每 worker 独立 temp；不把宿主共享 TMPDIR 暴露给 bash。Linux bwrap 会在
+    // 私有 /tmp 内重建同一路径，macOS Seatbelt 只放行这个 0700 目录。
+    TMPDIR: sandboxTempRoot,
+    TMP: sandboxTempRoot,
+    TEMP: sandboxTempRoot,
     DSH_ANQI_SKILLS_ROOT: skillsRoot,
     DSH_SESSION_ROOT: sessionRoot,
     ANQI_BASE_URL: internalBaseURL,
@@ -405,11 +472,11 @@ function buildSpawnEnv({ config, apiKeyValue, internalKeyEnv, internalKeyValue, 
   };
 }
 
-function redactString(input, secretValues) {
+function redactString(input, secretValues, maxChars = MAX_EVENT_FIELD_CHARS) {
   let text = typeof input === 'string' ? input : JSON.stringify(input);
   for (const secret of secretValues) text = text.split(secret).join(REDACTED);
-  if (text.length > MAX_EVENT_FIELD_CHARS) {
-    text = `${text.slice(0, MAX_EVENT_FIELD_CHARS)}…[truncated ${text.length - MAX_EVENT_FIELD_CHARS} chars]`;
+  if (text.length > maxChars) {
+    text = `${text.slice(0, maxChars)}…[truncated ${text.length - maxChars} chars]`;
   }
   return text;
 }
@@ -532,6 +599,7 @@ function redactDeep(value, secretValues, budget, depth = 0) {
 function redactor(secretValues) {
   const values = secretValues.filter(Boolean);
   const fn = (input) => redactString(input, values);
+  fn.approval = (input) => redactString(input, values, MAX_APPROVAL_REASON_CHARS);
   fn.deep = (data) => redactDeep(data, values, { remaining: MAX_EVENT_TOTAL_BYTES });
   return fn;
 }
@@ -605,9 +673,16 @@ class Worker {
     this.error = null;
     this.exitInfo = null;
     this.skillsRootTmp = null;
+    this.sandboxTempRoot = null;
     this.dispatch = dispatch;
     this.pendingRpc = new Map(); // outgoing request id -> {resolve,reject,method}
     this.pendingInteractions = new Map(); // interactionId -> record
+    // 只保留当前 live worker 的有限 UI 投影；DSH JSONL 仍是权威 transcript，
+    // 这里不另写 DB/迁移，只让同一 worker 下的浏览器刷新能够回显。
+    this.uiHistory = [];
+    // “本类不再询问”只在这一个 live session/案件 worker 内生效；刷新页面不
+    // 丢，worker 停止/崩溃/重启铸造新 session 时自然清空，不跨案扩大授权。
+    this.approvalAllowlist = new Set(); // toolName
     this.nextRpcId = 1;
     this.nextTurnId = 1;
     this.turnLock = Promise.resolve();
@@ -650,6 +725,9 @@ export class AgentSupervisor {
     spawnFn = spawn,
     loadConfigFn = loadAgentConfig,
     resolveCaseDirectoryFn = resolveCaseDirectoryForCase,
+    // Phase 3 只提供宿主注入 seam；默认实例关闭且不会把 action 发给任何模型。
+    // 获得 Hermes 判据/阈值裁决前，生产构造路径不得传入 enabled classifier。
+    riskClassifier = createRiskClassifier(),
     actor = 'agent-supervisor',
   } = {}) {
     this.filesRoot = filesRoot;
@@ -662,6 +740,7 @@ export class AgentSupervisor {
     this.spawnFn = spawnFn;
     this.loadConfigFn = loadConfigFn;
     this.resolveCaseDirectoryFn = resolveCaseDirectoryFn;
+    this.riskClassifier = riskClassifier;
     this.actor = actor;
     this.workers = new Map(); // caseId -> Worker
     this.listeners = new Map(); // caseId -> Set<listener>，与 worker 生命周期解耦（见 Worker 类注释）
@@ -684,6 +763,7 @@ export class AgentSupervisor {
       startedAt: worker.startedAt,
       provider: worker.provider,
       model: worker.model,
+      approvalTier: worker.approvalTier,
       error: worker.error,
       exitInfo: worker.exitInfo,
     };
@@ -705,6 +785,7 @@ export class AgentSupervisor {
       startedAt: full.startedAt,
       provider: full.provider,
       model: full.model,
+      approvalTier: full.approvalTier,
       error: full.error,
       exitInfo: full.exitInfo,
       // 案件 assistant drawer 需要在「打开抽屉/刷新页面」这一刻就看到已经在
@@ -715,7 +796,38 @@ export class AgentSupervisor {
       // 已经是脱敏过的对外投影（见该方法与场景 7 的测试），这里直接复用，不
       // 重新实现一份过滤逻辑。
       pendingInteractions: this.listPendingInteractions(caseId),
+      history: this.listUiHistory(caseId),
     };
+  }
+
+  _appendUiHistory(worker, item) {
+    if (!worker || !Array.isArray(worker.uiHistory) || !item || typeof item !== 'object') return;
+    let projected;
+    if (item.role === 'user' || item.role === 'assistant') {
+      const raw = String(item.text || '');
+      if (!raw) return;
+      const text = typeof worker.redact?.approval === 'function'
+        ? worker.redact.approval(raw)
+        : worker.redact(raw);
+      projected = { role: item.role, text, at: item.at || nowIso() };
+    } else if (item.role === 'tool') {
+      const name = worker.redact(String(item.name || ''));
+      if (!name) return;
+      // 仅保存工具名，不保存 arguments/result，刷新回显不扩大既有 UI 暴露面。
+      projected = { role: 'tool', name, at: item.at || nowIso() };
+    } else {
+      return;
+    }
+    worker.uiHistory.push(projected);
+    if (worker.uiHistory.length > MAX_UI_HISTORY_ITEMS) {
+      worker.uiHistory.splice(0, worker.uiHistory.length - MAX_UI_HISTORY_ITEMS);
+    }
+  }
+
+  listUiHistory(caseId) {
+    const worker = this.workers.get(caseId);
+    if (!worker || !Array.isArray(worker.uiHistory)) return [];
+    return worker.uiHistory.map((item) => ({ ...item }));
   }
 
   // 供路由层复用的权威"活着"判断——不要在 supervisor 之外复刻 LIVE_STATUSES
@@ -724,6 +836,18 @@ export class AgentSupervisor {
   isLive(caseId) {
     const worker = this.workers.get(caseId);
     return !!worker && LIVE_STATUSES.has(worker.status);
+  }
+
+  // 当前案件 live session 的临时审批档。全局默认来自 settings、在 worker
+  // 启动时快照；这里的切换不写 DB、不跨案、不跨新 session。2 档分类器在
+  // Phase 3 获裁决前仍按 needs-approval（即与 1 档一样）fail closed。
+  setApprovalTier(caseId, approvalTier) {
+    if (!ALLOWED_AGENT_APPROVAL_TIERS.has(approvalTier)) return { ok: false, reason: 'invalid_tier' };
+    const worker = this.workers.get(caseId);
+    if (!worker || !LIVE_STATUSES.has(worker.status)) return { ok: false, reason: 'unavailable' };
+    worker.approvalTier = approvalTier;
+    audit(this.actor, 'agent-approval-tier', 'agent-worker', caseId, `session=${worker.sessionId} tier=${approvalTier}`);
+    return { ok: true, approvalTier };
   }
 
   onEvent(caseId, listener) {
@@ -760,6 +884,9 @@ export class AgentSupervisor {
       id,
       type: record.type,
       toolName: record.toolName,
+      reason: record.reason,
+      classifierDecision: record.classifierDecision,
+      classifierReason: record.classifierReason,
       questions: record.questions,
       createdAt: record.createdAt,
       expiresAt: record.expiresAt,
@@ -884,6 +1011,23 @@ export class AgentSupervisor {
       return { status: 'error', caseId, error: 'case_folder_missing' };
     }
 
+    // 2.5) 正式库绝不能落入 DSH workspace。仅靠“默认部署通常把 /app/data 与
+    //      /app/files 分开”不够：桌面版 dataDir 可配置、测试/第三方部署也可能
+    //      把 DB_PATH 指进案件夹。一旦重叠，workspace-write 可以真实改库，必须
+    //      在任何 skill/runtime/spawn 之前 fail closed。
+    let databasePath;
+    try {
+      const databaseBoundary = databaseOverlapsWorkspace(dirContext.caseRoot);
+      databasePath = databaseBoundary.databasePath;
+      if (databaseBoundary.overlaps) {
+        audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'sandbox_db_overlap');
+        return { status: 'error', caseId, error: 'sandbox_db_overlap' };
+      }
+    } catch (error) {
+      audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `sandbox_db_unavailable:${error.code || error.message}`.slice(0, 200));
+      return { status: 'error', caseId, error: 'sandbox_db_unavailable' };
+    }
+
     // 3) 受信任 skill 根校验 + 隔离拷贝（每次启动独立一份 0700 临时目录）。
     let trustedSkillsSource;
     let materializedSkillsRoot;
@@ -907,6 +1051,15 @@ export class AgentSupervisor {
       return { status: 'error', caseId, error: 'runtime_link_invalid' };
     }
 
+    let sandboxTempRoot;
+    try {
+      sandboxTempRoot = materializeSandboxTempRoot();
+    } catch (error) {
+      rmSync(materializedSkillsRoot, { recursive: true, force: true });
+      audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `sandbox_temp_unavailable:${error.message}`.slice(0, 200));
+      return { status: 'error', caseId, error: 'sandbox_temp_unavailable' };
+    }
+
     const sessionId = `anqi-${randomUUID()}`;
     // 设计稿 §2/§4：session→case 绑定必须在 supervisor 侧登记，/internal/
     // agent-proposals 等路由才能按 session_id 反查、不再信任请求体里的
@@ -916,11 +1069,13 @@ export class AgentSupervisor {
     const worker = new Worker(caseId, caseRow.name, sessionId, (event) => this._dispatch(caseId, event));
     worker.provider = config.provider;
     worker.model = config.model;
+    worker.approvalTier = config.approvalTier;
     // 只做内部可观测性记录（供以后排障/审计参考，从不对外 HTTP/SSE 暴露）：
     // 这次注入子进程的 key 到底是从宿主环境变量读的，还是界面存的加密 key。
     worker.apiKeySource = apiKeySource;
     worker.cwd = dirContext.caseRoot;
     worker.skillsRootTmp = materializedSkillsRoot;
+    worker.sandboxTempRoot = sandboxTempRoot;
     worker.redact = redactor([apiKeyValue, internalKeyValue]);
     this.workers.set(caseId, worker);
 
@@ -932,6 +1087,9 @@ export class AgentSupervisor {
       internalKeyValue,
       internalBaseURL: this.internalBaseURL,
       caseCwd: dirContext.caseRoot,
+      filesRoot: dirContext.filesRoot,
+      databasePath,
+      sandboxTempRoot,
       sessionId,
       sessionRoot: this.sessionRoot,
       skillsRoot: materializedSkillsRoot,
@@ -1038,6 +1196,9 @@ export class AgentSupervisor {
       }
     }
     const run = () => this._runTurn(worker, text);
+    // HTTP 已经完成 enabled/live/ready 门禁，到这里即视为当前 worker 接受了
+    // 这条用户消息；在排队 turn 之前记录，刷新页面不会丢掉尚未开始的消息。
+    this._appendUiHistory(worker, { role: 'user', text });
     const turnPromise = worker.turnLock.then(run, run);
     // 后续 turn 排队；任何一个 turn 失败不阻塞下一个 turn 排队执行。
     worker.turnLock = turnPromise.then(() => {}, () => {});
@@ -1173,7 +1334,7 @@ export class AgentSupervisor {
   // 一个已经死掉（或正在死掉窗口期）的子进程 stdin——见 §4「worker 已退出时
   // 返回拒绝」。仅凭 pendingInteractions 里还残留记录来判断是不够的：
   // _handleFatal 之前不落终态、不清表，留了一段可被 allow 的窗口。
-  resolveApproval(caseId, interactionId, outcome) {
+  resolveApproval(caseId, interactionId, outcome, { rememberTool = false } = {}) {
     const worker = this.workers.get(caseId);
     if (!worker || !LIVE_STATUSES.has(worker.status)) return { ok: false, reason: 'unavailable' };
     const record = worker.pendingInteractions.get(interactionId);
@@ -1181,8 +1342,10 @@ export class AgentSupervisor {
       return { ok: false, reason: 'unavailable' };
     }
     if (!APPROVAL_EXTERNAL_OUTCOMES.has(outcome)) return { ok: false, reason: 'invalid_outcome' };
+    if (rememberTool && outcome !== 'allowed-once') return { ok: false, reason: 'invalid_remember' };
     worker.pendingInteractions.delete(interactionId); // 消费即删：one-shot
     clearTimeout(record.timer);
+    if (rememberTool) worker.approvalAllowlist.add(record.toolName);
     record.respond({ outcome });
     return { ok: true };
   }
@@ -1408,7 +1571,20 @@ export class AgentSupervisor {
     // event.type='interaction/pending' 不能靠撞名冒充宿主真正的审批待办事件（见
     // 该常量顶部注释）。origin 显式传 'wire'，与 emit() 默认的 'supervisor' 区分。
     const wireType = namespaceWireEventType(sanitizeEventType(worker.redact(String(event.type || 'session.event'))));
-    worker.emit(wireType, this._redactEventData(worker, event.data), 'wire');
+    const redactedData = this._redactEventData(worker, event.data);
+    worker.emit(wireType, redactedData, 'wire');
+
+    // 刷新回显只存 UI 本来就会显示的三类投影：user 由 prompt() 接受时记录；
+    // assistant 在权威完整 message 到达时记录（不拼流式 chunk）；tool 只记名。
+    if (event.type === 'assistant/message') {
+      const blocks = redactedData?.message?.content;
+      const text = Array.isArray(blocks)
+        ? blocks.filter((block) => block?.type === 'text').map((block) => block.text || '').join('')
+        : '';
+      if (text) this._appendUiHistory(worker, { role: 'assistant', text });
+    } else if (event.type === 'tool/call' && redactedData?.name) {
+      this._appendUiHistory(worker, { role: 'tool', name: redactedData.name });
+    }
 
     if (event.type === 'request/header') {
       // 只在这个 worker 生命周期里第一次看到 request/header 时才记录——当前 wire 中
@@ -1480,7 +1656,22 @@ export class AgentSupervisor {
   _handleChildRequest(worker, message) {
     const params = message.params || {};
     if (message.method === 'approval/request') {
-      this._enqueueApproval(worker, message, params);
+      // 2 档分类器可能异步调用独立轻量模型；stdio line handler 不能 await，
+      // 但也绝不能留下 unhandled rejection。模块层已把上游超时/异常/畸形
+      // 结果收敛成 needs-approval；这里再兜一层未知宿主错误为 unavailable，
+      // 保证绝不会因为分类器代码故障而执行动作。
+      const failClosed = () => {
+        this._writeChildResponse(worker, {
+          jsonrpc: '2.0', id: message.id,
+          result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'unavailable' },
+        });
+        audit(this.actor, 'agent-risk-classifier-error', 'agent-worker', worker.caseId, `session=${worker.sessionId}`);
+      };
+      try {
+        Promise.resolve(this._enqueueApproval(worker, message, params)).catch(failClosed);
+      } catch {
+        failClosed();
+      }
       return;
     }
     if (message.method === 'user-question/request') {
@@ -1511,13 +1702,98 @@ export class AgentSupervisor {
       });
       return;
     }
-    const interactionId = randomUUID();
-    const expiresAt = Date.now() + this.interactionTtlMs;
     // toolName 存进 map 前就 redact：listPendingInteractions() 直接把这张表
     // 的字段吐给 HTTP/UI 层，之前只在 emit('interaction/pending', ...)
     // 这一条路径上 redact，map 里存的仍是原值——子进程把 key 值塞进 toolName
     // 就能靠这条查询接口把它读出来，绕开 SSE 那条已经过滤的路径。
     const toolName = worker.redact(String(params.toolName || ''));
+    const reason = typeof worker.redact.approval === 'function'
+      ? worker.redact.approval(String(params.reason || ''))
+      : worker.redact(String(params.reason || ''));
+    if (worker.approvalTier === '3' && TIER3_AUTO_ALLOW_TOOLS.has(toolName)) {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'allowed-once' },
+      });
+      audit(this.actor, 'agent-approval-tier3-auto-allow', 'agent-worker', worker.caseId, `session=${worker.sessionId} tool=${toolName}`.slice(0, 200));
+      return;
+    }
+    // 同一 live session/案件里，律师此前对这个工具类型点过“本类不再询问”时
+    // 直接给当前请求一次 allowed-once；只认 supervisor 自己持有的 Set，不信
+    // 任浏览器/子进程自报 allowlist。新 worker/new session 会自然得到空 Set。
+    if (worker.approvalAllowlist?.has(toolName)) {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'allowed-once' },
+      });
+      audit(this.actor, 'agent-approval-auto-allow', 'agent-worker', worker.caseId, `session=${worker.sessionId} tool=${toolName}`.slice(0, 200));
+      return;
+    }
+
+    if (worker.approvalTier === '2') {
+      return this._classifyAndRouteApproval(worker, message, params, { toolName, reason });
+    }
+    return this._enqueueApprovalCard(worker, message, params, { toolName, reason });
+  }
+
+  async _classifyAndRouteApproval(worker, message, params, action) {
+    const decision = await this.riskClassifier.classify(action);
+    // 分类期间用户可能关掉 worker、切案或重启；旧 session 的迟到裁决不得作用
+    // 于新 worker。能回旧管道时只回 unavailable，不能造卡也不能 auto-allow。
+    if (
+      this.workers.get(worker.caseId) !== worker
+      || !LIVE_STATUSES.has(worker.status)
+      || params.sessionId !== worker.sessionId
+    ) {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'unavailable' },
+      });
+      return;
+    }
+
+    const classifierReason = worker.redact(String(decision?.reason || 'classifier_invalid_output'));
+    const classifierDecision = ['auto-allow', 'needs-approval', 'block'].includes(decision?.decision)
+      ? decision.decision
+      : 'needs-approval';
+    // 审计只记工具类型与结构化裁决/短理由，不复制完整命令或查询词。
+    audit(
+      this.actor,
+      'agent-risk-classifier',
+      'agent-worker',
+      worker.caseId,
+      `session=${worker.sessionId} tool=${action.toolName} decision=${classifierDecision} reason=${classifierReason}`.slice(0, 500),
+    );
+
+    if (classifierDecision === 'auto-allow') {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'allowed-once' },
+      });
+      return;
+    }
+    if (classifierDecision === 'block') {
+      this._writeChildResponse(worker, {
+        jsonrpc: '2.0', id: message.id,
+        result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'rejected' },
+      });
+      return;
+    }
+    return this._enqueueApprovalCard(worker, message, params, {
+      ...action,
+      classifierDecision,
+      classifierReason,
+    });
+  }
+
+  _enqueueApprovalCard(worker, message, params, {
+    toolName,
+    reason,
+    classifierDecision,
+    classifierReason,
+  }) {
+    const interactionId = randomUUID();
+    const expiresAt = Date.now() + this.interactionTtlMs;
     // expire()：不管是 TTL 计时器触发，还是 worker 提前终态化（turn 失败/
     // 宿主发现子进程 stdio 故障/子进程退出）触发，都用同一份"回子进程一个
     // unavailable"的应答逻辑——见 _expirePendingInteractions 顶部注释：之前
@@ -1540,6 +1816,9 @@ export class AgentSupervisor {
       type: 'approval',
       sessionId: params.sessionId,
       toolName,
+      reason,
+      classifierDecision,
+      classifierReason,
       createdAt: nowIso(),
       expiresAt: new Date(expiresAt).toISOString(),
       timer,
@@ -1551,7 +1830,14 @@ export class AgentSupervisor {
         });
       },
     });
-    worker.emit('interaction/pending', { interactionId, type: 'approval', toolName });
+    worker.emit('interaction/pending', {
+      interactionId,
+      type: 'approval',
+      toolName,
+      reason,
+      classifierDecision,
+      classifierReason,
+    });
   }
 
   _enqueueQuestion(worker, message, params) {
@@ -1716,6 +2002,10 @@ export class AgentSupervisor {
     if (worker.skillsRootTmp) {
       rmSync(worker.skillsRootTmp, { recursive: true, force: true });
       worker.skillsRootTmp = null;
+    }
+    if (worker.sandboxTempRoot) {
+      rmSync(worker.sandboxTempRoot, { recursive: true, force: true });
+      worker.sandboxTempRoot = null;
     }
     audit(this.actor, `agent-${status}`, 'agent-worker', worker.caseId, worker.redact(String(detail || '')).slice(0, 200));
     worker.emit('worker/exit', { status, detail: worker.redact(String(detail || '')) });

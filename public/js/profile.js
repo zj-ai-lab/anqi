@@ -114,10 +114,12 @@ if (saveBtn) {
 const agentEnabled = $('agent-enabled');
 const agentFields = $('agent-fields');
 const agentSave = $('agent-save');
+const DEFAULT_AGENT_MODEL = 'deepseek-v4-flash';
 
 if (agentEnabled && agentFields && agentSave) {
   const agentProvider = $('agent-provider');
   const agentCapabilityMode = $('agent-capability-mode');
+  const agentApprovalTier = $('agent-approval-tier');
   const agentCapabilityNote = $('agent-capability-note');
   const agentBaseUrl = $('agent-base-url');
   const agentBaseUrlNote = $('agent-base-url-note');
@@ -169,7 +171,7 @@ if (agentEnabled && agentFields && agentSave) {
 
   function syncCapabilityNote() {
     agentCapabilityNote.textContent = agentCapabilityMode.value === 'full'
-      ? '完整档启用上游 shell/jobs/web/subagent/workflow/Ralph。标准文件工具仍限本案，但命令进程可能读取本机其他可读路径，联网查询会发送给相应服务；切换档位会停止现有助理会话。'
+      ? '完整档启用上游 shell/jobs/web/subagent/workflow/Ralph。文件与命令仍受真实沙箱限制在本案；沙箱不可用时服务端拒绝启动，联网查询会发送给相应服务。切换档位会停止现有助理会话。'
       : '案件项目档可读取本案文件；文件工具不能越出案件夹，且不启用命令执行与联网搜索。';
   }
   agentCapabilityMode.addEventListener('change', syncCapabilityNote);
@@ -369,10 +371,11 @@ if (agentEnabled && agentFields && agentSave) {
   api('/settings').then((s) => {
     agentEnabled.checked = s.agent_enabled === 'true';
     agentCapabilityMode.value = s.agent_capability_mode || 'project';
+    agentApprovalTier.value = s.agent_approval_tier || '1';
     syncCapabilityNote();
     const provider = s.agent_provider || 'deepseek-official';
     agentProvider.value = provider;
-    if (s.agent_model != null) agentModel.value = s.agent_model;
+    agentModel.value = s.agent_model || DEFAULT_AGENT_MODEL;
     if (s.agent_base_url != null) agentBaseUrl.value = s.agent_base_url;
     if (s.agent_api_key_env != null) agentApiKeyEnv.value = s.agent_api_key_env;
     if (s.agent_plugin_patch != null) agentPluginPatch.value = s.agent_plugin_patch;
@@ -402,6 +405,7 @@ if (agentEnabled && agentFields && agentSave) {
         body = {
           agent_enabled: true,
           agent_capability_mode: agentCapabilityMode.value,
+          agent_approval_tier: agentApprovalTier.value,
           agent_provider: agentProvider.value,
           agent_model: currentModelValue(),
           agent_base_url: agentBaseUrl.value.trim(),

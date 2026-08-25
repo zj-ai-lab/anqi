@@ -144,6 +144,17 @@ try {
     const { status } = await put({ agent_capability_mode: 'full' });
     assert.equal(status, 200);
   }
+  // ---- 全局审批默认档：旧库缺键由 config 默认 1；设置面只允许 1/2/3 ----
+  {
+    const { status } = await put({ agent_approval_tier: '9' });
+    assert.equal(status, 400);
+  }
+  {
+    const { status } = await put({ agent_approval_tier: '3' });
+    assert.equal(status, 200);
+    assert.equal((await get()).agent_approval_tier, '3');
+  }
+  await put({ agent_approval_tier: '1' });
   {
     const { status } = await put({ agent_plugin_patch: 'relative.patch.yml' });
     assert.equal(status, 400);

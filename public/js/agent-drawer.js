@@ -84,32 +84,39 @@ export async function mountAgentDrawer(caseId) {
     currentBubbleText: '',
     pendingToolCalls: new Map(), // callId -> name（tool/call 与 tool/result 按 callId 关联，不能按顺序猜——并行工具调用下顺序会错配）
     cards: new Map(), // interactionId -> { el }
+    historyLoaded: false,
   };
 
   const entryBtn = el('button', { class: 'btn small', type: 'button' }, 'AI 助理');
   slot.replaceChildren(entryBtn);
 
   const badge = el('span', { class: 'chip c-gray' }, '未启动');
+  const approvalTierSelect = el('select', {
+    id: 'agent-approval-tier', class: 'agent-approval-tier', 'aria-label': '审批档位',
+    title: '当前案件会话审批档位', disabled: '',
+  },
+  el('option', { value: '1' }, '1 · 谨慎'),
+  el('option', { value: '2' }, '2 · 智能'),
+  el('option', { value: '3' }, '3 · 放开'));
   const logEl = el('div', { class: 'agent-log' });
   const emptyHint = el('div', { class: 'agent-empty' }, '还没有对话——在下面输入一句话给 AI 助理下达指令。');
   logEl.append(emptyHint);
 
-  const startBtn = el('button', { class: 'btn small primary', type: 'button', hidden: '' }, '启动 AI 助理');
   const textarea = el('textarea', {
-    placeholder: '给 AI 助理下达指令……', rows: '2', maxlength: String(MAX_PROMPT_CHARS), disabled: '',
+    placeholder: '给 AI 助理下达指令……（首次发送会自动启动）', rows: '2', maxlength: String(MAX_PROMPT_CHARS), disabled: '',
   });
   const sendBtn = el('button', { class: 'btn small primary', type: 'submit', disabled: '' }, '发送');
   const stopBtn = el('button', { class: 'btn small danger', type: 'button', disabled: '' }, '停止');
 
   const promptForm = el('form', { class: 'agent-prompt-form' },
     textarea,
-    el('div', { class: 'agent-drawer-actions' }, startBtn, stopBtn, sendBtn)
+    el('div', { class: 'agent-drawer-actions' }, stopBtn, sendBtn)
   );
 
   const closeBtn = el('button', { class: 'iconbtn', type: 'button', 'aria-label': '关闭' }, '×');
   const drawer = el('aside', { class: 'agent-drawer', hidden: '', 'aria-hidden': 'true', role: 'complementary', 'aria-label': 'AI 助理' },
     el('header', { class: 'agent-drawer-head' },
-      el('div', { class: 'agent-drawer-title' }, 'AI 助理', badge),
+      el('div', { class: 'agent-drawer-title' }, 'AI 助理', badge, approvalTierSelect),
       closeBtn
     ),
     el('div', { class: 'agent-drawer-body' }, logEl),
@@ -136,6 +143,18 @@ export async function mountAgentDrawer(caseId) {
 
   const appendSystem = (text) => appendMsg('agent-msg-system', text);
   const appendUser = (text) => appendMsg('agent-msg-user', text);
+
+  function renderHistory(items) {
+    if (state.historyLoaded) return;
+    state.historyLoaded = true;
+    for (const item of Array.isArray(items) ? items : []) {
+      if (item?.role === 'user' && item.text) appendUser(item.text);
+      else if (item?.role === 'assistant' && item.text) {
+        const node = appendMsg('agent-msg-assistant', '');
+        renderMarkdownInto(node, item.text);
+      } else if (item?.role === 'tool' && item.name) appendToolCall(item.name);
+    }
+  }
 
   function appendToolCall(name) {
     clearEmptyHint();
@@ -203,7 +222,7 @@ export async function mountAgentDrawer(caseId) {
     }
   }
 
-  function renderApprovalCard(interactionId, toolName) {
+  function renderApprovalCard(interactionId, toolName, reason, classifierDecision, classifierReason) {
     if (state.cards.has(interactionId)) return;
     clearEmptyHint();
     const actions = el('div', { class: 'agent-card-actions' },
@@ -212,6 +231,14 @@ export async function mountAgentDrawer(caseId) {
         onclick: () => answerInteraction(interactionId, { outcome: 'allowed-once' }, '已允许一次'),
       }, '允许一次'),
       el('button', {
+        class: 'btn small', type: 'button',
+        onclick: () => answerInteraction(
+          interactionId,
+          { outcome: 'allowed-once', rememberTool: true },
+          '本会话不再询问此类操作',
+        ),
+      }, '本类不再询问'),
+      el('button', {
         class: 'btn small danger', type: 'button',
         onclick: () => answerInteraction(interactionId, { outcome: 'rejected' }, '已拒绝'),
       }, '拒绝')
@@ -219,6 +246,12 @@ export async function mountAgentDrawer(caseId) {
     const node = el('div', { class: 'agent-card agent-card-approval' },
       el('div', { class: 'agent-card-title' }, '需要授权'),
       el('div', {}, `AI 助理请求执行：${toolName || '（未知工具）'}`),
+      ...(classifierDecision ? [el(
+        'div',
+        { class: 'agent-classifier-note' },
+        `智能档裁决：${classifierDecision} · ${classifierReason || '未提供理由'}`,
+      )] : []),
+      el('pre', { class: 'agent-approval-reason' }, reason || '（未提供执行详情，建议拒绝）'),
       actions
     );
     logEl.append(node);
@@ -264,10 +297,11 @@ export async function mountAgentDrawer(caseId) {
     badge.append(STATUS_LABEL[status] || status || '未知');
     const isReady = status === 'ready';
     const isRunning = status === 'running';
-    textarea.disabled = !(isReady);
-    sendBtn.disabled = !isReady;
+    const canSend = isReady || STARTABLE_STATUSES.has(status);
+    approvalTierSelect.disabled = !['starting', 'ready', 'running'].includes(status);
+    textarea.disabled = !canSend;
+    sendBtn.disabled = !canSend;
     stopBtn.disabled = !isRunning;
-    startBtn.hidden = !STARTABLE_STATUSES.has(status);
     if (errorMsg) appendSystem(`⚠ ${errorMsg}`);
   }
 
@@ -276,11 +310,39 @@ export async function mountAgentDrawer(caseId) {
   // approval/question 卡片一并补渲染出来。
   function applySnapshot(data) {
     applyStatus(data.status, data.error);
+    if (['1', '2', '3'].includes(data.approvalTier)) {
+      approvalTierSelect.value = data.approvalTier;
+      approvalTierSelect.dataset.saved = data.approvalTier;
+    }
+    renderHistory(data.history);
     for (const item of data.pendingInteractions || []) {
-      if (item.type === 'approval') renderApprovalCard(item.id, item.toolName);
+      if (item.type === 'approval') renderApprovalCard(
+        item.id,
+        item.toolName,
+        item.reason,
+        item.classifierDecision,
+        item.classifierReason,
+      );
       else if (item.type === 'question') renderQuestionCard(item.id, item.questions);
     }
   }
+
+  approvalTierSelect.addEventListener('change', async () => {
+    const previous = approvalTierSelect.dataset.saved || '1';
+    approvalTierSelect.disabled = true;
+    try {
+      const result = await api(`/cases/${caseId}/agent/approval-tier`, {
+        method: 'POST', body: { approvalTier: approvalTierSelect.value },
+      });
+      approvalTierSelect.value = result.approvalTier;
+      approvalTierSelect.dataset.saved = result.approvalTier;
+      appendSystem(`审批档位已切换为 ${result.approvalTier} 档`);
+    } catch {
+      approvalTierSelect.value = previous;
+    } finally {
+      approvalTierSelect.disabled = !['starting', 'ready', 'running'].includes(state.status);
+    }
+  });
 
   function connectSSE() {
     if (state.connected) return;
@@ -366,7 +428,13 @@ export async function mountAgentDrawer(caseId) {
     });
     es.addEventListener('interaction/pending', (e) => {
       const data = JSON.parse(e.data).data || {};
-      if (data.type === 'approval') renderApprovalCard(data.interactionId, data.toolName);
+      if (data.type === 'approval') renderApprovalCard(
+        data.interactionId,
+        data.toolName,
+        data.reason,
+        data.classifierDecision,
+        data.classifierReason,
+      );
       else if (data.type === 'question') renderQuestionCard(data.interactionId, data.questions);
     });
     es.addEventListener('interaction/expired', (e) => {
@@ -392,15 +460,6 @@ export async function mountAgentDrawer(caseId) {
   backdrop.addEventListener('click', closeDrawer);
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden) closeDrawer(); });
 
-  startBtn.addEventListener('click', async () => {
-    startBtn.disabled = true;
-    try {
-      const snapshot = await api(`/cases/${caseId}/agent/start`, { method: 'POST' });
-      applySnapshot(snapshot);
-    } catch { /* api() 已经 toast 过错误，这里不重复 */ }
-    finally { startBtn.disabled = false; }
-  });
-
   stopBtn.addEventListener('click', async () => {
     stopBtn.disabled = true;
     try {
@@ -414,12 +473,23 @@ export async function mountAgentDrawer(caseId) {
     e.preventDefault();
     const text = textarea.value.trim();
     if (!text) return;
+    const statusBeforeSubmit = state.status;
     sendBtn.disabled = true;
     try {
+      if (STARTABLE_STATUSES.has(state.status)) {
+        applyStatus('starting');
+        const snapshot = await api(`/cases/${caseId}/agent/start`, { method: 'POST' });
+        applySnapshot(snapshot);
+      }
       await api(`/cases/${caseId}/agent/prompt`, { method: 'POST', body: { text } });
       appendUser(text);
       textarea.value = '';
-    } catch { /* api() 已经 toast 过错误 */ }
-    finally { sendBtn.disabled = state.status !== 'ready'; }
+    } catch {
+      // 自动启动失败时恢复原可发送终态，让律师修正配置后可以直接重试；不能
+      // 把抽屉永久卡在本地伪造的 starting（服务端其实没有 live worker）。
+      if (state.status === 'starting') applyStatus(statusBeforeSubmit);
+      // api() 已经 toast 过错误，这里不重复。
+    }
+    finally { sendBtn.disabled = !(state.status === 'ready' || STARTABLE_STATUSES.has(state.status)); }
   });
 }

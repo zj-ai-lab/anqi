@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { db, audit } from '../db.js';
 import {
   AGENT_SETTINGS_KEYS,
+  ALLOWED_AGENT_APPROVAL_TIERS,
   ALLOWED_AGENT_CAPABILITY_MODES,
   ALLOWED_PROVIDERS,
   ENV_NAME_RE,
@@ -114,6 +115,14 @@ export function createSettingsRouter(supervisor) {
         return { ok: false, error: 'agent_capability_mode 必须是 project 或 full' };
       }
       values.agent_capability_mode = capabilityMode;
+    }
+
+    if (touches('agent_approval_tier')) {
+      const approvalTier = String(body.agent_approval_tier ?? '').trim();
+      if (!ALLOWED_AGENT_APPROVAL_TIERS.has(approvalTier)) {
+        return { ok: false, error: 'agent_approval_tier 必须是 1、2 或 3' };
+      }
+      values.agent_approval_tier = approvalTier;
     }
 
     if (touches('agent_plugin_patch')) {

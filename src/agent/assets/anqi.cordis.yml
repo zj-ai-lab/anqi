@@ -277,6 +277,14 @@
   config:
     policy: ask
 
+# Phase 1 已挂统一 pre-execute 闸门；Phase 2/4 已按顺序把 web_search、bash
+# 接进逐次审批。fetch 仍关闭，未知/未来工具没有任何自动放行。
+- id: anqi-tool-approval
+  name: './plugins/dsh-anqi-tool-approval/index.js'
+  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
+  config:
+    askTools: [web_search, bash]
+
 # permission preset 是上游完整能力的一部分；project 档固定 read-only，full
 # 档固定 workspace-write，当前案齐抽屉不提供会话中途切换到 danger-full-access。
 
@@ -298,6 +306,10 @@
 # 单独封住它们的显式 path 与 symlink 逃逸。
 - id: anqi-workspace-guard
   name: './plugins/dsh-anqi-workspace-guard/index.js'
+  config:
+    filesRoot: !!js (() => { if (!process.env.DSH_ANQI_FILES_ROOT) throw new Error('DSH_ANQI_FILES_ROOT is required'); return process.env.DSH_ANQI_FILES_ROOT; })()
+    databasePath: !!js (() => { if (!process.env.DSH_ANQI_DB_PATH) throw new Error('DSH_ANQI_DB_PATH is required'); return process.env.DSH_ANQI_DB_PATH; })()
+    tempRoot: !!js (() => { if (!process.env.DSH_ANQI_SANDBOX_TMP) throw new Error('DSH_ANQI_SANDBOX_TMP is required'); return process.env.DSH_ANQI_SANDBOX_TMP; })()
 
 # system-prompt 是 host-owned service，不能在 preset 里再发布一份（§9 踩坑 #16）；
 # 宿主保留空 registry，真正的人设文本来自 preset 里 scope-only 的 dsh-persona。
@@ -324,7 +336,7 @@
     apiKeyEnv: !!js process.env.DSH_API_KEY_ENV ?? 'DEEPSEEK_API_KEY'
     baseURL: !!js process.env.DSH_BASE_URL ?? 'https://api.deepseek.com'
     models:
-      - id: !!js process.env.DSH_MODEL ?? 'deepseek-chat'
+      - id: !!js process.env.DSH_MODEL ?? 'deepseek-v4-flash'
 
 - id: llm-pi-ai
   name: '@deepseek-ai/dsh-llm-pi-ai'
@@ -340,6 +352,9 @@
           - id: !!js process.env.DSH_MODEL
             name: !!js process.env.DSH_MODEL
 
+# 内置的单案 MCP 是 dsh-mcp-client 的受控实例。第三方 MCP 不在这里默认挂载；
+# 只能由设置页校验过的绝对路径 Cordis patch 在 full 档加入，工具名遵循
+# mcp__<server>__<tool>，并在投入日常实例前跑完整 parity/真实启动门禁。
 - id: mcp-anqi-local
   name: '@deepseek-ai/dsh-mcp-client'
   config:

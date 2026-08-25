@@ -15,8 +15,12 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), `anqi-dsh-${mode}-`));
   const cwd = path.join(scratch, 'case');
   const sessionRoot = path.join(scratch, 'sessions');
+  const sandboxTemp = path.join(scratch, 'sandbox-temp');
+  const databasePath = path.join(scratch, 'protected.db');
   fs.mkdirSync(cwd);
   fs.mkdirSync(sessionRoot);
+  fs.mkdirSync(sandboxTemp);
+  fs.writeFileSync(databasePath, 'composition-boundary-placeholder');
 
   const sessionId = `composition-${mode}`;
   const child = spawn(process.execPath, ['--expose-internals', BIN, CONFIG], {
@@ -34,6 +38,9 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
       DSH_CAPABILITY_MODE: mode,
       DSH_PERMISSION_MODE: mode === 'full' ? 'workspace-write' : 'read-only',
       DSH_CWD: cwd,
+      DSH_ANQI_FILES_ROOT: scratch,
+      DSH_ANQI_DB_PATH: databasePath,
+      DSH_ANQI_SANDBOX_TMP: sandboxTemp,
       DSH_ANQI_SKILLS_ROOT: path.join(ASSETS, 'skills'),
       DSH_SESSION_ROOT: sessionRoot,
       DSH_PREFLIGHT_TIMEOUT_MS: '8000',
@@ -56,7 +63,7 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
     const request = pending.get(message.id);
     if (!request) return;
     pending.delete(message.id);
-    if (message.error) request.reject(new Error(message.error.message));
+    if (message.error) request.reject(new Error(`${message.error.message}\nDSH stderr:\n${stderr}`));
     else request.resolve(message.result);
   });
   child.stderr.on('data', (chunk) => { stderr += chunk.toString('utf8'); });

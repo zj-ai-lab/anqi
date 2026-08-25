@@ -78,6 +78,7 @@ const profileJs = fs.readFileSync(path.join(ROOT, 'public/js/profile.js'), 'utf8
   assert.match(detailsBody, /id="agent-api-key-env"/, 'apiKeyEnv 输入框必须在高级选项折叠区内部，不是外层一等字段');
   assert.match(detailsBody, /id="agent-plugin-patch"/, 'DSH 插件 patch 输入框必须在高级选项折叠区内部');
   assert.match(profileHtml, /id="agent-capability-mode"[\s\S]*?value="project"[\s\S]*?value="full"/, '必须提供 project/full 两档能力选择');
+  assert.match(profileHtml, /id="agent-approval-tier"[\s\S]*?value="1"[\s\S]*?value="2"[\s\S]*?value="3"/, '必须提供默认审批三档选择且 1 档在前');
   say('profile.html：能力档位与 apiKeyEnv/plugin patch 高级选项齐全，默认收起');
 }
 
@@ -95,6 +96,7 @@ const profileJs = fs.readFileSync(path.join(ROOT, 'public/js/profile.js'), 'utf8
   assert.match(profileJs, /agentApiKeyClear\.hidden = keySnapshot\.source !== 'stored'/, '清除按钮只应该在 source===\'stored\' 时展示——env 态输入框本身禁用、none 态没有可清除的东西');
   assert.match(profileJs, /agent_plugin_patch:\s*agentPluginPatch\.value\.trim\(\)/, '保存完整配置时必须提交 DSH plugin patch 路径');
   assert.match(profileJs, /agent_capability_mode:\s*agentCapabilityMode\.value/, '保存完整配置时必须提交 project/full 能力档位');
+  assert.match(profileJs, /agent_approval_tier:\s*agentApprovalTier\.value/, '保存完整配置时必须提交默认审批档位');
   say('profile.js：provider 联动 / key 三态 / 拉取模型请求 / 保存时留空不覆盖 / 清除已保存 key 按钮，五条逻辑均命中');
 
   // 【2026-08-23 三次复审新增】POST /api/agent/models 收紧到"openai-completions

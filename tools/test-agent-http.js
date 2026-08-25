@@ -51,6 +51,8 @@ class FakeSupervisor {
     this.startCalls = 0;
     this.cancelCalls = 0;
     this.findInteractionOwnerCalls = 0;
+    this.approvalTierResult = { ok: true, approvalTier: '1' };
+    this.lastApprovalTier = null;
   }
   status() { return this.statusResult; }
   // 真实 supervisor 的安全投影(见 src/agent/supervisor.js publicStatus())：
@@ -95,13 +97,17 @@ class FakeSupervisor {
     this.findInteractionOwnerCalls += 1;
     return this.interactionOwner;
   }
-  resolveApproval(caseId, interactionId, outcome) {
-    this.lastApproval = { caseId, interactionId, outcome };
+  resolveApproval(caseId, interactionId, outcome, options) {
+    this.lastApproval = { caseId, interactionId, outcome, options };
     return this.approvalResult;
   }
   resolveQuestion(caseId, interactionId, answer) {
     this.lastQuestion = { caseId, interactionId, answer };
     return this.questionResult;
+  }
+  setApprovalTier(caseId, approvalTier) {
+    this.lastApprovalTier = { caseId, approvalTier };
+    return this.approvalTierResult;
   }
 }
 
@@ -261,6 +267,21 @@ try {
     assert.equal(supervisor.promptCalls[0].text, '帮我看看这个案子进度');
   }
 
+  // ---- 当前案件会话审批档：只收 1/2/3，caseId 仍来自服务端路由绑定 ----
+  {
+    const bad = await call('POST', `/api/cases/${caseId}/agent/approval-tier`, { approvalTier: '9' });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.data.code, 'invalid_tier');
+    supervisor.approvalTierResult = { ok: true, approvalTier: '3' };
+    const ok = await call('POST', `/api/cases/${caseId}/agent/approval-tier`, { approvalTier: '3' });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(supervisor.lastApprovalTier, { caseId, approvalTier: '3' });
+    supervisor.approvalTierResult = { ok: false, reason: 'unavailable' };
+    const stopped = await call('POST', `/api/cases/${caseId}/agent/approval-tier`, { approvalTier: '1' });
+    assert.equal(stopped.status, 409);
+    supervisor.approvalTierResult = { ok: true, approvalTier: '1' };
+  }
+
   // ---- POST cancel：透传 cancelTurn() 的布尔结果 ----
   supervisor.cancelResult = true;
   {
@@ -298,11 +319,12 @@ try {
   }
   supervisor.approvalResult = { ok: true };
   {
-    const { status, data } = await call('POST', '/api/agent/interactions/appr-1/answer', { outcome: 'allowed-once' });
+    const { status, data } = await call('POST', '/api/agent/interactions/appr-1/answer', { outcome: 'allowed-once', rememberTool: true });
     assert.equal(status, 200);
     assert.equal(data.ok, true);
     assert.equal(supervisor.lastApproval.caseId, caseId, 'caseId 必须来自 findInteractionOwner 反查，不是客户端提交');
     assert.equal(supervisor.lastApproval.outcome, 'allowed-once');
+    assert.deepEqual(supervisor.lastApproval.options, { rememberTool: true });
   }
 
   // ---- question：答案形状必须逐题严格对应，任何一处不符都是 400，且不落 resolveQuestion 调用 ----

@@ -63,6 +63,30 @@
 
 ---
 
+## 未发布 — AI 助理安全加固
+
+### 外部 DSH/MCP 插件安全接入
+
+- 案齐运行时已经内置 `@deepseek-ai/dsh-mcp-client`；`src/agent/assets/anqi.cordis.yml` 里的 `mcp-anqi-local` 是同一机制的本地、受控实例。经审查的第三方 MCP server 可以通过一个 Cordis patch row 接入，不需要改案齐主线或另开一条绕过 supervisor 的进程链。
+- 接入前必须审查 patch、server 包/脚本、实际 `command`、`args`、`env` 与工作目录。第三方 DSH/Cordis 插件和其启动的 MCP server 都等同在本机执行代码；设置页只接受绝对路径、可读取、非符号链接的普通 `.yml/.yaml` 文件，这只是最低文件门槛，不替代代码审查。
+- MCP 工具在模型侧统一命名为 `mcp__<server>__<tool>`。新增 server 后应在隔离案件夹验证预期工具名与权限面；如果插件依赖 DSH Web Client 专用 UI 插槽，还需要单独做案齐抽屉适配，不能假定上游前端会自动出现。
+- 外部 patch 仅在 `full` 完整档加载，并随该档的其它完整能力进入真实沙箱与审批边界；默认 `project` 案件项目档不启用 `bash` 或 `web_search`，也不加载第三方 patch。切换到 `full` 是一次明确的权限扩大，不能把“只增加一个 MCP 工具”理解成仍处于默认权限面。
+- 新增或升级 server 后必须运行 `npm run check`：`dsh-base` parity、project/full 真实启动、workspace containment 与插件热更新门禁必须全部通过，不能用 skip/todo、放宽断言或删除既有门禁换绿。未经这套检查的 patch 不应填入律师日常使用的实例。
+
+一个最小的 stdio patch 形状如下；`command`、参数和环境变量必须替换为已经逐项审查的真实值：
+
+```yaml
+- insert:
+    - id: mcp-reviewed-example
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: reviewed-example
+        transport: stdio
+        command: /absolute/path/to/reviewed-server
+        args: []
+        env: {}
+```
+
 ## 2.7.0-beta.3 — 案件工作区与完整 DSH
 
 **状态：已于 2026-08-24 以 `v2.7.0-beta.3` 预发布；尚未合并 `main`。**

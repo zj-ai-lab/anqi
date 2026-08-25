@@ -30,6 +30,7 @@ import path from 'node:path';
 // 拒绝"或反过来"设置页挡不住、只能在 spawn 前才发现"的不一致。
 export const ALLOWED_PROVIDERS = new Set(['deepseek-official', 'openai-completions']);
 export const ALLOWED_AGENT_CAPABILITY_MODES = new Set(['project', 'full']);
+export const ALLOWED_AGENT_APPROVAL_TIERS = new Set(['1', '2', '3']);
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function validateAgentPluginPatch(value) {
@@ -316,6 +317,7 @@ export function validateBaseURL(baseURLRaw, provider) {
 export const AGENT_SETTINGS_KEYS = Object.freeze({
   enabled: 'agent_enabled',
   capabilityMode: 'agent_capability_mode',
+  approvalTier: 'agent_approval_tier',
   provider: 'agent_provider',
   baseURL: 'agent_base_url',
   model: 'agent_model',
@@ -375,6 +377,13 @@ export function loadAgentConfig() {
     return { enabled: false, error: 'capabilityMode 必须是 project 或 full' };
   }
 
+  // 旧库没有该 KV 时一律落 1 档（每步问）；非法存量不猜、不降级成放开，
+  // 直接让整份 agent config fail closed。
+  const approvalTier = readSetting(AGENT_SETTINGS_KEYS.approvalTier).trim() || '1';
+  if (!ALLOWED_AGENT_APPROVAL_TIERS.has(approvalTier)) {
+    return { enabled: false, error: 'approvalTier 必须是 1、2 或 3' };
+  }
+
   // 任意 DSH 插件都是宿主进程内代码，只在用户显式选择 full 档时加载。
   // project 档保留设置值但不解析、不读取该文件，也不把路径传给 sidecar。
   let pluginPatch = '';
@@ -412,6 +421,7 @@ export function loadAgentConfig() {
     baseURL: parsed.toString().replace(/\/$/, ''),
     model,
     capabilityMode,
+    approvalTier,
     pluginPatch,
     apiKeyEnv,
     // 子进程里固定要用的变量名——与 apiKeyEnv（"从宿主环境的哪个变量名读

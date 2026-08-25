@@ -292,7 +292,7 @@ class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
       const visible = observation?.tools?.visibleNames?.join(',') || '(none)';
       const skills = observation?.skills?.names?.join(',') || '(none)';
       throw new Error(
-        `session/preflight did not become ready; visible tools=[${visible}] skills=[${skills}]`,
+        `session/preflight did not become ready; visible tools=[${visible}] skills=[${skills}]; cause=${error?.message || error}`,
         { cause: error },
       );
     } finally {

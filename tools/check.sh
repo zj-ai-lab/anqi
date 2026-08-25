@@ -437,4 +437,25 @@ node tools/test-agent-models-client.js
 echo "[46/46] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 字符串校验 + apiKey 取值优先级 请求体>仅 deepseek-official 允许的已保存 + 错误码映射(上游认证失败改回 502,不再误判为 anqi 会话过期) + 审计/响应体不含明文 key + public/js/api.js 401 判断分支静态回归）"
 node tools/test-agent-models-http.js
 
+echo "[47/47] Phase 0 agent bash 真沙箱边界（DB/workspace overlap fail-closed + 当前案 rw + 他案/contacts read/write 拒绝 + Docker bubblewrap）"
+node tools/test-agent-sandbox-boundary.js
+
+echo "[48/48] Phase 1 powerful 工具审批地基（pre-execute ask + 完整 reason + 本类不再询问）"
+node tools/test-agent-approval-policy.js
+
+echo "[49/49] Phase 2 web_search 审批（完整查询词 + 三档旋钮 + fetch=false）"
+node tools/test-agent-web-approval.js
+
+echo "[50/50] Phase 3 二档风险分类器（默认关闭 + 结构化三分流 + 异常 fail-closed + 审计）"
+node tools/test-agent-risk-classifier.js
+
+echo "[51/51] Phase 4 bash 逐命令审批（完整命令 + 三档 + 未知工具仍问 + 沙箱不放宽）"
+node tools/test-agent-bash-approval.js
+
+echo "[52/52] Phase 5 体验（首次发送自动启动 + 刷新历史 + 默认 deepseek-v4-flash）"
+node tools/test-agent-experience.js
+
+echo "[53/53] Phase 6 外部 DSH/MCP 插件文档（内置 client + full-only 经审查 patch + 命名/parity/默认权限边界）"
+node tools/test-agent-external-mcp-docs.js
+
 echo "ALL GREEN ✅"
