@@ -9,6 +9,7 @@
 - 待裁决/恢复后续跑：本地构建 `anqi-agent-phase0:local`，在容器内执行 `tools/test-agent-sandbox-boundary.js`，记录实际选中 `bwrap` 或严格 Landlock 及越界拒绝输出。Phase 0 的桌面隔离实例浏览器自测已独立完成，不再欠账。
 - 工作会话 2 / 连续 goal turn 2 只读复核：当前 context=`desktop-linux`，其 endpoint 与 `/var/run/docker.sock` 均指向 `/Users/2_dogg/.docker/run/docker.sock`；直接 `_ping` 5 秒仍为 0 bytes、退出码 28。PATH 内没有 podman/colima/nerdctl/finch/container 等替代运行时。同一外部阻塞尚未恢复。
 - 工作会话 3 / 连续 goal turn 3：同一 socket 再次 `_ping`，实际为 `curl: (28) Operation timed out after 5002 milliseconds with 0 bytes received`、退出码 28。已满足持续 goal 的 blocked 门槛；除等待 Docker daemon 恢复，或由领导明确授权重启 Desktop 外，没有不扩大任务权限的继续路径。
+- blocked 后目标被控制面自动恢复；新一轮 resumed turn 1/2 的 `_ping` 分别在 5009/5005ms 后 0 bytes 超时（均退出码 28）。用户已被告知重启 Desktop 是唯一所需外部动作，但尚未确认完成；新一轮阻塞计数当前为 2/3。
 
 ## P3-Classifier-Policy — 2 档判据/阈值/便宜模型未获 Hermes 对齐（2026-08-25，待领导确认）
 

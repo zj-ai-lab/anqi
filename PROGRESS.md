@@ -134,3 +134,12 @@
 - 与工作会话 1、2 完全相同的 Docker Desktop daemon 挂死状态在连续 goal turn 3 再次复现；本机仍无第二个容器运行时。任务边界不授权重启可能承载用户容器的 Desktop，也明确禁止改用 jackie 生产容器，因此已无法在不扩大权限或等待外部状态变化的前提下取得 Docker build/容器内 bwrap 真沙箱证据。
 - 其余交付保持成立：macOS Seatbelt 真沙箱四项红线通过；bash/web_search 真实一档完整卡通过；真实三档联网与四项越界拒绝通过；最终全量 `[53/53]`、`skipped=0`、`ALL GREEN ✅`；禁改文件相对基线 diff 为空。
 - 按持续 goal 的严格门槛，本任务在工作会话 3/12 标记 blocked；环境恢复后的唯一续跑动作仍是构建本地镜像并在容器内执行 `tools/test-agent-sandbox-boundary.js`，随后补记真实选中 bwrap/Landlock 与越界拒绝输出。未 push、未 tag、未发布。
+
+## 工作会话 4–5 — 2026-08-25
+
+### blocked 后自动恢复审计（同一条件连续 resumed turn 2，等待用户重启）
+
+- goal 控制面在 blocked 后重新置为 active，按规则从零开始新的阻塞审计；没有沿用工作会话 1→3 的旧计数。
+- resumed turn 1 只读 `_ping`：`curl: (28) Operation timed out after 5009 milliseconds with 0 bytes received`，退出码 28。用户随后询问需要做什么，已明确告知先确认无重要本地容器，再重启 Docker Desktop并等待 Running；未把询问视为已经重启。
+- resumed turn 2 再次只读 `_ping`：`curl: (28) Operation timed out after 5005 milliseconds with 0 bytes received`，退出码 28。仍未主动终止/重启 Desktop，仍未触碰 jackie。
+- 同一外部阻塞在恢复后的连续 goal turn 2 重现；代码与已完成验收没有变化。当前工作会话计数：5/12。
