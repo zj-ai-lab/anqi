@@ -143,3 +143,26 @@
 - resumed turn 1 只读 `_ping`：`curl: (28) Operation timed out after 5009 milliseconds with 0 bytes received`，退出码 28。用户随后询问需要做什么，已明确告知先确认无重要本地容器，再重启 Docker Desktop并等待 Running；未把询问视为已经重启。
 - resumed turn 2 再次只读 `_ping`：`curl: (28) Operation timed out after 5005 milliseconds with 0 bytes received`，退出码 28。仍未主动终止/重启 Desktop，仍未触碰 jackie。
 - 同一外部阻塞在恢复后的连续 goal turn 2 重现；代码与已完成验收没有变化。当前工作会话计数：5/12。
+
+## 工作会话 6 — 2026-08-25
+
+### Phase 0 Docker 真机续跑（已完成）
+
+- 用户确认重启后，Desktop socket 的 `/_ping` 实际返回 `OK`；本地镜像 `anqi-agent-phase0:local` 构建成功，镜像内 Debian arm64 bubblewrap 版本为 `0.8.0-2+deb12u1`。没有连接 jackie、没有发布镜像。
+- 先做真实能力探测而非只看安装包：默认无特权容器与仅放开 seccomp 时，bwrap 均报 `Creating new namespace failed: Operation not permitted`；只加 `SYS_ADMIN` 时报 `pivot_root: Operation not permitted`；本机 Docker Desktop 的隔离验收容器在同时提供 `SYS_ADMIN` 与 `seccomp=unconfined` 后，bwrap 功能探针才退出 0。Landlock launcher 的真实 `--probe` 退出 125，输出 `landlock is not enforced by this kernel (ABI unsupported or disabled)`，因此不能作为本机容器后备。
+- 反向验证（红 1）：先加回归断言再实现，实跑得到 `TypeError: probeHostBashSandbox is not a function`、退出码 1。
+- 反向验证（红 2）：初版 bwrap profile 在真实容器内报 `bwrap: Can't find source path /run/anqi-sandbox/workspace`；最小复现实验证明遮蔽敏感根后可直接把原 workspace bind 回其绝对路径，随后按该结构修正 profile。
+- 反向验证（红 3）：真实越界路径因遮蔽后返回 `No such file or directory`，既有强断言仍要求 `sandbox.denied === true`，测试准确红为 `false !== true`；只补充该 fail-closed 拒绝签名，没有删除、skip 或放宽原断言。
+- 已实现 Linux 启动门禁：`full` 在解析凭据、读取案件/案件夹或 spawn worker 前，必须通过功能性 bwrap 或完整 Landlock 探针；否则固定返回“当前服务器无法安全启用 full/bash……绝不会裸跑命令”，并审计 `bash_sandbox_unavailable`。能力按 supervisor 生命周期缓存；`project` 档不受影响。
+- 默认无特权 Docker 真门禁输出：`SERVER_SANDBOX_GATE platform=linux backend=unavailable result=rejected-before-credential-case-spawn`；原因完整显示为 `当前服务器无法安全启用 full/bash：bubblewrap user namespace 与完整 Landlock 均不可用；系统已在启动前拒绝，绝不会裸跑命令。请由管理员调整容器 user namespace/seccomp，或改用 project 档。`
+- 可工作 bwrap 容器真沙箱输出：`SANDBOX_BACKEND platform=linux runner=bwrap enforcement=full`；他案写拒绝为 `No such file or directory`、退出码 1；他案联系人文件读拒绝为 `No such file or directory`、退出码 1；当前案件读写成功。该 `SYS_ADMIN + seccomp=unconfined` 组合只用于本机 Docker Desktop 验收，产品没有把它写成生产默认权限。
+- macOS 回归仍选中 `SANDBOX_BACKEND platform=darwin runner=seatbelt enforcement=full`；他案写与读均真实返回 `Operation not permitted`、退出码 1。
+- 浏览器自测（真实默认 Docker 服务）：使用独立临时 DB、案件夹和本地测试账号启动无特权容器，登录案件页后打开真实 AI 抽屉并首次发送“请开始分析本案”；页面实际显示“已停止”及同一段完整的 full/bash 沙箱不可用原因。该输出来自真实 `/api/agent/start`，不是前端夹具；标签、容器和临时目录均已关闭/删除。
+- 全量绿灯：Node `v22.23.0` 下 `npm run check` 实跑 `[53/53]`、`skipped=0`，结尾 `ALL GREEN ✅`；第 47 步同时打印真实 macOS Seatbelt 后端和两条拒绝输出。工作会话计数：6/12。
+
+### 最终状态
+
+- Phase 0→6 的实现、反向验证、全量回归与浏览器自测均完成；终局真实模型四项红线、1 档完整 bash 审批卡、3 档真实联网和 1 档完整 web_search 审批卡均保持通过。
+- 原 `P0-Docker` 外部阻塞已解除并从 `BLOCKED.md` 移除；历史失败与恢复证据保留在本文件。唯一待裁决项是任务书明确要求默认关闭的 `P3-Classifier-Policy`，不影响当前 fail-closed 交付。
+- 最终 git 审计通过：相对基线 `48da231`，`src/lib/engine.js`、`src/db.js`、`src/migrations/**` 与 `package.json` 的 numstat 无输出；`tools/check.sh` 仅在原第 439 行后追加第 47→53 步，旧 46 步零改删；`git diff --check` 无输出。Docker 浏览器验收容器与临时夹具均已清理，仅保留本地 arm64 验证镜像 `anqi-agent-phase0:local` 供复查。
+- 本工作会话仅做本地交付提交；未 push、未 tag、未发布。

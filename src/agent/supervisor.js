@@ -33,7 +33,7 @@
 //   - Electron 下 spawn 用 process.execPath + ELECTRON_RUN_AS_NODE=1
 //     （process.versions.electron 存在时）；服务器模式直接 process.execPath
 //     ——见 electronSpawnEnv()。
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
   chmodSync,
@@ -86,6 +86,90 @@ function resolveAgentSubdir(name) {
 
 const ASSETS_DIR = resolveAgentSubdir('assets');
 const RUNTIME_DIR = resolveAgentSubdir('runtime');
+
+// Linux 服务器的 full 档会发布 bash；在读取凭据、案件夹或 spawn DSH 之前，
+// 宿主必须先证明至少一个“完整兑现”的本地沙箱后端可用。只检查二进制存在
+// 没有意义：Docker 常见状态正是 bwrap 已安装、但 user namespace / seccomp
+// 不允许它真正创建 profile；Landlock launcher 也可能随 npm 包存在、运行内核
+// 却不支持 ABI。这里照上游 sandbox-local 的顺序做功能探针，且不接受 partial
+// Landlock——案齐需要同时隔离正式库、contacts 与其他案件，部分 ABI 不能当作
+// “足够安全”静默放行。
+export const AGENT_BASH_SANDBOX_UNAVAILABLE =
+  '当前服务器无法安全启用 full/bash：bubblewrap user namespace 与完整 Landlock 均不可用；'
+  + '系统已在启动前拒绝，绝不会裸跑命令。请由管理员调整容器 user namespace/seccomp，或改用 project 档。';
+
+const BWRAP_PROBE_ARGS = Object.freeze([
+  '--ro-bind', '/', '/',
+  '--dev', '/dev',
+  '--unshare-pid',
+  '--proc', '/proc',
+  '--die-with-parent',
+  '--', 'true',
+]);
+
+export function probeHostBashSandbox({
+  platform = process.platform,
+  arch = process.arch,
+  runtimeDir = RUNTIME_DIR,
+  spawnSyncFn = spawnSync,
+  timeoutMs = 5_000,
+} = {}) {
+  if (platform === 'darwin') {
+    // 桌面版的真实 Seatbelt profile 由 Phase 0 同一测试逐次执行；macOS 没有
+    // Linux 的 bwrap/Landlock 容器分叉，这里只返回平台固定后端，避免每次打开
+    // 案件都额外 spawn 一次 sandbox-exec。
+    return { available: true, backend: 'seatbelt', enforcement: 'full' };
+  }
+  if (platform === 'win32') {
+    // Windows full 档发布的是 pwsh + ACL restricted-token runner，不发布 bash；
+    // 本门禁只处理设计稿点名的 bash 服务器分叉。
+    return { available: true, backend: 'windows-acl', enforcement: 'partial' };
+  }
+  if (platform !== 'linux') {
+    return {
+      available: false, backend: null, enforcement: 'unavailable',
+      reason: AGENT_BASH_SANDBOX_UNAVAILABLE,
+    };
+  }
+
+  try {
+    const bwrap = spawnSyncFn('bwrap', BWRAP_PROBE_ARGS, {
+      timeout: timeoutMs,
+      stdio: 'ignore',
+    });
+    if (bwrap?.status === 0) {
+      return { available: true, backend: 'bwrap', enforcement: 'full' };
+    }
+  } catch {
+    // 缺二进制、spawn 拒绝、超时都只表示这一档不可用，继续试 Landlock。
+  }
+
+  const landlockLauncher = path.join(
+    runtimeDir,
+    'node_modules',
+    '@deepseek-ai',
+    `node-addon-landlock-run-${platform}-${arch}`,
+    'bin',
+    'landlock-run',
+  );
+  try {
+    const landlock = spawnSyncFn(landlockLauncher, ['--probe'], {
+      timeout: timeoutMs,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const report = String(landlock?.stdout || '');
+    if (landlock?.status === 0 && !/partially enforced/i.test(report)) {
+      return { available: true, backend: 'landlock', enforcement: 'full' };
+    }
+  } catch {
+    // 与 bwrap 同理：最终统一返回固定、无路径/堆栈的用户可见原因。
+  }
+  return {
+    available: false, backend: null, enforcement: 'unavailable',
+    reason: AGENT_BASH_SANDBOX_UNAVAILABLE,
+  };
+}
 
 // 是否正在用打包目录（Contents/Resources/agent-runtime/assets），而不是仓库
 // 路径——下面 ensureAssetsNodeModulesLink() 需要用它来决定"能不能在这棵目录
@@ -725,6 +809,7 @@ export class AgentSupervisor {
     spawnFn = spawn,
     loadConfigFn = loadAgentConfig,
     resolveCaseDirectoryFn = resolveCaseDirectoryForCase,
+    bashSandboxProbeFn = probeHostBashSandbox,
     // Phase 3 只提供宿主注入 seam；默认实例关闭且不会把 action 发给任何模型。
     // 获得 Hermes 判据/阈值裁决前，生产构造路径不得传入 enabled classifier。
     riskClassifier = createRiskClassifier(),
@@ -740,6 +825,8 @@ export class AgentSupervisor {
     this.spawnFn = spawnFn;
     this.loadConfigFn = loadConfigFn;
     this.resolveCaseDirectoryFn = resolveCaseDirectoryFn;
+    this.bashSandboxProbeFn = bashSandboxProbeFn;
+    this.bashSandboxCapability = null;
     this.riskClassifier = riskClassifier;
     this.actor = actor;
     this.workers = new Map(); // caseId -> Worker
@@ -975,6 +1062,28 @@ export class AgentSupervisor {
     if (!config.enabled) {
       audit(this.actor, 'agent-start-skip', 'agent-worker', caseId, config.error ? `disabled:${config.error}` : 'disabled');
       return { status: 'disabled', caseId, error: config.error };
+    }
+    // Phase 0 关键分叉：服务器 full 档只有在 bwrap 或完整 Landlock 的功能探针
+    // 真正通过后才允许继续。门禁故意放在 resolveAgentApiKey()、案件 DB 查询、
+    // workspace 解析与 spawn 之前；不支持的容器既拿不到模型 key，也不会出现
+    // “worker 看似 ready，第一条 bash 才突然 SANDBOX_UNAVAILABLE”的静默失败。
+    if (config.capabilityMode === 'full') {
+      try {
+        this.bashSandboxCapability ??= this.bashSandboxProbeFn();
+      } catch {
+        this.bashSandboxCapability = {
+          available: false, backend: null, enforcement: 'unavailable',
+          reason: AGENT_BASH_SANDBOX_UNAVAILABLE,
+        };
+      }
+      if (!this.bashSandboxCapability?.available) {
+        audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'bash_sandbox_unavailable');
+        return {
+          status: 'error',
+          caseId,
+          error: this.bashSandboxCapability?.reason || AGENT_BASH_SANDBOX_UNAVAILABLE,
+        };
+      }
     }
     // 取值优先级链（config.js resolveAgentApiKey() 的注释）：apiKeyEnv 指向
     // 的宿主环境变量优先，否则回落到界面存的加密 key；两者都没有才是真正的

@@ -81,8 +81,6 @@ function assertPolicy(policy, filesRoot, databasePath) {
 }
 
 function confineBwrap(argv, policy, upstream, filesRoot, databaseRoot, tempRoot) {
-  const aliasRoot = '/run/anqi-sandbox';
-  const aliasWorkspace = path.join(aliasRoot, 'workspace');
   const maskRoots = minimalRoots(['/tmp', filesRoot, databaseRoot]);
   const profile = [
     '--ro-bind', '/', '/',
@@ -90,8 +88,6 @@ function confineBwrap(argv, policy, upstream, filesRoot, databaseRoot, tempRoot)
     '--unshare-pid',
     '--proc', '/proc',
     '--die-with-parent',
-    '--dir', aliasRoot,
-    '--bind', policy.workspaceRoot, aliasWorkspace,
   ];
   for (const root of maskRoots) profile.push('--tmpfs', root);
   for (const target of [policy.workspaceRoot, tempRoot]) {
@@ -99,12 +95,26 @@ function confineBwrap(argv, policy, upstream, filesRoot, databaseRoot, tempRoot)
     if (owner) profile.push(...bwrapDirectoryArgs(owner, target));
   }
   profile.push(
-    '--bind', aliasWorkspace, policy.workspaceRoot,
+    // bwrap 会在应用前面的 tmpfs mount 之前先打开所有 --bind source FD，
+    // 因而可以安全地先遮蔽 filesRoot/DB 根，再把宿主原始案件夹直接挂回同一路
+    // 径。此前试图先挂到 /run/anqi-sandbox/workspace、再把那个新 mount 当作
+    // 后续 --bind source；但 source 始终按宿主 namespace 解析，同一命令里
+    // 新建的别名不是合法 source，真实容器必然 fail closed。
+    '--bind', policy.workspaceRoot, policy.workspaceRoot,
     '--chdir', policy.workspaceRoot,
     '--',
     ...argv,
   );
-  return { ...upstream, argv: ['bwrap', ...profile] };
+  return {
+    ...upstream,
+    argv: ['bwrap', ...profile],
+    // 案齐不是把宿主其他路径只读挂入，而是用 tmpfs 彻底遮蔽 filesRoot/DB
+    // 后仅 bind-back 当前案件夹；因此越界读写的正常内核表现通常是 ENOENT，
+    // 而非上游通用 bwrap profile 唯一认识的 EROFS。把 ENOENT 纳入本 profile
+    // 的拒绝方言，才能让 bash result 带明确 sandbox.denied=true；命令仍以
+    // 非零退出，且敏感路径内容从未进入 namespace。
+    denialSignatures: [...(upstream.denialSignatures || []), 'no such file or directory'],
+  };
 }
 
 function confineLandlock(argv, policy, upstream, tempRoot) {

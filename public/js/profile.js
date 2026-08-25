@@ -171,7 +171,7 @@ if (agentEnabled && agentFields && agentSave) {
 
   function syncCapabilityNote() {
     agentCapabilityNote.textContent = agentCapabilityMode.value === 'full'
-      ? '完整档启用上游 shell/jobs/web/subagent/workflow/Ralph。文件与命令仍受真实沙箱限制在本案；沙箱不可用时服务端拒绝启动，联网查询会发送给相应服务。切换档位会停止现有助理会话。'
+      ? '完整档启用上游 shell/jobs/web/subagent/workflow/Ralph。文件与命令仍受真实沙箱限制在本案；沙箱不可用时，服务端会在读取凭据和启动 worker 前拒绝，并在案件抽屉显示原因，绝不会裸跑命令。联网查询会发送给相应服务。切换档位会停止现有助理会话。'
       : '案件项目档可读取本案文件；文件工具不能越出案件夹，且不启用命令执行与联网搜索。';
   }
   agentCapabilityMode.addEventListener('change', syncCapabilityNote);

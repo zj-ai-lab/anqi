@@ -65,6 +65,12 @@
 
 ## 未发布 — AI 助理安全加固
 
+### Linux/Docker 的 full/bash 真沙箱门禁
+
+- Docker 镜像安装 `bubblewrap`，但“二进制存在”不再视为可用。Linux supervisor 会在读取 API key、案件记录/案件夹和启动 worker 之前，分别做一次真实 bubblewrap 功能探测与完整 Landlock 探测；只有确认全量强制执行的后端才允许启动 `full`。两者都不可用时服务端以固定中文原因拒绝，绝不会退化成裸跑 bash；`project` 档仍可使用。
+- bubblewrap profile 先遮蔽数据库、全局文件根和 session 等宿主敏感路径，再只把当前案件 workspace 按原绝对路径绑定回来。默认无特权 Docker 容器若不允许创建所需 namespace，会安全拒绝；部署方必须通过自身容器安全策略提供可工作的 user namespace/bubblewrap 或完整 Landlock，不能靠关闭 supervisor 门禁换取 full 档。
+- 回归同时覆盖两条真实容器路径：默认 Docker 安全策略下必须在凭据/案件读取/worker spawn 前拒绝；具备可工作 bubblewrap 的隔离容器内必须允许当前案件读写，并真实拒绝其他案件读写。macOS 继续使用 Seatbelt 执行同一组边界对抗。
+
 ### 外部 DSH/MCP 插件安全接入
 
 - 案齐运行时已经内置 `@deepseek-ai/dsh-mcp-client`；`src/agent/assets/anqi.cordis.yml` 里的 `mcp-anqi-local` 是同一机制的本地、受控实例。经审查的第三方 MCP server 可以通过一个 Cordis patch row 接入，不需要改案齐主线或另开一条绕过 supervisor 的进程链。

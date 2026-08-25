@@ -40,7 +40,11 @@ let sandboxCtx;
 try {
   const dbModule = await import('../src/db.js');
   db = dbModule.db;
-  const { AgentSupervisor } = await import('../src/agent/supervisor.js');
+  const {
+    AGENT_BASH_SANDBOX_UNAVAILABLE,
+    AgentSupervisor,
+    probeHostBashSandbox,
+  } = await import('../src/agent/supervisor.js');
   const { AGENT_SETTINGS_KEYS } = await import('../src/agent/config.js');
 
   const setSetting = (key, value) => db.prepare(
@@ -53,6 +57,93 @@ try {
   setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
   setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_PHASE0_MODEL_KEY');
 
+  // Linux server 的 full/bash 必须在读凭据、案件夹或 spawn 之前先确认存在
+  // 可兑现的真沙箱；默认容器若 bwrap/Landlock 都不可用，要把固定中文原因交给
+  // UI，而不是允许 worker ready 后等第一条 bash 才突然失败。
+  const bwrapCapability = probeHostBashSandbox({
+    platform: 'linux',
+    runtimeDir: '/fixture/runtime',
+    spawnSyncFn(program) {
+      return { status: program === 'bwrap' ? 0 : 125, stdout: '' };
+    },
+  });
+  assert.deepEqual(bwrapCapability, { available: true, backend: 'bwrap', enforcement: 'full' });
+  const landlockCapability = probeHostBashSandbox({
+    platform: 'linux',
+    runtimeDir: '/fixture/runtime',
+    spawnSyncFn(program) {
+      return program === 'bwrap'
+        ? { status: 1, stdout: '' }
+        : { status: 0, stdout: 'landlock-run: fully enforced\n' };
+    },
+  });
+  assert.deepEqual(landlockCapability, { available: true, backend: 'landlock', enforcement: 'full' });
+  const unavailableCapability = probeHostBashSandbox({
+    platform: 'linux',
+    runtimeDir: '/fixture/runtime',
+    spawnSyncFn(program) {
+      return program === 'bwrap'
+        ? { status: 1, stdout: '' }
+        : { status: 0, stdout: 'landlock-run: partially enforced (older Landlock ABI)\n' };
+    },
+  });
+  assert.deepEqual(unavailableCapability, {
+    available: false,
+    backend: null,
+    enforcement: 'unavailable',
+    reason: AGENT_BASH_SANDBOX_UNAVAILABLE,
+  });
+
+  let serverGateSpawnCalls = 0;
+  let serverGateCaseReads = 0;
+  const serverGate = new AgentSupervisor({
+    filesRoot,
+    loadConfigFn: () => ({ enabled: true, capabilityMode: 'full', apiKeyEnv: 'MUST_NOT_BE_READ' }),
+    bashSandboxProbeFn: () => unavailableCapability,
+    resolveCaseDirectoryFn() {
+      serverGateCaseReads += 1;
+      throw new Error('server sandbox gate ran too late');
+    },
+    spawnFn() {
+      serverGateSpawnCalls += 1;
+      throw new Error('server sandbox gate ran too late');
+    },
+  });
+  const serverRejected = await serverGate.start(999999);
+  assert.deepEqual(serverRejected, {
+    status: 'error',
+    caseId: 999999,
+    error: AGENT_BASH_SANDBOX_UNAVAILABLE,
+  });
+  assert.equal(serverGateCaseReads, 0, '无真沙箱时不得读取案件夹');
+  assert.equal(serverGateSpawnCalls, 0, '无真沙箱时不得 spawn DSH worker');
+
+  const expectUnavailable = process.env.ANQI_EXPECT_SANDBOX_UNAVAILABLE === '1';
+  if (expectUnavailable) {
+    const actualCapability = probeHostBashSandbox();
+    assert.deepEqual(actualCapability, {
+      available: false,
+      backend: null,
+      enforcement: 'unavailable',
+      reason: AGENT_BASH_SANDBOX_UNAVAILABLE,
+    });
+    let actualCaseReads = 0;
+    let actualSpawns = 0;
+    const actualGate = new AgentSupervisor({
+      filesRoot,
+      loadConfigFn: () => ({ enabled: true, capabilityMode: 'full', apiKeyEnv: 'MUST_NOT_BE_READ' }),
+      bashSandboxProbeFn: () => actualCapability,
+      resolveCaseDirectoryFn() { actualCaseReads += 1; },
+      spawnFn() { actualSpawns += 1; },
+    });
+    const actualRejected = await actualGate.start(999998);
+    assert.equal(actualRejected.status, 'error');
+    assert.equal(actualRejected.error, AGENT_BASH_SANDBOX_UNAVAILABLE);
+    assert.equal(actualCaseReads, 0);
+    assert.equal(actualSpawns, 0);
+    console.log(`SERVER_SANDBOX_GATE platform=${process.platform} backend=unavailable result=rejected-before-credential-case-spawn`);
+    console.log(`SERVER_SANDBOX_REASON ${actualRejected.error}`);
+  } else {
   const caseId = db.prepare(
     `INSERT INTO cases (name, procedure, stage, status, folder_path)
      VALUES (?, '一审', '', 'active', ?)`
@@ -117,6 +208,11 @@ try {
   assert.equal(inside.stdout.text, 'inside-ok');
   assert.equal(inside.sandbox?.mode, 'workspace-write');
   assert.equal(inside.sandbox?.denied, false);
+  const selected = sandboxCtx.sandbox.selectedRunner;
+  assert.ok(selected && typeof selected === 'object', '真实沙箱必须报告实际选中的后端');
+  assert.equal(selected.enforcement, 'full', '案齐不接受 partial 沙箱兑现 full/bash');
+  if (process.platform === 'linux') assert.ok(['bwrap', 'landlock'].includes(selected.runner));
+  if (process.platform === 'darwin') assert.equal(selected.runner, 'seatbelt');
 
   const outsideWrite = path.join(sandboxOther, 'must-not-exist.txt');
   const writeDenied = await run(`printf 'escape' > ${JSON.stringify(outsideWrite)}`);
@@ -129,10 +225,18 @@ try {
   assert.equal(readDenied.sandbox?.denied, true);
   assert.doesNotMatch(readDenied.stdout.text, /never-visible/);
 
+  const compact = (result) => String(result.stderr?.text || '')
+    .trim()
+    .replaceAll(scratch, '<scratch>');
+  console.log(`SANDBOX_BACKEND platform=${process.platform} runner=${selected.runner} enforcement=${selected.enforcement}`);
+  console.log(`SANDBOX_DENIAL outside-write exit=${writeDenied.exitCode} stderr=${JSON.stringify(compact(writeDenied))}`);
+  console.log(`SANDBOX_DENIAL other-case-read exit=${readDenied.exitCode} stderr=${JSON.stringify(compact(readDenied))}`);
+
   console.log(
     `agent sandbox boundary tests: DB/workspace overlap fail-closed + real ${process.platform} `
     + 'sandbox allows current-case rw and denies other-case read/write passed'
   );
+  }
 } finally {
   if (sandboxCtx) await sandboxCtx.fiber.dispose();
   if (db?.open) db.close();
