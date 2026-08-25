@@ -124,3 +124,13 @@
 - Docker 当前 context 为 `desktop-linux`；其 endpoint 是 `unix:///Users/2_dogg/.docker/run/docker.sock`，`/var/run/docker.sock` 也符号链接到同一 Desktop socket，不存在漏检的第二个本地 engine。
 - 沙箱外直接执行 `curl --max-time 5 --unix-socket /Users/2_dogg/.docker/run/docker.sock http://localhost/_ping`，5 秒后仍为 0 bytes、退出码 28。与工作会话 1 相同的 daemon 挂死状态在连续 goal turn 2 再次复现。
 - 未重启 Docker Desktop（避免影响用户现有容器），未触碰 jackie 生产容器；环境恢复前无法诚实生成 Docker build/容器内真沙箱证据。当前工作会话计数：2/12。
+
+## 工作会话 3 — 2026-08-25
+
+### P0 Docker 最终阻塞审计（同一条件连续三次 goal turn，停止）
+
+- 按断点复核分支 `feat/agent-sidecar`、HEAD `7dde5f8`、clean 工作树及唯一未完成硬证据，没有重做已绿的 Phase 1→6、桌面沙箱或真实模型联网/红线测试。
+- 沙箱外再次只读执行 `curl --show-error --max-time 5 --unix-socket /Users/2_dogg/.docker/run/docker.sock http://localhost/_ping`；实际输出 `curl: (28) Operation timed out after 5002 milliseconds with 0 bytes received`，退出码 28。
+- 与工作会话 1、2 完全相同的 Docker Desktop daemon 挂死状态在连续 goal turn 3 再次复现；本机仍无第二个容器运行时。任务边界不授权重启可能承载用户容器的 Desktop，也明确禁止改用 jackie 生产容器，因此已无法在不扩大权限或等待外部状态变化的前提下取得 Docker build/容器内 bwrap 真沙箱证据。
+- 其余交付保持成立：macOS Seatbelt 真沙箱四项红线通过；bash/web_search 真实一档完整卡通过；真实三档联网与四项越界拒绝通过；最终全量 `[53/53]`、`skipped=0`、`ALL GREEN ✅`；禁改文件相对基线 diff 为空。
+- 按持续 goal 的严格门槛，本任务在工作会话 3/12 标记 blocked；环境恢复后的唯一续跑动作仍是构建本地镜像并在容器内执行 `tools/test-agent-sandbox-boundary.js`，随后补记真实选中 bwrap/Landlock 与越界拒绝输出。未 push、未 tag、未发布。
