@@ -2192,6 +2192,11 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
   gap: 24px; align-items: start;
 }
 .case-lane { display: flex; flex-direction: column; gap: 24px; min-width: 0; }
+/* 案件文件：夹内文件清单做成定高内滚模块——框内滚文件、框外滚主页，
+   长清单不再把下方时间线 / 律师费压到屏外。空清单（无文件 / 未挂载）时不占高。 */
+#file-drop #file-list:not(:empty) {
+  max-height: 340px; overflow-y: auto; overscroll-behavior: contain;
+}
 .case-info-adjunct, .aux-panel {
   background: var(--surface-2); border-color: transparent; box-shadow: none;
 }
