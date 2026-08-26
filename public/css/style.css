@@ -560,6 +560,8 @@ a.chip:hover { background: var(--hover); border-color: var(--border-h); text-dec
 .pill.warn { color: var(--amber); border-color: var(--amber-line); background: var(--amber-bg); }
 .pill.ok   { color: var(--green); border-color: var(--green-line); background: var(--green-bg); }
 .pill.acc  { color: var(--green); border-color: var(--green-line); background: var(--green-bg); }
+/* AI 填·待核：琥珀虚线，与实心药丸区分——提示这条待人工「确认」后才纳入提醒 */
+.pill.review { color: var(--amber); border-color: var(--amber-line); background: var(--amber-bg); border-style: dashed; }
 
 /* 键盘提示 chip —— 只在真实实现了该快捷键时才用（当前 JS 无快捷键，默认不要用） */
 .kbd {

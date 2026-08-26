@@ -283,6 +283,7 @@ function contactRow(p) {
   return el('div', { class: 'row' },
     el('span', { class: `pill ${ROLE_PILL[p.role] || ''}` }, p.role),
     el('b', {}, p.name),
+    p.created_by === 'ai' ? el('span', { class: 'pill acc' }, 'AI 加的') : null,
     p.phone ? el('a', { href: 'tel:' + p.phone, class: 'meta nowrap', title: '点击拨打' }, p.phone) : null,
     p.id_no ? el('a', {
       href: '#', class: 'meta nowrap', title: '点击复制身份证号',
@@ -456,6 +457,19 @@ function editDueBtn(d, cls = 'btn small') {
   return el('button', { class: cls, type: 'button', 'aria-label': `改期：${d.name}`, onclick: () => editDeadlineDue(d) }, '改期');
 }
 
+// AI 填的期限强制待核：确认前不进首页摘要/提醒（digest 已按 review_status 排除），
+// 只在本案跑道/时间线露出并等人工「确认」。非待核期限返回 null（el() 忽略）。
+function confirmReviewBtn(d, cls = 'btn small primary') {
+  if (d.review_status !== 'pending_review') return null;
+  return el('button', {
+    class: cls, type: 'button', 'aria-label': `确认期限：${d.name}`,
+    onclick: async () => {
+      await api(`/deadlines/${d.id}/confirm-review`, { method: 'POST' });
+      toast('已确认，纳入提醒 ✓'); load();
+    },
+  }, '确认');
+}
+
 // 依据 / 算法 / 人工设定 —— 跑道行与头条共用的小字尾
 function deadlineMeta(d) {
   return [
@@ -464,6 +478,8 @@ function deadlineMeta(d) {
     d.basis ? el('span', {}, d.basis) : null,
     d.is_manual_override ? el('span', { class: 'sep' }, '·') : null,
     d.is_manual_override ? el('span', {}, '人工设定') : null,
+    d.review_status === 'pending_review' ? el('span', { class: 'sep' }, '·') : null,
+    d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
   ];
 }
 
@@ -492,7 +508,7 @@ function runwayLead(d) {
     ),
     el('div', { class: 'rw-trk' }, track(d)),
     el('div', { class: 'rw-due' }, d.due_on.slice(5)),
-    el('span', { class: 'rw-key' }, editDueBtn(d), doneBtn(d, 'btn small'))
+    el('span', { class: 'rw-key' }, confirmReviewBtn(d), editDueBtn(d), doneBtn(d, 'btn small'))
   );
 }
 
@@ -514,7 +530,7 @@ function runwayRow(d, i) {
     ),
     el('div', { class: 'rw-trk' }, track(d)),
     el('div', { class: 'rw-due' }, d.due_on.slice(5)),
-    el('span', { class: 'rw-acts' }, editDueBtn(d), doneBtn(d))
+    el('span', { class: 'rw-acts' }, confirmReviewBtn(d), editDueBtn(d), doneBtn(d))
   );
 }
 
@@ -1211,6 +1227,7 @@ function render() {
     ...bundle.events.map((e) => ({ kind: 'event', date: e.occurred_on, sort2: 2, build: () => tlItem(e.occurred_on, 'tl-node-event',
       el('span', { class: 'pill acc' }, evLabel[e.type] || e.type),
       [
+        ['llm', 'ai'].includes(e.created_by) ? el('span', { class: 'pill acc' }, 'AI 加的') : null,
         e.instrument ? el('span', {}, e.instrument, ' ') : null,
         e.service_method ? el('span', { class: 'pill' }, e.service_method) : null,
         e.note ? el('div', { class: 'tl-note' }, e.note) : null,
@@ -1266,8 +1283,10 @@ function render() {
           d.basis ? el('span', { class: 'tl-note' }, `依据：${d.basis} `) : null,
           d.calc_note ? el('div', { class: 'tl-note' }, `算法：${d.calc_note}`) : null,
           d.is_manual_override ? el('span', { class: 'pill' }, '人工设定') : null,
+          d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
         ],
         d.status === 'pending' ? el('span', {},
+          confirmReviewBtn(d),
           editDueBtn(d),
           el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
           el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
