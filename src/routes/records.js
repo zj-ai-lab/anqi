@@ -15,30 +15,125 @@ function normalizedTaskDate(value) {
   return value ?? '';
 }
 
-function mustCase(id, res) {
-  const c = db.prepare('SELECT id, name FROM cases WHERE id = ?').get(id);
-  if (!c) res.status(404).json({ error: '案件不存在' });
+function recordError(message, status = 400, code = 'record_invalid') {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
+function caseForWrite(caseId) {
+  const c = db.prepare('SELECT id, name FROM cases WHERE id = ?').get(caseId);
+  if (!c) throw recordError('案件不存在', 404, 'case_not_found');
   return c;
+}
+
+function responseError(res, error) {
+  return res.status(error.status || 400).json({ error: error.message, code: error.code || 'record_invalid' });
+}
+
+function taskView(id) {
+  return db.prepare('SELECT *, origin AS created_by FROM tasks WHERE id = ?').get(id);
+}
+
+export function createEventRecord({ caseId, payload, actor = 'web', createdBy = 'manual' }) {
+  const c = caseForWrite(caseId);
+  const b = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  if (!isEventType(b.type)) throw recordError('type 非法（见 /api/meta 词表）');
+  if (!isDate(b.occurred_on)) throw recordError('occurred_on 须为 YYYY-MM-DD');
+  const normalizedCreatedBy = ['manual', 'llm', 'import'].includes(createdBy) ? createdBy : 'manual';
+  const info = db.prepare(
+    `INSERT INTO events (case_id, type, occurred_on, service_method, instrument, note, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    c.id, b.type, b.occurred_on, String(b.service_method || ''), String(b.instrument || ''),
+    String(b.note || ''), normalizedCreatedBy
+  );
+  audit(actor, 'create', 'event', info.lastInsertRowid, `${c.name} ${b.type} ${b.occurred_on}`);
+  const row = db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
+  const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id);
+  const derived = deriveForEvent(row, caseRow, actor);
+  return { row, derived };
+}
+
+export function createDeadlineRecord({
+  caseId,
+  payload,
+  actor = 'web',
+  createdBy = 'manual',
+  reviewStatus = 'confirmed',
+}) {
+  const c = caseForWrite(caseId);
+  const b = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  if (!b.name || !String(b.name).trim()) throw recordError('name 必填');
+  if (!isDate(b.due_on)) throw recordError('due_on 须为 YYYY-MM-DD');
+  const severity = ['critical', 'high', 'normal'].includes(b.severity) ? b.severity : 'normal';
+  const triggerEventId = b.trigger_event_id || null;
+  if (triggerEventId) {
+    const event = db.prepare('SELECT id,case_id FROM events WHERE id=?').get(triggerEventId);
+    if (!event) throw recordError('触发事件不存在', 404, 'event_not_found');
+    if (event.case_id !== c.id) throw recordError('触发事件不属于该案件', 400, 'event_case_mismatch');
+  }
+  const normalizedCreatedBy = ['manual', 'ai', 'engine', 'import'].includes(createdBy) ? createdBy : 'manual';
+  const normalizedReview = reviewStatus === 'pending_review' ? 'pending_review' : 'confirmed';
+  const info = db.prepare(
+    `INSERT INTO deadlines
+      (case_id, name, due_on, trigger_event_id, basis, calc_note, is_manual_override, severity, review_status, created_by)
+     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+  ).run(
+    c.id, String(b.name).trim(), b.due_on, triggerEventId,
+    String(b.basis || ''), String(b.calc_note || ''), severity, normalizedReview, normalizedCreatedBy
+  );
+  audit(actor, 'create', 'deadline', info.lastInsertRowid, `${c.name} ${String(b.name).trim()} ${b.due_on}`);
+  return db.prepare('SELECT * FROM deadlines WHERE id = ?').get(info.lastInsertRowid);
+}
+
+export function createTaskRecord({ caseId = null, payload, actor = 'web', origin = 'manual' }) {
+  const b = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  if (!b.title || !String(b.title).trim()) throw recordError('title 必填');
+  const normalizedCaseId = caseId === null || caseId === undefined || caseId === '' ? null : Number(caseId);
+  if (normalizedCaseId !== null) caseForWrite(normalizedCaseId);
+  const planDate = normalizedTaskDate(b.plan_date);
+  const dueOn = normalizedTaskDate(b.due_on);
+  const dueTime = normalizedTaskDate(b.due_time);
+  for (const [field, value] of [['plan_date', planDate], ['due_on', dueOn]]) {
+    if (value !== '' && !isDate(value)) throw recordError(`${field} 须为 YYYY-MM-DD`);
+  }
+  if (planDate && dueOn && planDate > dueOn) throw recordError('plan_date 不得晚于 due_on');
+  if (dueTime !== '' && !isTime(dueTime)) throw recordError('due_time 须为 HH:MM');
+  if (dueTime && !dueOn) throw recordError('due_time 需要先填写 due_on');
+  const deadlineId = b.deadline_id || null;
+  if (deadlineId) {
+    const deadline = db.prepare('SELECT id,case_id FROM deadlines WHERE id=?').get(deadlineId);
+    if (!deadline) throw recordError('关联期限不存在', 404, 'deadline_not_found');
+    if (deadline.case_id !== normalizedCaseId) throw recordError('关联期限不属于该案件', 400, 'deadline_case_mismatch');
+  }
+  const normalizedOrigin = ['manual', 'template', 'llm'].includes(origin) ? origin : 'manual';
+  const info = db.prepare(
+    `INSERT INTO tasks (case_id, title, plan_date, due_on, due_time, deadline_id, stage, priority, origin, note)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    normalizedCaseId, String(b.title).trim(), planDate, dueOn, dueTime, deadlineId,
+    String(b.stage || ''), ['high', 'normal', 'low'].includes(b.priority) ? b.priority : 'normal',
+    normalizedOrigin, String(b.note || '')
+  );
+  audit(actor, 'create', 'task', info.lastInsertRowid, String(b.title).trim());
+  return taskView(info.lastInsertRowid);
 }
 
 // ---------- events ----------
 r.post('/cases/:id/events', (req, res) => {
-  const c = mustCase(req.params.id, res);
-  if (!c) return;
-  const b = req.body || {};
-  if (!isEventType(b.type)) return res.status(400).json({ error: 'type 非法（见 /api/meta 词表）' });
-  if (!isDate(b.occurred_on)) return res.status(400).json({ error: 'occurred_on 须为 YYYY-MM-DD' });
-  const info = db.prepare(
-    `INSERT INTO events (case_id, type, occurred_on, service_method, instrument, note, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(c.id, b.type, b.occurred_on, b.service_method || '', b.instrument || '', b.note || '',
-    ['manual', 'llm', 'import'].includes(b.created_by) ? b.created_by : 'manual');
-  audit(req.actor, 'create', 'event', info.lastInsertRowid, `${c.name} ${b.type} ${b.occurred_on}`);
-  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
-  // P1 引擎：触发事件 → 批量派生法定期限（D1）；court_specified → 铺录入任务
-  const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id);
-  const derived = deriveForEvent(event, caseRow, req.actor);
-  res.json({ ...event, derived });
+  try {
+    const { row, derived } = createEventRecord({
+      caseId: Number(req.params.id),
+      payload: req.body,
+      actor: req.actor,
+      createdBy: ['manual', 'llm', 'import'].includes(req.body?.created_by) ? req.body.created_by : 'manual',
+    });
+    res.json({ ...row, derived });
+  } catch (error) {
+    responseError(res, error);
+  }
 });
 
 r.patch('/events/:id', (req, res) => {
@@ -88,18 +183,21 @@ r.delete('/events/:id', (req, res) => {
 
 // ---------- deadlines（P0 全手动：is_manual_override=1，P1 引擎生成的才为 0）----------
 r.post('/cases/:id/deadlines', (req, res) => {
-  const c = mustCase(req.params.id, res);
-  if (!c) return;
-  const b = req.body || {};
-  if (!b.name || !b.name.trim()) return res.status(400).json({ error: 'name 必填' });
-  if (!isDate(b.due_on)) return res.status(400).json({ error: 'due_on 须为 YYYY-MM-DD' });
-  const severity = ['critical', 'high', 'normal'].includes(b.severity) ? b.severity : 'normal';
-  const info = db.prepare(
-    `INSERT INTO deadlines (case_id, name, due_on, trigger_event_id, basis, calc_note, is_manual_override, severity)
-     VALUES (?, ?, ?, ?, ?, ?, 1, ?)`
-  ).run(c.id, b.name.trim(), b.due_on, b.trigger_event_id || null, b.basis || '', b.calc_note || '', severity);
-  audit(req.actor, 'create', 'deadline', info.lastInsertRowid, `${c.name} ${b.name} ${b.due_on}`);
-  res.json(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(info.lastInsertRowid));
+  try {
+    res.json(createDeadlineRecord({ caseId: Number(req.params.id), payload: req.body, actor: req.actor }));
+  } catch (error) {
+    responseError(res, error);
+  }
+});
+
+r.post('/deadlines/:id/confirm-review', (req, res) => {
+  const row = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '期限不存在' });
+  if (row.review_status === 'pending_review') {
+    db.prepare("UPDATE deadlines SET review_status='confirmed' WHERE id=? AND review_status='pending_review'").run(row.id);
+    audit(req.actor, 'confirm-review', 'deadline', row.id, `${row.name} ${row.due_on}`);
+  }
+  res.json(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id));
 });
 
 r.patch('/deadlines/:id', (req, res) => {
@@ -145,7 +243,7 @@ r.get('/tasks', (req, res) => {
   const args = [];
   if (status !== 'all') { cond.push('t.status = ?'); args.push(status); }
   if (case_id) { cond.push('t.case_id = ?'); args.push(case_id); }
-  const sql = `SELECT t.*, c.name AS case_name FROM tasks t LEFT JOIN cases c ON c.id = t.case_id
+  const sql = `SELECT t.*, t.origin AS created_by, c.name AS case_name FROM tasks t LEFT JOIN cases c ON c.id = t.case_id
     ${cond.length ? 'WHERE ' + cond.join(' AND ') : ''}
     ORDER BY COALESCE(NULLIF(t.due_on,''), NULLIF(t.plan_date,''), '9999'),
       CASE WHEN t.due_time = '' THEN 1 ELSE 0 END, t.due_time,
@@ -154,32 +252,12 @@ r.get('/tasks', (req, res) => {
 });
 
 r.post('/tasks', (req, res) => {
-  const b = req.body || {};
-  if (!b.title || !b.title.trim()) return res.status(400).json({ error: 'title 必填' });
-  const planDate = normalizedTaskDate(b.plan_date);
-  const dueOn = normalizedTaskDate(b.due_on);
-  const dueTime = normalizedTaskDate(b.due_time);
-  for (const [field, value] of [['plan_date', planDate], ['due_on', dueOn]]) {
-    if (value !== '' && !isDate(value)) return res.status(400).json({ error: `${field} 须为 YYYY-MM-DD` });
+  try {
+    const origin = ['manual', 'template', 'llm'].includes(req.body?.origin) ? req.body.origin : 'manual';
+    res.json(createTaskRecord({ caseId: req.body?.case_id || null, payload: req.body, actor: req.actor, origin }));
+  } catch (error) {
+    responseError(res, error);
   }
-  if (planDate && dueOn && planDate > dueOn) {
-    return res.status(400).json({ error: 'plan_date 不得晚于 due_on' });
-  }
-  if (dueTime !== '' && !isTime(dueTime)) return res.status(400).json({ error: 'due_time 须为 HH:MM' });
-  if (dueTime && !dueOn) return res.status(400).json({ error: 'due_time 需要先填写 due_on' });
-  if (b.case_id && !db.prepare('SELECT id FROM cases WHERE id = ?').get(b.case_id)) {
-    return res.status(404).json({ error: '案件不存在' });
-  }
-  const info = db.prepare(
-    `INSERT INTO tasks (case_id, title, plan_date, due_on, due_time, deadline_id, stage, priority, origin, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    b.case_id || null, b.title.trim(), planDate, dueOn, dueTime, b.deadline_id || null,
-    b.stage || '', ['high', 'normal', 'low'].includes(b.priority) ? b.priority : 'normal',
-    ['manual', 'template', 'llm'].includes(b.origin) ? b.origin : 'manual', b.note || ''
-  );
-  audit(req.actor, 'create', 'task', info.lastInsertRowid, b.title.trim());
-  res.json(db.prepare('SELECT * FROM tasks WHERE id = ?').get(info.lastInsertRowid));
 });
 
 r.patch('/tasks/:id', (req, res) => {
@@ -235,7 +313,7 @@ r.patch('/tasks/:id', (req, res) => {
     const isCompleting = wantsDone && current.status !== 'done';
     if (isCompleting) txSets.push("done_at = datetime('now','+8 hours')");
     db.prepare(`UPDATE tasks SET ${txSets.join(', ')} WHERE id = ?`).run(...txArgs, row.id);
-    updated = db.prepare('SELECT * FROM tasks WHERE id = ?').get(row.id);
+    updated = taskView(row.id);
     audit(req.actor, 'update', 'task', row.id, Object.keys(b).join(','));
     if (isCompleting) {
       const content = `完成待办：${updated.title}`;
@@ -317,7 +395,7 @@ r.post('/quick', (req, res) => {
   const info = db.prepare('INSERT INTO tasks (case_id, title, plan_date) VALUES (?, ?, ?)')
     .run(b.case_id || null, b.text.trim(), b.date || '');
   audit(req.actor, 'create', 'task', info.lastInsertRowid, 'quick');
-  res.json({ kind: 'task', row: db.prepare('SELECT * FROM tasks WHERE id = ?').get(info.lastInsertRowid) });
+  res.json({ kind: 'task', row: taskView(info.lastInsertRowid) });
 });
 
 // ---- 快录整理（1.1.0）：LLM 把一句话整理成建议，**只回给前端填表，绝不写库** ----

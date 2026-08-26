@@ -11,7 +11,7 @@ function confirmBody(preview) {
   return { ...preview.request, fee_version: preview.fee_version, preview_hash: preview.preview_hash };
 }
 
-assert.equal(db.pragma('user_version', { simple: true }), 17, '组合事务测试必须运行在 017');
+assert.equal(db.pragma('user_version', { simple: true }), 18, '组合事务测试必须运行在 018');
 
 const caseId = Number(db.prepare(
   `INSERT INTO cases (name,procedure,stage) VALUES ('组合事务示例案（张三）','一审','待裁判')`

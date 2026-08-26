@@ -311,3 +311,34 @@
 - 终局容器：`anjian` 跑 beta.4；`anjian-pre-b4` 保留 beta.2 且 stopped；更早的 `anjian-pre-b2`、`anjian-prev-2.4.0` 也原样保留，未删旧容器/镜像/备份或挂载数据。
 - 终局再次核验 Release 为 prerelease、双 DMG uploaded；GHCR `latest/2.6.0` 仍同为 `sha256:1ab3d2fb…41cc1`，beta.4 为 `sha256:069d1012…9955`。
 - `BLOCKED.md` 悬而未决项为「无」；本次发版与生产升级全部完成。
+
+## AI 直写工作会话 1/10 — 2026-08-26
+
+- 目标：让 agent 直写联系人、待办、事件、事实、期限；AI 写入可见可撤，期限强制待核并隔离提醒。
+- 顺序：迁移与待核读侧隔离 → 共享校验/写逻辑与 internal 直写口 → agent 工具与 contacts 读侧 → 契约、反向验证、直调取证。
+- 最大风险：`pending_review` 期限误入 digest/跑道，或 internal 端点相信 body 的 case_id 造成跨案写入。
+- 开工门禁：分支 `feat/agent-sidecar`，HEAD `041a66c`，工作树 clean，`CASE_FIELDS` 红线仍在。
+- 约束：不碰 `public/**`、`src/lib/engine.js`、旧迁移及 `tools/check.sh` 既有断言；不连接/改动 jackie。
+- 当前状态：任务 0 通过，准备建立 `[58/58]` 全检基线；`BLOCKED.md` 当前为“无”。
+
+### T1：migration 018（已完成）
+
+- 反向验证先红：新 migration 测试实报 `17 !== 18`；实现后历史 contacts=`manual`、deadlines=`manual/confirmed`，非法来源/待核值、幂等与故障原子回滚全绿。
+- 新表 `facts` 承载人工/agent 可直接增改删的正式案件事实；与既有 `legalrag_candidate_facts` 候选裁决元数据分开。
+- T1 全量首次红在两个旧 migration 精确版本钉子，17→18 后 `[59/59]`、`ALL GREEN ✅`；业务断言未放宽。
+
+### T2–T6：直写、待核、读契约与人工事实（已完成）
+
+- 反向验证先红：直写 HTTP 在旧闸实报 `contact direct write: 400 task-only`；实现后同一黑盒回归五类全绿。插件对开工 HEAD 的五工具存在断言红在缺 `anqi_contact_upsert`，当前精确 8 工具契约绿。
+- `/internal/agent-proposals` 以 `mode=direct` 复用既有 electron-auto key 白名单路径；case 只从 session registry 反查。软建议取消旧 kind 限制，但仍只落 inbox task 卡，绝不直写 event/deadline。
+- contacts/records/legalrag 导出共享写函数，人工 API 与 agent 入口复用同一校验。agent 联系人/事实/期限=`ai`，事件/待办复用 `llm`；所有正式写与确认均审计。
+- 待核期限强制 `pending_review`，digest red/week/watch 与期限推荐状态源排除；人工确认只转 `confirmed`，保留 `created_by=ai`。引擎派生和人工手填默认 confirmed。
+- `anqi_case_get` 现含 contacts/facts；tasks 响应投影 `origin AS created_by`；事实人工 GET/POST/PATCH/DELETE 可用。
+- 实际取证：联系人 `{role:法官助理,created_by:ai,get_visible:true}`；期限 pending 时 `{red:false,week:false,watch:false}`，确认后 `{review_status:confirmed,red:true}`；人工事实完成新增→修改→删除。
+- 全量第一次红在旧 contacts 不返回断言，按任务书退线后升级为“插行并精确返回 created_by”强断言；随后 `[61/61]`、`skipped=0`、`ALL GREEN ✅`。
+
+### 终局约束（已通过，待本次提交固化）
+
+- `src/lib/engine.js`、`public/**`、旧 migration 的 git diff 为空；`tools/check.sh` 只在原第 58 步后追加 59–61，旧步骤未改。
+- 新测试 `skip|todo|.only|process.exit(0)|\|\| true` 零命中；`git diff --check` 无输出。未连接 jackie、未发布、未部署。
+- `BLOCKED.md` 悬而未决仍为“无”；当前 AI 直写工作会话计数：1/10。

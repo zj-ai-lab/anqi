@@ -1,8 +1,7 @@
 // anqi 领域工具（preset-owned，只在 dsh-agent 会话 scope 里可见）。
 //
 // 移植自 anqi-spike-dsh 的 plugins/dsh-anqi/index.js，白名单字段常量
-// （CASE_FIELDS 等，contacts 永不出现在返回里——铁律 9 防回归）保持不变；三个
-// 工具的入口全部改成 session 绑定端点，不再有任何自由参数能选择读哪个案件：
+// 所有读写工具都走 session 绑定端点，不提供任何自由参数选择案件：
 //
 //   - anqi_case_get：不再接受模型可控的 `name` 参数，改打 /internal/
 //     agent-case-view（无参数，服务端按 session_id 反查绑定 case）。此前的
@@ -48,15 +47,18 @@ const CASE_FIELDS = [
   'id', 'name', 'case_no', 'cause', 'court', 'procedure', 'stage',
   'stage_entered_at', 'status', 'accepted_at',
 ];
+const CONTACT_FIELDS = ['id', 'role', 'name', 'phone', 'id_no', 'org', 'note', 'created_by'];
+const FACT_FIELDS = ['id', 'content', 'occurred_on', 'source', 'note', 'created_by', 'created_at', 'updated_at'];
 const EVENT_FIELDS = [
   'id', 'type', 'occurred_on', 'service_method', 'instrument', 'note', 'created_by',
 ];
 const DEADLINE_FIELDS = [
   'id', 'name', 'due_on', 'basis', 'calc_note', 'severity', 'status', 'done_at',
+  'review_status', 'created_by',
 ];
 const TASK_FIELDS = [
   'id', 'title', 'plan_date', 'due_on', 'due_time', 'deadline_id', 'stage',
-  'priority', 'origin', 'status', 'done_at', 'note',
+  'priority', 'origin', 'created_by', 'status', 'done_at', 'note',
 ];
 const WORKLOG_FIELDS = ['id', 'worked_on', 'content', 'minutes', 'artifacts'];
 const RECOMMENDATION_FIELDS = [
@@ -69,6 +71,7 @@ const DIGEST_ROW_FIELDS = [
   'is_today', 'title', 'plan_date', 'due_time', 'deadline_id', 'stage',
   'priority', 'origin', 'label', 'amount', 'node', 'paid_on', 'direction',
   'counterpart', 'due_month', 'external_case', 'overdue', 'procedure',
+  'review_status', 'created_by',
 ];
 
 const OPEN_OBJECT = {
@@ -101,6 +104,8 @@ function sanitizeCasePayload(value) {
     }));
   return {
     case: pick(value?.case, CASE_FIELDS),
+    contacts: pickRows(value?.contacts, CONTACT_FIELDS),
+    facts: pickRows(value?.facts, FACT_FIELDS),
     events: pickRows(value?.events, EVENT_FIELDS),
     deadlines: pickRows(value?.deadlines, DEADLINE_FIELDS),
     tasks: pickRows(value?.tasks, TASK_FIELDS),
@@ -108,6 +113,26 @@ function sanitizeCasePayload(value) {
     worklog_recent: pickRows(value?.worklog_recent, WORKLOG_FIELDS),
     recommendations_recent: recommendations,
   };
+}
+
+function sanitizeDirectResult(value, fields) {
+  return {
+    created: value?.created === true,
+    outcome: String(value?.outcome || ''),
+    kind: String(value?.kind || ''),
+    item: pick(value?.item, fields),
+    ...(value?.derived && typeof value.derived === 'object' ? { derived: value.derived } : {}),
+  };
+}
+
+function directPayload(args, fields, limits = {}) {
+  const out = {};
+  for (const field of fields) {
+    if (args?.[field] === undefined || args?.[field] === null) continue;
+    if (field === 'id' || field === 'deadline_id') out[field] = Number(args[field]);
+    else out[field] = String(args[field]).trim().slice(0, limits[field] || 5000);
+  }
+  return out;
 }
 
 function sanitizeDigest(value) {
@@ -191,9 +216,35 @@ export function apply(ctx, config = {}) {
     return value;
   }
 
+  async function directWrite(kind, payload, exec, fields) {
+    exec.signal.throwIfAborted();
+    const sessionId = requiredEnv(agentSessionIdEnv);
+    const value = await request('/internal/agent-proposals', {
+      method: 'POST',
+      signal: exec.signal,
+      body: { mode: 'direct', kind, session_id: sessionId, payload },
+    });
+    return sanitizeDirectResult(value, fields);
+  }
+
+  const directOutput = {
+    schema: {
+      type: 'object',
+      additionalProperties: false,
+      properties: {
+        created: { type: 'boolean', required: true },
+        outcome: { type: 'string', required: true },
+        kind: { type: 'string', required: true },
+        item: { ...OPEN_OBJECT, required: true },
+        derived: OPEN_OBJECT,
+      },
+    },
+    render: renderJson,
+  };
+
   ctx.tools.register(defineTool({
     name: 'anqi_case_get',
-    description: 'Read the whitelisted case facts, events, deterministic deadlines, tasks, worklog, and recent recommendations for the one anqi case this session is bound to. No contacts are returned, and no other case can be selected or read.',
+    description: 'Read whitelisted contacts, formal facts, events, deadlines, tasks, worklog, and recent recommendations for the one anqi case this session is bound to. No other case can be selected or read.',
     parameters: {},
     output: {
       schema: {
@@ -201,6 +252,8 @@ export function apply(ctx, config = {}) {
         additionalProperties: false,
         properties: {
           case: { ...OPEN_OBJECT, required: true },
+          contacts: OBJECT_ARRAY,
+          facts: OBJECT_ARRAY,
           events: OBJECT_ARRAY,
           deadlines: OBJECT_ARRAY,
           tasks: OBJECT_ARRAY,
@@ -326,6 +379,105 @@ export function apply(ctx, config = {}) {
         item_id: value?.item_id === undefined || value?.item_id === null ? '' : String(value.item_id),
         status: String(value?.item?.status || ''),
       };
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'anqi_contact_upsert',
+    description: '直接写入绑定案件的联系人、盖 AI 戳，人可改可撤。Omit id to create; provide an id returned by anqi_case_get to update that contact.',
+    parameters: {
+      id: { type: 'number', description: 'Existing contact id to update; omit to create.' },
+      role: { type: 'string', description: '当事人/对方当事人/承办法官/法官助理/书记员/对方律师/合作律师/其他。' },
+      name: { type: 'string', description: 'Contact name; required when creating.' },
+      phone: { type: 'string' },
+      id_no: { type: 'string' },
+      org: { type: 'string' },
+      note: { type: 'string' },
+    },
+    output: directOutput,
+    async execute(args, exec) {
+      return directWrite('contact', directPayload(
+        args, ['id', 'role', 'name', 'phone', 'id_no', 'org', 'note'],
+        { role: 50, name: 300, phone: 100, id_no: 100, org: 500, note: 3000 }
+      ), exec, CONTACT_FIELDS);
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'anqi_task_add',
+    description: '直接写入绑定案件的待办、盖 AI 戳，人可改可撤。This creates the task now instead of submitting a proposal.',
+    parameters: {
+      title: { type: 'string', required: true },
+      plan_date: { type: 'string', description: 'Optional YYYY-MM-DD planned start date.' },
+      due_on: { type: 'string', description: 'Optional YYYY-MM-DD task due date; not a legal deadline.' },
+      due_time: { type: 'string', description: 'Optional HH:MM; requires due_on.' },
+      deadline_id: { type: 'number', description: 'Optional deadline id from the bound case.' },
+      stage: { type: 'string' },
+      priority: { type: 'string', description: 'high/normal/low.' },
+      note: { type: 'string' },
+    },
+    output: directOutput,
+    async execute(args, exec) {
+      return directWrite('task', directPayload(
+        args, ['title', 'plan_date', 'due_on', 'due_time', 'deadline_id', 'stage', 'priority', 'note'],
+        { title: 500, plan_date: 10, due_on: 10, due_time: 5, stage: 200, priority: 20, note: 3000 }
+      ), exec, TASK_FIELDS);
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'anqi_event_add',
+    description: '直接写入绑定案件的程序事件、盖 AI 戳，人可改可撤。Deterministic engine derivation remains active for this event.',
+    parameters: {
+      type: { type: 'string', required: true, description: 'Event type from anqi metadata vocabulary.' },
+      occurred_on: { type: 'string', required: true, description: 'YYYY-MM-DD.' },
+      service_method: { type: 'string' },
+      instrument: { type: 'string' },
+      note: { type: 'string' },
+    },
+    output: directOutput,
+    async execute(args, exec) {
+      return directWrite('event', directPayload(
+        args, ['type', 'occurred_on', 'service_method', 'instrument', 'note'],
+        { type: 100, occurred_on: 10, service_method: 200, instrument: 1000, note: 3000 }
+      ), exec, EVENT_FIELDS);
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'anqi_fact_add',
+    description: '直接写入绑定案件的一条正式事实、盖 AI 戳，人可改可撤。Use source/note to preserve provenance without inventing evidence.',
+    parameters: {
+      content: { type: 'string', required: true },
+      occurred_on: { type: 'string', description: 'Optional YYYY-MM-DD fact date.' },
+      source: { type: 'string', description: 'Optional source/provenance label.' },
+      note: { type: 'string' },
+    },
+    output: directOutput,
+    async execute(args, exec) {
+      return directWrite('fact', directPayload(
+        args, ['content', 'occurred_on', 'source', 'note'],
+        { content: 5000, occurred_on: 10, source: 1000, note: 3000 }
+      ), exec, FACT_FIELDS);
+    },
+  }));
+
+  ctx.tools.register(defineTool({
+    name: 'anqi_deadline_add',
+    description: '直接写入绑定案件的期限、盖 AI 戳、人可改可撤；强制标记待核，人工确认前不进入提醒或期限跑道。',
+    parameters: {
+      name: { type: 'string', required: true },
+      due_on: { type: 'string', required: true, description: 'YYYY-MM-DD. The model supplies a draft date; the server marks it pending review.' },
+      basis: { type: 'string' },
+      calc_note: { type: 'string' },
+      severity: { type: 'string', description: 'critical/high/normal.' },
+    },
+    output: directOutput,
+    async execute(args, exec) {
+      return directWrite('deadline', directPayload(
+        args, ['name', 'due_on', 'basis', 'calc_note', 'severity'],
+        { name: 500, due_on: 10, basis: 3000, calc_note: 3000, severity: 20 }
+      ), exec, DEADLINE_FIELDS);
     },
   }));
 }

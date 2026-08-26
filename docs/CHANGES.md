@@ -64,6 +64,16 @@
 
 ---
 
+## 未发布 — AI 助理直写案件记录
+
+**状态：开发分支已实现并通过本地回归；未打 tag、未发布、未部署。**
+
+- 主动退掉三条旧限制：绑定案件的 AI 助理现在可以读取联系人，并可直接写联系人、待办、程序事件、案件事实和期限；`anqi_inbox_propose` 仍保留为只落收件箱的软建议入口。五个直写工具均由 supervisor 固定注入 session，服务端从 `session-registry` 反查案件，忽略请求体自报的 `case_id`。
+- migration 018 为联系人、期限增加持久来源戳，为期限增加 `confirmed | pending_review` 待核状态，并新增可人工/agent 直接增改删的正式 `facts` 表。事件沿用 `created_by='llm'`，待办沿用 `origin='llm'` 并在 API 投影为 `created_by`；agent 联系人、事实、期限使用 `created_by='ai'`。
+- agent 新增的期限一律强制 `pending_review`，不能通过 payload 改成 confirmed；待核行不进入 digest 的 red/week/watch（今日期限跑道）或期限推荐状态源。人工调用确认路由后只改变 review 状态，AI 来源戳保留，期限才恢复正常提醒。
+- 联系人、期限、事件、待办读响应暴露来源字段，期限额外暴露 review 状态；`anqi_case_get` 白名单同步加入 contacts 与正式 facts。人工事实 API 提供读取、新增、修改和删除，确保 AI 写入可见、可改、可撤。
+- 本轮只改后端、agent 插件、migration、测试与数据契约；没有修改 `public/**` 或期限引擎计算本体。
+
 ## 2.7.0-beta.4 — AI 助理审批、安全沙箱与文件回落
 
 **状态：预发布版；分支 `feat/agent-sidecar`，尚未合并 `main`。**

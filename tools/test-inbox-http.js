@@ -167,10 +167,14 @@ try {
   await request('POST', `/api/inbox/${invalidDateInbox}/accept`, {}, 400);
   assert.equal(db.prepare('SELECT status FROM inbox WHERE id=?').get(invalidDateInbox).status, 'pending');
 
+  const contactId = db.prepare(
+    "INSERT INTO contacts(case_id,role,name) VALUES (?,'法官助理','王助理')"
+  ).run(caseId).lastInsertRowid;
   const byName = await request('GET', `/internal/cases/byname/${encodeURIComponent(caseName)}`, undefined, 200, true);
   assert.ok(Array.isArray(byName.tasks_recent_closed));
   assert.ok(Array.isArray(byName.recommendations_recent));
-  assert.equal(JSON.stringify(byName).includes('contacts'), false);
+  assert.ok(Array.isArray(byName.contacts));
+  assert.ok(byName.contacts.some((row) => row.id === contactId && row.created_by === 'manual'));
   assert.equal(db.pragma('integrity_check', { simple: true }), 'ok');
   assert.deepEqual(db.pragma('foreign_key_check'), []);
   console.log('inbox HTTP tests: intent dedup + feedback memory + state-change reproposal + atomic decisions passed');

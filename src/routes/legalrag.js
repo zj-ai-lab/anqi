@@ -77,6 +77,92 @@ function matchingEvent(caseId, payload) {
   );
 }
 
+function factError(message, status = 400, code = 'fact_invalid') {
+  const error = new Error(message);
+  error.status = status;
+  error.code = code;
+  return error;
+}
+
+function factPayload(payload) {
+  const b = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const content = String(b.content || '').trim();
+  const occurredOn = String(b.occurred_on || '');
+  if (!content) throw factError('content 必填');
+  if (occurredOn && !isDate(occurredOn)) throw factError('occurred_on 须为 YYYY-MM-DD');
+  return {
+    content,
+    occurred_on: occurredOn,
+    source: String(b.source || '').trim(),
+    note: String(b.note || '').trim(),
+  };
+}
+
+export function createFactRecord({ caseId, payload, actor = 'web', createdBy = 'manual' }) {
+  const c = db.prepare('SELECT id,name FROM cases WHERE id=?').get(caseId);
+  if (!c) throw factError('案件不存在', 404, 'case_not_found');
+  const clean = factPayload(payload);
+  const normalizedCreatedBy = ['manual', 'ai', 'import'].includes(createdBy) ? createdBy : 'manual';
+  const info = db.prepare(
+    `INSERT INTO facts (case_id,content,occurred_on,source,note,created_by)
+     VALUES (?,?,?,?,?,?)`
+  ).run(c.id, clean.content, clean.occurred_on, clean.source, clean.note, normalizedCreatedBy);
+  audit(actor, 'create', 'fact', info.lastInsertRowid, `${c.name} ${clean.content.slice(0, 80)}`);
+  return db.prepare('SELECT * FROM facts WHERE id=?').get(info.lastInsertRowid);
+}
+
+function respondFactError(res, error) {
+  return res.status(error.status || 400).json({ error: error.message, code: error.code || 'fact_invalid' });
+}
+
+// 正式案件事实：与 LegalRAG 候选裁决表分离，人工和 agent 写入均可读、可改、可撤。
+r.get('/cases/:id/facts', (req, res) => {
+  const c = mustCase(req.params.id, res);
+  if (!c) return;
+  res.json(db.prepare(
+    "SELECT * FROM facts WHERE case_id=? ORDER BY COALESCE(NULLIF(occurred_on,''),'9999-12-31') DESC,id DESC"
+  ).all(c.id));
+});
+
+r.post('/cases/:id/facts', (req, res) => {
+  try {
+    res.json(createFactRecord({ caseId: Number(req.params.id), payload: req.body, actor: req.actor }));
+  } catch (error) {
+    respondFactError(res, error);
+  }
+});
+
+r.patch('/facts/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM facts WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '事实不存在' });
+  const b = req.body && typeof req.body === 'object' && !Array.isArray(req.body) ? req.body : {};
+  const sets = [];
+  const args = [];
+  for (const field of ['content', 'occurred_on', 'source', 'note']) {
+    if (!(field in b)) continue;
+    const value = String(b[field] ?? '').trim();
+    if (field === 'content' && !value) return res.status(400).json({ error: 'content 必填' });
+    if (field === 'occurred_on' && value && !isDate(value)) {
+      return res.status(400).json({ error: 'occurred_on 须为 YYYY-MM-DD' });
+    }
+    sets.push(`${field}=?`);
+    args.push(value);
+  }
+  if (!sets.length) return res.status(400).json({ error: '无可更新字段' });
+  sets.push("updated_at=datetime('now','+8 hours')");
+  db.prepare(`UPDATE facts SET ${sets.join(',')} WHERE id=?`).run(...args, row.id);
+  audit(req.actor, 'update', 'fact', row.id, Object.keys(b).join(','));
+  res.json(db.prepare('SELECT * FROM facts WHERE id=?').get(row.id));
+});
+
+r.delete('/facts/:id', (req, res) => {
+  const row = db.prepare('SELECT * FROM facts WHERE id=?').get(req.params.id);
+  if (!row) return res.status(404).json({ error: '事实不存在' });
+  db.prepare('DELETE FROM facts WHERE id=?').run(row.id);
+  audit(req.actor, 'delete', 'fact', row.id, row.content.slice(0, 80));
+  res.json({ ok: true });
+});
+
 r.get('/cases/:id/legalrag/status', (req, res) => {
   const c = mustCase(req.params.id, res);
   if (!c) return;

@@ -30,8 +30,8 @@ const eventsForCase = db.prepare(
      FROM events WHERE case_id=? ORDER BY occurred_on,id`
 );
 const deadlinesForCase = db.prepare(
-  `SELECT id,name,due_on,status,severity,rule_id,trigger_event_id,is_manual_override
-     FROM deadlines WHERE case_id=? ORDER BY due_on,id`
+  `SELECT id,name,due_on,status,severity,rule_id,trigger_event_id,is_manual_override,review_status,created_by
+     FROM deadlines WHERE case_id=? AND review_status='confirmed' ORDER BY due_on,id`
 );
 const tasksForCase = db.prepare(
   `SELECT id,title,plan_date,due_on,deadline_id,stage,priority,status,done_at

@@ -474,4 +474,13 @@ node tools/test-files-workspace-notice-http.js
 echo "[58/58] T2 可见回落提示·前端（textContent-only + 三皮肤类 + 列表上方 + 空值移除）"
 node tools/test-case-workspace-notice.js
 
+echo "[59/59] migration 018（AI 来源戳 + 期限待核 + 案件事实表，历史默认/幂等/原子回滚）"
+node tools/test-migration-018.js
+
+echo "[60/60] agent 五类直写 HTTP（key/session 归属 + AI 戳 + 待核隔离/确认 + 手工事实 CRUD）"
+node tools/test-agent-direct-write-http.js
+
+echo "[61/61] dsh-anqi 五个直写工具（精确工具集 + 描述 + contacts/facts 白名单 + 服务端强制字段）"
+node tools/test-agent-direct-tools.js
+
 echo "ALL GREEN ✅"

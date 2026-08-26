@@ -1,4 +1,4 @@
-// /internal/agent-proposals 路由层回归：kind=event/deadline→400、source 伪造→400、
+// /internal/agent-proposals 路由层回归：软建议 kind 不再限 task、source 伪造→400、
 // session_id 缺失/未绑定→400/403、payload/source_ref 白名单、case_id 绝不信任请求体
 // （即使 body 带 case_id 也必须被忽略，caseId 只能来自 session-registry 反查）、
 // source_ref.session_id 同理绝不信任请求体（落库的必须是反查用的权威 session_id）、
@@ -61,9 +61,20 @@ bindSession(sessionId, caseId);
 const ref = (callId) => ({ session_id: sessionId, call_id: callId, root_call_id: 'root-1' });
 
 try {
-  // ---- kind 白名单：event/deadline 一律拒绝 ----
-  await post({ session_id: sessionId, proposal_id: 'p-1', kind: 'event', payload: { title: 'x' }, source_ref: ref('c1') }, 400);
-  await post({ session_id: sessionId, proposal_id: 'p-2', kind: 'deadline', payload: { title: 'x' }, source_ref: ref('c2') }, 400);
+  // ---- 旧 kind 限制主动移除：event/deadline 名义的软建议仍只落 inbox task 卡，
+  //      不会借此直接创建正式 event/deadline ----
+  const eventSoft = await post(
+    { session_id: sessionId, proposal_id: 'p-1', kind: 'event', payload: { title: '核对事件' }, source_ref: ref('c1') },
+    201
+  );
+  const deadlineSoft = await post(
+    { session_id: sessionId, proposal_id: 'p-2', kind: 'deadline', payload: { title: '核对期限' }, source_ref: ref('c2') },
+    201
+  );
+  assert.equal(eventSoft.item.kind, 'task');
+  assert.equal(deadlineSoft.item.kind, 'task');
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM events WHERE case_id=?').get(caseId).c, 0);
+  assert.equal(db.prepare('SELECT COUNT(*) c FROM deadlines WHERE case_id=?').get(caseId).c, 0);
 
   // ---- source 由服务端固定，body 伪造直接拒绝 ----
   await post({ session_id: sessionId, proposal_id: 'p-3', source: 'llm-suggest', payload: { title: 'x' }, source_ref: ref('c3') }, 400);
@@ -151,7 +162,7 @@ try {
   assert.equal(notFound.code, 'case_not_found');
   unbindSession(staleSession);
 
-  console.log('agent-proposals HTTP tests: kind/source 白名单 + session 绑定信任边界 + payload/source_ref 白名单 + source_ref.session_id 服务端覆盖 + 幂等状态码 passed');
+  console.log('agent-proposals HTTP tests: soft kind normalization + source/session trust boundary + payload/source_ref whitelist + idempotent statuses passed');
 } finally {
   server.close();
   fs.rmSync(scratch, { recursive: true, force: true });

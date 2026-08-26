@@ -1,11 +1,15 @@
 import { Router } from 'express';
-import { db } from '../db.js';
+import { db, audit } from '../db.js';
 import { buildDigest } from '../lib/digest.js';
 import { enqueueLlmSuggestion, enqueueAgentProposal, releaseDueSnoozes } from '../lib/recommendations.js';
 import { caseIdForSession } from '../agent/session-registry.js';
+import { upsertContactRecord } from './contacts.js';
+import { createDeadlineRecord, createEventRecord, createTaskRecord } from './records.js';
+import { createFactRecord } from './legalrag.js';
 
 // 受信任自动化专用面。公网反向代理必须把 /internal/* 硬 404。
-// 写入口只有 /inbox —— LLM 产物必须过收件箱人工裁决（铁律 3 的接口层强制）。
+// /inbox 继续承载软建议；/agent-proposals 同一路径按 mode 区分软建议与 session
+// 绑定直写，桌面自动 key 不需要扩大到其它 internal 路径。
 const r = Router();
 
 r.get('/digest', (req, res) => res.json(buildDigest()));
@@ -17,16 +21,20 @@ r.get('/cases', (req, res) => {
 // /cases/byname/:name 与 /agent-case-view 共用同一份案件全景查询——两条路由的
 // 区别只在"案件怎么来"（前者信任 name 参数、面向外部自动化；后者按 session
 // 反查、面向 DSH agent worker），返回形状必须逐字段一致，不允许两处各写一份、
-// 悄悄跑偏。⚠️ 铁律 9 防回归：本响应面向 LLM，永不加入 contacts（电话/身份证）
-// 等当事人颗粒字段。
+// 悄悄跑偏。当前单用户自托管策略允许绑定案的 agent 读写联系人；case_id 仍只
+// 来自 session registry，绝不因开放 contacts 而放宽跨案边界。
 function buildCaseView(c) {
   return {
     case: c,
+    contacts: db.prepare('SELECT * FROM contacts WHERE case_id = ? ORDER BY id').all(c.id),
+    facts: db.prepare(
+      "SELECT * FROM facts WHERE case_id=? ORDER BY COALESCE(NULLIF(occurred_on,''),'9999-12-31') DESC,id DESC"
+    ).all(c.id),
     events: db.prepare('SELECT * FROM events WHERE case_id = ? ORDER BY occurred_on DESC').all(c.id),
     deadlines: db.prepare('SELECT * FROM deadlines WHERE case_id = ? ORDER BY due_on').all(c.id),
-    tasks: db.prepare("SELECT * FROM tasks WHERE case_id = ? AND status = 'open'").all(c.id),
+    tasks: db.prepare("SELECT *, origin AS created_by FROM tasks WHERE case_id = ? AND status = 'open'").all(c.id),
     tasks_recent_closed: db.prepare(
-      "SELECT * FROM tasks WHERE case_id=? AND status IN ('done','dropped') ORDER BY id DESC LIMIT 20"
+      "SELECT *, origin AS created_by FROM tasks WHERE case_id=? AND status IN ('done','dropped') ORDER BY id DESC LIMIT 20"
     ).all(c.id),
     worklog_recent: db.prepare('SELECT * FROM worklog WHERE case_id = ? ORDER BY worked_on DESC LIMIT 10').all(c.id),
     recommendations_recent: db.prepare(
@@ -57,6 +65,46 @@ r.get('/cases/byname/:name', (req, res) => {
   if (!c) return res.status(404).json({ error: '案件不存在' });
   res.json(buildCaseView(c));
 });
+
+function directWriteError(res, error) {
+  return res.status(error.status || (error.code === 'case_not_found' ? 404 : 400)).json({
+    error: error.message,
+    code: error.code || 'agent_direct_invalid',
+  });
+}
+
+function runAgentDirectWrite({ kind, caseId, payload, actor, sessionId }) {
+  let item;
+  let created = true;
+  let derived;
+  if (kind === 'contact') {
+    const result = upsertContactRecord({ caseId, payload, actor, createdBy: 'ai' });
+    item = result.row;
+    created = result.created;
+  } else if (kind === 'task') {
+    item = createTaskRecord({ caseId, payload, actor, origin: 'llm' });
+  } else if (kind === 'event') {
+    const result = createEventRecord({ caseId, payload, actor, createdBy: 'llm' });
+    item = result.row;
+    derived = result.derived;
+  } else if (kind === 'fact') {
+    item = createFactRecord({ caseId, payload, actor, createdBy: 'ai' });
+  } else if (kind === 'deadline') {
+    item = createDeadlineRecord({
+      caseId,
+      payload,
+      actor,
+      createdBy: 'ai',
+      reviewStatus: 'pending_review',
+    });
+  } else {
+    const error = new Error('agent 直写 kind 须为 contact/task/event/fact/deadline');
+    error.code = 'agent_direct_kind_invalid';
+    throw error;
+  }
+  audit(actor, 'agent-direct', kind, item.id, `session=${String(sessionId).slice(0, 200)}`);
+  return { created, outcome: created ? 'created' : 'updated', kind, item, ...(derived ? { derived } : {}) };
+}
 
 // DSH agent 专用只读面：session_id 由 supervisor 固定注入 worker env，服务端按
 // session-registry 反查绑定 case——与 /agent-proposals 同一条信任规则（body/
@@ -114,16 +162,41 @@ r.post('/inbox', (req, res) => {
   }
 });
 
-// DSH agent 提案专用入口：与 /internal/inbox 分开，不复用其语义、不混入 case.next_action。
-// 只收 supervisor 已绑定 case/session 的 task-only 建议——kind/event/deadline 一律拒绝；
-// source 由服务端固定；case_id 绝不信任请求体，只按 session_id 反查
+// DSH agent 统一写入口：mode=direct 时直写正式表；未带 mode 时仍是软建议，
+// 始终只落 inbox task 卡、不直接创建 event/deadline。source 由服务端固定；
+// case_id 绝不信任请求体，只按 session_id 反查
 // session-registry.js 里 supervisor.start() 登记的绑定（设计稿 §2「case_id：
 // 由 supervisor 的固定案件绑定产生，不从模型正文推断」/ §4「服务端从已存的
 // session binding 取得 case/agent，不信任客户端提交的 case/cwd」）。
 r.post('/agent-proposals', (req, res) => {
   const b = req.body || {};
-  if (b.kind !== undefined && b.kind !== 'task') {
-    return res.status(400).json({ error: 'agent-proposals 只接受 task-only 建议；event/deadline 一律拒绝' });
+  if (b.mode !== undefined && b.mode !== 'direct') {
+    return res.status(400).json({ error: 'mode 非法', code: 'agent_mode_invalid' });
+  }
+  if (b.mode === 'direct') {
+    if (!b.payload || typeof b.payload !== 'object' || Array.isArray(b.payload)) {
+      return res.status(400).json({ error: 'payload 须为对象', code: 'agent_direct_payload_invalid' });
+    }
+    const sessionId = b.session_id;
+    if (typeof sessionId !== 'string' || !sessionId.trim()) {
+      return res.status(400).json({ error: 'agent 直写必须携带 session_id', code: 'session_id_invalid' });
+    }
+    const caseId = caseIdForSession(sessionId);
+    if (!caseId) {
+      return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝直写', code: 'session_not_bound' });
+    }
+    try {
+      const result = runAgentDirectWrite({
+        kind: b.kind,
+        caseId,
+        payload: b.payload,
+        actor: req.actor,
+        sessionId,
+      });
+      return res.status(result.created ? 201 : 200).json(result);
+    } catch (error) {
+      return directWriteError(res, error);
+    }
   }
   if (b.source !== undefined && b.source !== 'agent-propose') {
     return res.status(400).json({ error: 'source 由服务端固定为 agent-propose' });
