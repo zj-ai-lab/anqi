@@ -248,3 +248,19 @@
 - 禁区核验：`git diff --stat src/lib/engine.js src/db.js src/migrations/ src/lib/secure-files.js public/case.html public/css/style.css package.json package-lock.json` 无输出；`files.js` diff 仅新增透传 2 行（既有响应字段/鉴权未动）；`check.sh` 仅追加 57/58 步。
 - 改动清单：`src/routes/files.js`、`public/js/case.js`、`tools/check.sh`、`tools/test-files-workspace-notice-http.js`（新）、`tools/test-case-workspace-notice.js`（新）、`docs/CHANGES.md`（未发布节补「案件夹回落提示可见化」）、`BLOCKED.md`（T2-Visible-Fallback-Notice 销案）、本文件。
 - 未 push、未打 tag、未发版、未连 jackie。本轮会话计数：1/4。
+
+## 发布会话 — 2026-08-26（v2.7.0-beta.4）
+
+### 任务 0：基线核验（已完成，结论：通过）
+
+- 目标：将已验收 HEAD `be34e75` 发布为 `2.7.0-beta.4`，守住稳定标签后升级 jackie，保留旧容器与 DB 备份。
+- 顺序：版本日志提交 → 推分支 → 唯一 tag → 双 CI → Release/GHCR 守卫 → 拉镜像探测 → 备份切换验收。
+- 最大风险：预发行误动 `latest/2.6.0`，或生产切换后健康/数据不一致；前者立即停，后者立即按预置命令回退。
+- 基线：分支 `feat/agent-sidecar`、HEAD `be34e75`、工作树 clean；GitHub 账号 `doctorllll` 已登录；jackie SSH 可达。
+- 生产只读实况：`anjian ghcr.io/zj-ai-lab/anqi:2.7.0-beta.2 Up 3 days`（与任务书所述 beta.3 不同，按实况作为升级前基线）。
+
+### T1：版本与公开变更日志（已完成）
+
+- `package.json.version` 已从 `2.7.0-beta.3` 改为 `2.7.0-beta.4`；`package-lock.json` 未改。
+- `docs/CHANGES.md` 已补速查行并把未发布段正式化，覆盖逐命令审批与 bash/联网、全局默认 1 档（2 档非默认）、Linux full/bash fail-closed、`folder_path` 回落提示和 GET 缺挂载返回 503。
+- `grep -n` 命中 `package.json:3: "version": "2.7.0-beta.4"`；`git diff --check` 无输出；未改源码、测试或 `tools/check.sh`。
