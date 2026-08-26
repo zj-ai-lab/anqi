@@ -166,3 +166,46 @@
 - 原 `P0-Docker` 外部阻塞已解除并从 `BLOCKED.md` 移除；历史失败与恢复证据保留在本文件。唯一待裁决项是任务书明确要求默认关闭的 `P3-Classifier-Policy`，不影响当前 fail-closed 交付。
 - 最终 git 审计通过：相对基线 `48da231`，`src/lib/engine.js`、`src/db.js`、`src/migrations/**` 与 `package.json` 的 numstat 无输出；`tools/check.sh` 仅在原第 439 行后追加第 47→53 步，旧 46 步零改删；`git diff --check` 无输出。Docker 浏览器验收容器与临时夹具均已清理，仅保留本地 arm64 验证镜像 `anqi-agent-phase0:local` 供复查。
 - 本工作会话仅做本地交付提交；未 push、未 tag、未发布。
+
+## 工作会话 7 — 2026-08-26
+
+### 任务 0：基线核验（已完成，结论：通过）
+
+- 目标：按已裁决政策接通默认关闭的 2 档智能审批，并修复 folder_path 回退与 GET 误建目录两个 beta3 回归。
+- 顺序：T1 分类器政策 → T2 folder_path 优雅回退与提示 → T3 读路径不建目录；每项均先红后绿、全检、隔离实例取证。
+- 最大风险：分类器泄露案卷或密钥、误放危险命令；只发送动作原文，异常一律 ask，沙箱与权威记录红线不变。
+- 开工坐标：分支 `feat/agent-sidecar`，HEAD `bbe866f`，工作树 clean；Node 全检基线 `[53/53]`、`skipped=0`、`ALL GREEN ✅`。
+- `BLOCKED.md` 的 `P3-Classifier-Policy` 已由本任务书正式裁决，实施后清空；当前工作会话计数：7/8。
+
+### T1：二档 DeepSeek 分类政策（已完成）
+
+- 反向验证（红）：先新增 `tools/test-agent-tier2-policy.js`，实现前实跑退出码 1，报 `TypeError: createDeepSeekRiskDecider is not a function`；随后才补产品实现。
+- 已实现：全局仍默认 1 档；只有选择 2 档才调用已配 DeepSeek 官方 key，固定 `deepseek-v4-flash`。动态请求内容只有剥离宿主前缀后的命令/查询词/夹外目标路径，夹内读写搜不送判，夹外写不带正文。
+- 三分类为 `allow/ask/block`；超时、异常、畸形输出统一 `ask`。DB 读写、夹外 `rm -rf`、非 DeepSeek HTTP POST 有不可降级的 `block` 下限，非明显只读 bash 有 `ask` 下限；每条审计含已脱敏动作、结论、理由。
+- 真实模型首轮发现 flash 默认把 120 token 全耗在 `reasoning_content`、空 `content` 导致 `classifier_error→ask`；按仓内 DeepSeek 线协议显式设置 `thinking:{type:'disabled'}` 后，同一真实动作稳定得到 `block`。验收编排前两次分别因该问题、同会话模型拒绝再发 DB 探针准确失败；第三次用全新 worker 的首回合 DB 探针通过，未放宽断言。
+- 正向专项：`agent T1 tier2 policy: DeepSeek flash + action-only payload + allow/ask/block + outside-write scope + audit/fail-closed passed`；Phase 1–4 与 DSH project/full 真实组合均绿。
+- 全量绿灯：`npm run check` 实跑新增 `[54/54]`、`skipped=0`、`ALL GREEN ✅`；旧 53 步未改删，只在尾部追加第 54 步。
+- 隔离真机：真实 flash 给 `ls -la` 判 `allow`；夹外 `rm -rf` 判 `block`；分类 transport 故障落 `ask/classifier_error` 并生成可拒绝卡；期限 UPDATE 后 `due_on=2030-01-01` 未变；首回合工具表 `accept_tool_count=0`；bash `env` 中内部 key/provider key 的名称和值均不存在。
+
+### T2：folder_path 失效时回落同名目录（后端完成；文件页可见提示受白名单阻塞）
+
+- 反向验证（红）：先新增 `tools/test-secure-files-folder-fallback.js`，实现前实跑 `fallback.exists` 为 `false`、退出码 1；随后才修改解析器。
+- 已实现：合法 `folder_path` 指向不存在目录时，仅在合法同名 `name` 目录真实存在的情况下安全回落，并返回 `fallbackFrom/fallbackNotice`；权威指针存在仍优先，指针是 symlink/普通文件等边界错误仍直接拒绝，不被 fallback 掩盖。
+- 正向专项：resolver 单测、既有 secure-files/files HTTP、agent supervisor 26/26 全绿；隔离真实 server 输出 `T2_HTTP_FALLBACK status=200 file=HTTP回落证据.txt wrong_folder_created=false`。
+- 全量绿灯：追加第 55 步后 `npm run check` 实跑 `[55/55]`、`skipped=0`、`ALL GREEN ✅`。
+- 未完成：当前文件 API 在禁改 `src/routes/files.js` 中手工丢弃 context 提示字段，文件页显示又在禁改 `public/js/case.js`；白名单内无法把 `fallbackNotice` 送到文件页并可见，已登记 `BLOCKED.md`，未越界修改。
+
+### T3：GET 不再创建影子文件根（已完成）
+
+- 反向验证（红）：先新增隔离 HTTP 回归 `tools/test-files-root-readonly.js`，现有实现实际输出 `T3_ROOT_PROBE status=200 error="" root_exists=true`，随后断言 `200 !== 503`、退出码 1。
+- 根因与修复：纯读函数 `listCaseDirectories()` 错用了含 `mkdirSync` 的 `ensureFilesRoot()`；现改为 `resolveFilesRoot()`。写路径 `ensureCaseDirectory()` 仍保留显式建根语义，没有削弱正常建案/换绑功能。
+- 正向验证（绿）：同一隔离真实 server 输出 `T3_ROOT_PROBE status=503 error="文件根不存在" root_exists=false`；既有 secure-files、files HTTP 与 T2 回落回归均绿。
+- 全量绿灯：追加第 56 步后 `npm run check` 实跑 `[56/56]`、`skipped=0`、`ALL GREEN ✅`；旧 53 步与本轮第 54/55 步未改删。
+
+### 本轮终局审计
+
+- 开工 HEAD=`bbe866f`、分支 `feat/agent-sidecar`；未 push、未 tag、未发版、未连接 jackie。
+- `src/lib/engine.js`、`src/db.js`、`src/migrations/**`、点名主线业务路由、`public/js/case.js`、`package.json` 与各依赖锁文件的 numstat 均无输出。
+- `tools/check.sh` 的 unified=0 diff 仅在原第 53 步之后新增第 54→56 步共 10 行，旧断言、阈值、命令和编号未改删。
+- 5 个新增测试静态门禁实报 `NEW_TEST_GUARD skipped=0 todo=0 files=5`；`git diff --check` 无输出。
+- 本轮完成 T1、T2 后端回落、T3；唯一待裁决仍是 T2 文件页可见提示所需的两处禁区修改，详见 `BLOCKED.md`。当前工作会话计数：7/8。

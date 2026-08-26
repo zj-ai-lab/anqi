@@ -13,15 +13,15 @@ try {
 
   let disabledCalls = 0;
   const disabled = createRiskClassifier({
-    decide: async () => { disabledCalls += 1; return { decision: 'auto-allow', reason: 'must-not-run' }; },
+    decide: async () => { disabledCalls += 1; return { decision: 'allow', reason: 'must-not-run' }; },
   });
   assert.deepEqual(
     await disabled.classify({ toolName: 'web_search', reason: 'web_search query\n公开法条' }),
-    { decision: 'needs-approval', reason: 'classifier_disabled' },
+    { decision: 'ask', reason: 'classifier_disabled' },
   );
   assert.equal(disabledCalls, 0, '分类器默认关闭时不得把 action 发给 decide/model');
 
-  for (const decision of ['auto-allow', 'needs-approval', 'block']) {
+  for (const decision of ['allow', 'ask', 'block']) {
     const classifier = createRiskClassifier({
       enabled: true,
       decide: async (action) => ({ decision, reason: `judge:${action.toolName}` }),
@@ -32,17 +32,17 @@ try {
     );
   }
 
-  const invalid = createRiskClassifier({ enabled: true, decide: async () => ({ decision: 'allow', reason: 'wrong enum' }) });
+  const invalid = createRiskClassifier({ enabled: true, decide: async () => ({ decision: 'auto-allow', reason: 'wrong enum' }) });
   assert.deepEqual(await invalid.classify({ toolName: 'web_search', reason: 'query' }), {
-    decision: 'needs-approval', reason: 'classifier_invalid_output',
+    decision: 'ask', reason: 'classifier_invalid_output',
   });
   const failed = createRiskClassifier({ enabled: true, decide: async () => { throw new Error('secret upstream detail'); } });
   assert.deepEqual(await failed.classify({ toolName: 'web_search', reason: 'query' }), {
-    decision: 'needs-approval', reason: 'classifier_error',
+    decision: 'ask', reason: 'classifier_error',
   });
   const timedOut = createRiskClassifier({ enabled: true, timeoutMs: 20, decide: async () => new Promise(() => {}) });
   assert.deepEqual(await timedOut.classify({ toolName: 'web_search', reason: 'query' }), {
-    decision: 'needs-approval', reason: 'classifier_timeout',
+    decision: 'ask', reason: 'classifier_timeout',
   });
 
   const runSupervisorDecision = async (decision, messageId) => {
@@ -70,7 +70,7 @@ try {
     return { supervisor, worker, replies, emitted };
   };
 
-  const allowed = await runSupervisorDecision('auto-allow', 1);
+  const allowed = await runSupervisorDecision('allow', 1);
   assert.equal(allowed.worker.pendingInteractions.size, 0);
   assert.equal(allowed.replies.at(-1)?.result?.outcome, 'allowed-once');
 
@@ -78,7 +78,7 @@ try {
   assert.equal(blocked.worker.pendingInteractions.size, 0);
   assert.equal(blocked.replies.at(-1)?.result?.outcome, 'rejected');
 
-  const asked = await runSupervisorDecision('needs-approval', 3);
+  const asked = await runSupervisorDecision('ask', 3);
   assert.equal(asked.worker.pendingInteractions.size, 1);
   assert.equal(asked.emitted.at(-1)?.type, 'interaction/pending');
   const pendingId = [...asked.worker.pendingInteractions.keys()][0];
@@ -87,12 +87,12 @@ try {
   const audits = db.prepare(
     "SELECT action, detail FROM audit_log WHERE action = 'agent-risk-classifier' ORDER BY id",
   ).all();
-  assert.ok(audits.some((row) => /decision=auto-allow reason=fixture-auto-allow/.test(row.detail)));
+  assert.ok(audits.some((row) => /decision=allow reason=fixture-allow/.test(row.detail)));
   assert.ok(audits.some((row) => /decision=block reason=fixture-block/.test(row.detail)));
-  assert.ok(audits.some((row) => /decision=needs-approval reason=fixture-needs-approval/.test(row.detail)));
-  assert.ok(audits.every((row) => !row.detail.includes('公开判例')), '审计不得复制完整 action/query');
+  assert.ok(audits.some((row) => /decision=ask reason=fixture-ask/.test(row.detail)));
+  assert.ok(audits.every((row) => row.detail.includes('action=公开判例')), '每条审计必须包含动作原文');
 
-  console.log('agent Phase 3 risk classifier: default-off + structured triage + timeout/error/invalid fail-closed + audited supervisor decisions passed');
+  console.log('agent Phase 3 risk classifier: default-off seam + allow/ask/block triage + timeout/error/invalid fail-closed + action audit passed');
 } finally {
   fs.rmSync(scratch, { recursive: true, force: true });
 }

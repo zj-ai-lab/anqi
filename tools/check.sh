@@ -458,4 +458,14 @@ node tools/test-agent-experience.js
 echo "[53/53] Phase 6 外部 DSH/MCP 插件文档（内置 client + full-only 经审查 patch + 命名/parity/默认权限边界）"
 node tools/test-agent-external-mcp-docs.js
 
+echo "[54/54] T1 二档 DeepSeek 分类政策（动作原文-only + allow/ask/block + 夹外写 path-only + 审计/fail-closed）"
+node tools/test-agent-tier2-policy.js
+
+echo "[55/55] T2 folder_path 失效回落（同名目录 + 提示元数据 + HTTP 真读取 + 权威/symlink 边界）"
+node tools/test-secure-files-folder-fallback.js
+node tools/test-files-folder-fallback-http.js
+
+echo "[56/56] T3 文件根只读探测（挂载缺失返回 503 + GET 不创建影子空目录）"
+node tools/test-files-root-readonly.js
+
 echo "ALL GREEN ✅"

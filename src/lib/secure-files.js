@@ -170,13 +170,30 @@ export function resolveCaseDirectory(configuredRoot, caseName) {
 export function resolveCaseDirectoryForCase(configuredRoot, caseRow) {
   const directoryName = caseDirectoryName(caseRow);
   if (!directoryName) throw pathError('invalid_case_name', '案件工作区必须是单一、非隐藏的目录名称');
-  return resolveCaseDirectory(configuredRoot, directoryName);
+  const primary = resolveCaseDirectory(configuredRoot, directoryName);
+  if (primary.exists || !caseRow || typeof caseRow !== 'object') return primary;
+
+  // beta3 兼容：只有“合法、非空的 folder_path 指针目标确实不存在”这一种情
+  // 形，才尝试同名 name 目录。folder_path 若是 symlink/普通文件/越界路径，
+  // resolveCaseDirectory() 会在上面直接抛错，不能用 fallback 掩盖边界故障。
+  const configuredName = normalizeCaseDirectoryName(caseRow.folder_path);
+  const fallbackName = normalizeCaseDirectoryName(caseRow.name);
+  if (!configuredName || !fallbackName || configuredName === fallbackName) return primary;
+  const fallback = resolveCaseDirectory(configuredRoot, fallbackName);
+  if (!fallback.exists) return primary;
+  return {
+    ...fallback,
+    fallbackFrom: configuredName,
+    fallbackNotice: `原案件夹“${configuredName}”不存在，已临时回落到同名目录“${fallbackName}”`,
+  };
 }
 
 // 只列文件根的直接子目录。这里返回的是可绑定 workspace 候选，不递归、不跟随
 // symlink，也不把隐藏目录暴露给浏览器。
 export function listCaseDirectories(configuredRoot) {
-  const root = ensureFilesRoot(configuredRoot);
+  // 纯读路径必须如实反映同步盘/挂载点是否可用。不能在 GET 时用
+  // ensureFilesRoot() 补建一个同名空目录，否则挂载掉线会被伪装成“空案卷”。
+  const root = resolveFilesRoot(configuredRoot);
   const names = [];
   for (const entry of fs.readdirSync(root.absolute, { withFileTypes: true })) {
     const name = normalizeCaseDirectoryName(entry.name);

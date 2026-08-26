@@ -80,8 +80,8 @@ try {
   assert.equal(worker.pendingInteractions.size, 1, '分类器默认关闭时 2 档 bash 必须转人工卡');
   const tier2Id = [...worker.pendingInteractions.keys()][0];
   const tier2 = supervisor.listPendingInteractions(worker.caseId)[0];
-  assert.equal(tier2.classifierDecision, 'needs-approval');
-  assert.equal(tier2.classifierReason, 'classifier_disabled');
+  assert.equal(tier2.classifierDecision, 'ask');
+  assert.equal(tier2.classifierReason, 'classifier_error');
   supervisor.resolveApproval(worker.caseId, tier2Id, 'rejected');
 
   const yaml = fs.readFileSync(new URL('../src/agent/assets/anqi.cordis.yml', import.meta.url), 'utf8');

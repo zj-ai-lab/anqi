@@ -56,7 +56,11 @@ import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
 import { ALLOWED_AGENT_APPROVAL_TIERS, loadAgentConfig, resolveAgentApiKey } from './config.js';
-import { createRiskClassifier } from './risk-classifier.js';
+import {
+  createDeepSeekRiskDecider,
+  createRiskClassifier,
+  riskActionText,
+} from './risk-classifier.js';
 import { bindSession, unbindSession } from './session-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -810,9 +814,11 @@ export class AgentSupervisor {
     loadConfigFn = loadAgentConfig,
     resolveCaseDirectoryFn = resolveCaseDirectoryForCase,
     bashSandboxProbeFn = probeHostBashSandbox,
-    // Phase 3 只提供宿主注入 seam；默认实例关闭且不会把 action 发给任何模型。
-    // 获得 Hermes 判据/阈值裁决前，生产构造路径不得传入 enabled classifier。
-    riskClassifier = createRiskClassifier(),
+    // null 表示生产接线：只有 worker 当前选择 2 档时才会调用固定的 DeepSeek
+    // flash 分类器；全局默认档仍是 1，所以默认运行态不产生分类外发。测试可
+    // 注入独立 classifier，但不能改变产品的 fail-closed 语义。
+    riskClassifier = null,
+    riskClassifierFetchFn = globalThis.fetch,
     actor = 'agent-supervisor',
   } = {}) {
     this.filesRoot = filesRoot;
@@ -827,7 +833,21 @@ export class AgentSupervisor {
     this.resolveCaseDirectoryFn = resolveCaseDirectoryFn;
     this.bashSandboxProbeFn = bashSandboxProbeFn;
     this.bashSandboxCapability = null;
-    this.riskClassifier = riskClassifier;
+    this.riskClassifier = riskClassifier || createRiskClassifier({
+      enabled: true,
+      decide: createDeepSeekRiskDecider({
+        fetchFn: riskClassifierFetchFn,
+        getApiKey: () => {
+          const config = loadConfigFn();
+          if (!config?.enabled || config.provider !== 'deepseek-official') {
+            throw new Error('configured DeepSeek credential unavailable');
+          }
+          const { value } = resolveAgentApiKey(config);
+          if (!value) throw new Error('configured DeepSeek credential unavailable');
+          return value;
+        },
+      }),
+    });
     this.actor = actor;
     this.workers = new Map(); // caseId -> Worker
     this.listeners = new Map(); // caseId -> Set<listener>，与 worker 生命周期解耦（见 Worker 类注释）
@@ -927,7 +947,7 @@ export class AgentSupervisor {
 
   // 当前案件 live session 的临时审批档。全局默认来自 settings、在 worker
   // 启动时快照；这里的切换不写 DB、不跨案、不跨新 session。2 档分类器在
-  // Phase 3 获裁决前仍按 needs-approval（即与 1 档一样）fail closed。
+  // 2 档按 allow/ask/block 分流；分类超时、异常和畸形输出一律 ask。
   setApprovalTier(caseId, approvalTier) {
     if (!ALLOWED_AGENT_APPROVAL_TIERS.has(approvalTier)) return { ok: false, reason: 'invalid_tier' };
     const worker = this.workers.get(caseId);
@@ -1767,7 +1787,7 @@ export class AgentSupervisor {
     if (message.method === 'approval/request') {
       // 2 档分类器可能异步调用独立轻量模型；stdio line handler 不能 await，
       // 但也绝不能留下 unhandled rejection。模块层已把上游超时/异常/畸形
-      // 结果收敛成 needs-approval；这里再兜一层未知宿主错误为 unavailable，
+      // 结果收敛成 ask；这里再兜一层未知宿主错误为 unavailable，
       // 保证绝不会因为分类器代码故障而执行动作。
       const failClosed = () => {
         this._writeChildResponse(worker, {
@@ -1862,19 +1882,22 @@ export class AgentSupervisor {
     }
 
     const classifierReason = worker.redact(String(decision?.reason || 'classifier_invalid_output'));
-    const classifierDecision = ['auto-allow', 'needs-approval', 'block'].includes(decision?.decision)
+    const classifierDecision = ['allow', 'ask', 'block'].includes(decision?.decision)
       ? decision.decision
-      : 'needs-approval';
-    // 审计只记工具类型与结构化裁决/短理由，不复制完整命令或查询词。
+      : 'ask';
+    const classifierAction = riskActionText(action) || String(action.reason || 'classifier_invalid_action');
+    // 当前任务要求每条裁决可追溯到动作原文；action 在进入本函数前已经过
+    // worker.redact.approval，因此命令里的 provider/internal key 只会以
+    // [REDACTED] 落库。案件夹内读写不进入本函数。
     audit(
       this.actor,
       'agent-risk-classifier',
       'agent-worker',
       worker.caseId,
-      `session=${worker.sessionId} tool=${action.toolName} decision=${classifierDecision} reason=${classifierReason}`.slice(0, 500),
+      `session=${worker.sessionId} tool=${action.toolName} action=${classifierAction} decision=${classifierDecision} reason=${classifierReason}`,
     );
 
-    if (classifierDecision === 'auto-allow') {
+    if (classifierDecision === 'allow') {
       this._writeChildResponse(worker, {
         jsonrpc: '2.0', id: message.id,
         result: { sessionId: params.sessionId, approvalId: params.approvalId, outcome: 'allowed-once' },

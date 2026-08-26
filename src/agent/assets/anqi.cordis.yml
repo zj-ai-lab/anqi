@@ -277,13 +277,16 @@
   config:
     policy: ask
 
-# Phase 1 已挂统一 pre-execute 闸门；Phase 2/4 已按顺序把 web_search、bash
-# 接进逐次审批。fetch 仍关闭，未知/未来工具没有任何自动放行。
+# Phase 1 已挂统一 pre-execute 闸门；web_search、bash 全量进入审批链。标准
+# 文件工具只在写目标越出当前案件夹时进入 path-only 审批，夹内读/写/搜不送判。
+# fetch 仍关闭，未知/未来工具没有任何自动放行。
 - id: anqi-tool-approval
   name: './plugins/dsh-anqi-tool-approval/index.js'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
   config:
     askTools: [web_search, bash]
+    outsideWriteTools: [write, edit, str_replace_editor]
+    workspaceRoot: !!js (() => { if (!process.env.DSH_CWD) throw new Error('DSH_CWD is required'); return process.env.DSH_CWD; })()
 
 # permission preset 是上游完整能力的一部分；project 档固定 read-only，full
 # 档固定 workspace-write，当前案齐抽屉不提供会话中途切换到 danger-full-access。

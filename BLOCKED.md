@@ -1,7 +1,7 @@
 # BLOCKED（待裁决清单）
 
-## P3-Classifier-Policy — 2 档判据/阈值/便宜模型未获 Hermes 对齐（2026-08-25，待领导确认）
+## T2-Visible-Fallback-Notice — 文件页可见提示需要修改明确禁区（2026-08-26）
 
-- 按任务书拍板，Phase 3 只建设结构化分类器机制并默认关闭；执行者不自行决定哪些命令/查询可 `auto-allow`、哪些必须 `needs-approval`、哪些直接 `block`，也不自行设置信心阈值。
-- 还需领导与 Hermes 判官对齐并明确：分类器模型/独立凭据来源、三类判据、阈值、超时预算、是否允许把完整命令/查询发送给该模型。未裁决前 2 档一律 fail closed 为人工审批卡，且写分类器裁决审计。
-- 该待裁决不阻塞 Phase 3 的接口/结构校验/超时与畸形输出回归，也不阻塞后续 Phase；不得因为 2 档默认关闭而放宽 1 档或 3 档沙箱边界。
+- `src/lib/secure-files.js` 已在失效 `folder_path` 回落到同名目录时返回 `fallbackNotice`，隔离真实文件 API 也已证明会正确读取同名案卷且不创建错误目录。
+- 但 `src/routes/files.js` 的 `GET /cases/:id/files` 手工构造响应并丢弃 context 里的提示字段；`public/js/case.js` 的 `loadFiles()` 才是文件页提示渲染点。两者均不在修改白名单内，其中 `src/routes/files.js` 还被任务书点名为“碰都不许碰”的主线业务路由。
+- 因此无法同时满足“文件页给一条提示”和“禁区零修改”。最小待裁决范围是：允许 `src/routes/files.js` 透传一个只读 `workspace_notice` 字段，并允许 `public/js/case.js` 在文件列表上方显示该字段；除此不需要扩大范围。
