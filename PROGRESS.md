@@ -264,3 +264,50 @@
 - `package.json.version` 已从 `2.7.0-beta.3` 改为 `2.7.0-beta.4`；`package-lock.json` 未改。
 - `docs/CHANGES.md` 已补速查行并把未发布段正式化，覆盖逐命令审批与 bash/联网、全局默认 1 档（2 档非默认）、Linux full/bash fail-closed、`folder_path` 回落提示和 GET 缺挂载返回 503。
 - `grep -n` 命中 `package.json:3: "version": "2.7.0-beta.4"`；`git diff --check` 无输出；未改源码、测试或 `tools/check.sh`。
+
+### T2：推送发布分支（已完成）
+
+- push 前远端 `feat/agent-sidecar` 为 `48da231464c5c5ce81e2a89fef69143489be2c77`，且已验证为本地 HEAD 祖先；使用普通快进 push，未使用 force。
+- 实际输出：`48da231..1c60261 feat/agent-sidecar -> feat/agent-sidecar`。
+- 验证：本地 `HEAD` 与 `origin/feat/agent-sidecar` 均为 `1c60261cddf0df9b73c5c98bb107086854444f56`。
+
+### T3：创建并推送不可变发布 tag（已完成）
+
+- 创建前本地与远端均确认 `v2.7.0-beta.4` 不存在；workflow 实码确认预发行只推版本镜像标签并自动标记 GitHub prerelease，不动 minor/`latest`。
+- 本地创建一次注解 tag `v2.7.0-beta.4`（注解 `ANQI v2.7.0-beta.4`），推送输出：`[new tag] v2.7.0-beta.4 -> v2.7.0-beta.4`；未使用 force。
+- 远端 tag 对象为 `619199e25cac788f0152d373d45b117e2c479119`，解引用提交为 `1c60261cddf0df9b73c5c98bb107086854444f56`，与发布 HEAD 一致。
+
+### T4：等待正式发布 CI（已完成）
+
+- `release` run `32940477755`：`completed/success`；build 与 publish 均 success，双 DMG 构建、runtime 打包核验、SHA-256 与 Release 资产发布均通过。
+- `docker-release` run `32940477737`：`completed/success`；amd64 冒烟、预发行标签解析、多架构镜像 push 与 immutable digest 记录均通过。
+- 两条 run 的 `headBranch=v2.7.0-beta.4`、`headSha=1c60261cddf0df9b73c5c98bb107086854444f56`，与发布 tag 一致；无失败日志，尚未改 jackie。
+
+### T5：Release 与 GHCR 稳定标签守卫（已完成）
+
+- `gh release view`：`v2.7.0-beta.4` 为 `isPrerelease=true`、`isDraft=false`；`anqi-2.7.0-beta.4-arm64.dmg`（204306040 bytes）与 `x64.dmg`（209074133 bytes）及各自 `.sha256/.blockmap` 均为 uploaded。
+- GitHub REST 包接口因当前 `gh` token 缺 `read:packages` 返回 403；未据此作摘要结论。随后用 GHCR 官方 `/token` 端点取得不回显的只读 pull token，直接读取 manifest 响应头。
+- `latest` 与 `2.6.0` 摘要均为 `sha256:1ab3d2fb222fbc918cba4a2735d51446dedec09dbda7d6f14cfda38525641cc1`，完全一致且保持任务书基线；`2.7.0-beta.4` 存在，摘要为 `sha256:069d101249b515e5bdf429b43519c085e3a38fa809d85d31c258770690099955`。
+
+### T6：jackie 拉镜像与 bash 沙箱探测（已完成）
+
+- 后台 `docker pull ghcr.io/zj-ai-lab/anqi:2.7.0-beta.4` 经分层重试后成功；输出 digest 为 `sha256:069d101249b515e5bdf429b43519c085e3a38fa809d85d31c258770690099955`，与 GHCR 一致。jackie 本地 image ID `sha256:987a1aab6f57f0210173fe85ba8fb656be453f4a0581833c08a2ecbbc90bd92e`，架构 `amd64`。
+- 临时 `docker run --rm` 探针找到 `/usr/bin/bwrap`，但报内核不允许非特权 user namespace，`BWRAP_PROBE_RC=1`。
+- 结论：jackie 服务器版 full/bash 按设计 fail-closed；桌面版仍可用。该只读探测按任务书不阻断发版，当前生产容器尚未停止或修改。
+
+### T7：升级 jackie（已完成）
+
+- 停机前门禁：旧容器 `ghcr.io/zj-ai-lab/anqi:2.7.0-beta.2` running、restart=`unless-stopped`，两组 8091 端口与两处挂载符合任务书，`healthz={"ok":true}`；`anjian-pre-b4`、beta.4 备份目录与 `.env-b4` 均不存在；新镜像存在且为 amd64。
+- 升级前只读基线：`cases=10 tasks=35 inbox=19`；DB `user_version=16 integrity=ok foreign_key_violations=0`；待提取 env 恰为 12 条，仅打印并核对了变量名，未打印值。
+- 回退命令：`docker rm -f anjian && docker rename anjian-pre-b4 anjian && docker start anjian`。
+- 旧容器停止后创建 `/mnt/mmcblk0p3/anjian/backup-pre-2.7.0-beta.4`，复制 `anjian.db`、`anjian.db-shm`、`anjian.db-wal`；源/备份各 3 个文件，逐文件 `cmp` 全部一致。旧容器改名为 `anjian-pre-b4` 后保持 stopped，镜像仍为 beta.2。
+- 从旧容器提取白名单 env 到 `/mnt/mmcblk0p3/anjian/.env-b4`：恰 12 条，权限 600，只核对变量名、未打印值。
+- 新容器 ID `1271bf19e041453d65e84ccbf6f963d2e80056b706a7cba3ca96cf3902fcca97`，镜像 `ghcr.io/zj-ai-lab/anqi:2.7.0-beta.4`，restart=`unless-stopped`；两组 8091 端口与 `/app/data`、`/app/files` 挂载均符合任务书。
+- 上线验收：`healthz={"ok":true}`；容器内版本 `2.7.0-beta.4`；`dsh-base OK`；旧容器 `anjian-pre-b4` 保留且 stopped。
+- 升级后只读数据：`cases=10 tasks=35 inbox=19`，与升级前完全一致；DB `user_version=17 integrity=ok foreign_key_violations=0`。全部门禁通过，未触发回退。
+
+### 完成审计（通过）
+
+- 终局容器：`anjian` 跑 beta.4；`anjian-pre-b4` 保留 beta.2 且 stopped；更早的 `anjian-pre-b2`、`anjian-prev-2.4.0` 也原样保留，未删旧容器/镜像/备份或挂载数据。
+- 终局再次核验 Release 为 prerelease、双 DMG uploaded；GHCR `latest/2.6.0` 仍同为 `sha256:1ab3d2fb…41cc1`，beta.4 为 `sha256:069d1012…9955`。
+- `BLOCKED.md` 悬而未决项为「无」；本次发版与生产升级全部完成。
