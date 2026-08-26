@@ -120,6 +120,8 @@ r.get('/cases/:id/files', (req, res) => {
   res.json({
     exists: true, dir: listing.rel, dirs: listing.dirs, files,
     write_dirs: WRITE_DIRS, legalrag_enabled: legalRagBridgeConfigured(),
+    // 只读透传：secure-files 判定回落到同名目录时提示前端；正常案件整个省略该字段
+    ...(context.fallbackNotice ? { workspace_notice: context.fallbackNotice } : {}),
   });
 });
 

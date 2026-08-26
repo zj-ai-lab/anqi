@@ -209,3 +209,42 @@
 - `tools/check.sh` 的 unified=0 diff 仅在原第 53 步之后新增第 54→56 步共 10 行，旧断言、阈值、命令和编号未改删。
 - 5 个新增测试静态门禁实报 `NEW_TEST_GUARD skipped=0 todo=0 files=5`；`git diff --check` 无输出。
 - 本轮完成 T1、T2 后端回落、T3；唯一待裁决仍是 T2 文件页可见提示所需的两处禁区修改，详见 `BLOCKED.md`。当前工作会话计数：7/8。
+
+## 工作会话 8 — 2026-08-26
+
+### 任务 0：基线核验（已完成，结论：通过）
+
+- 目标：补上会话 7 T2 遗留——文件页显示「案件夹已回落到同名目录」提示。后端 `fallbackNotice` 已在（`src/lib/secure-files.js:187`），只差 `src/routes/files.js` 透传 + `public/js/case.js` 显示，本轮任务书特批这两处。
+- 顺序：T1 files.js 加只读 `workspace_notice` 透传 → T2 case.js 文件列表上方显示（textContent + 三皮肤既有类）→ 各自新增回归先红后绿 → 全量 check → 隔离实例浏览器自测（回落案显示 / 正常案不显示）→ 禁区 diff 核验 + `BLOCKED.md` 销账。
+- 最大风险：files.js 手工响应处顺手改动既有字段或鉴权；case.js 对 folder_path 有效的正常案件误报提示。
+- 基线：HEAD=`b6944c2`、分支 `feat/agent-sidecar`、`git status --short` 无输出（clean）；Node `v22.23.0` 下 `npm run check` 实跑 `[56/56]`、`skipped=0`、结尾 `ALL GREEN ✅`；`grep -n fallbackNotice src/lib/secure-files.js` 命中 187 行。任务书前提全部对上。
+- 本轮会话计数：1/4。
+
+### T1：files.js 透传 workspace_notice（已完成）
+
+- 反向验证（红）：先新增 `tools/test-files-workspace-notice-http.js`（隔离真实 server + 临时库/文件根），实现前实跑 `AssertionError: 回落发生时 workspace_notice 必须逐字透传 secure-files 的 fallbackNotice`（actual `undefined`），Node 22 退出码 1。
+- 已实现：`GET /cases/:id/files` 的 `exists:true` 响应体新增条件展开的只读 `workspace_notice` 字段（回落时逐字取 `context.fallbackNotice`，否则整个省略）；其余字段、`exists:false` 分支、`mustCase` 鉴权/边界逻辑零改动（diff 净增 2 行）。
+- 三态断言：回落案 notice 逐字相等且仍读出同名目录文件；正常案（folder_path 有效）响应不含该键；双失案 `exists:false` 且无提示。实现后同测试实跑输出 `T2V_HTTP_FALLBACK status=200 notice="…"` / `T2V_HTTP_NORMAL workspace_notice=omitted` / `T2V_HTTP_BOTH_MISSING exists=false`，退出码 0。
+
+### T2：case.js 文件列表上方显示提示（已完成）
+
+- 反向验证（红）：先新增 `tools/test-case-workspace-notice.js`（静态结构审查，先例 `smoke-agent-frontend.js`），实现前实跑 `AssertionError: loadFiles 必须消费 GET /cases/:id/files 的 workspace_notice 字段`，退出码 1。
+- 已实现：新增 `renderWorkspaceNotice()`——非空时在 `#file-list` 之前插 `#file-workspace-notice`（`role:status`），文本一律 `textContent` 写入（全文件无 innerHTML）；为空/请求失败/无案件夹时 `prev?.remove()`，不显示、不占位。样式复用三皮肤既有 amber 类 `.money-notice`（`--amber/--amber-line/--amber-bg` token），未新增 CSS（style.css 属本轮禁区）。`loadFiles` 成功/失败/无夹三条路径全部接线，diff 净增 17 行、零删改。
+
+### 回归登记与全量绿灯
+
+- `tools/check.sh` 仅在第 56 步后追加第 57/58 步（+6 行），旧 56 步断言、阈值、编号零改删；新测试未入第 12 行语法清单，沿用会话 7「只加尾部步骤」先例（步骤内真实执行已覆盖语法）。
+- Node `v22.23.0` 下 `npm run check` 实跑 `[57/57]`、`[58/58]`、结尾 `ALL GREEN ✅`（共 58 步 ≥ 基线 56）；新测试静态门禁 grep `skip|todo|only|process.exit(0)|"|| true"` 零命中（skipped=0），`git diff --check` 无输出。
+
+### 隔离实例浏览器自测（已完成，实例已关停清理）
+
+- 夹具：`127.0.0.1:3091` 隔离实例（临时库/文件根、`ANJIAN_UNSAFE_NO_AUTH=1`）；回落案 folder_path=`浏览器失效旧指针`（不存在）+ 同名目录含 `回落证据.txt`；正常案 folder_path 有效 + `正常证据.txt`。
+- API 取证：回落案 `workspace_notice="原案件夹“浏览器失效旧指针”不存在，已临时回落到同名目录“浏览器回落案”"`、文件列表含回落证据；正常案响应无该键、文件正常列出。
+- 浏览器取证（真实渲染）：回落案 DOM 快照见 `status: ⚠ 原案件夹“浏览器失效旧指针”不存在，已临时回落到同名目录“浏览器回落案”`，位于案件文件标题/面包屑之下、文件行之上，`回落证据.txt` 正常列出可点开；正常案 `#file-workspace-notice` count=0、提示文本 count=0（不显示、不占位）。
+- 三皮肤：pro（默认）渲染 + 截图；切「纸感」`data-skin=paper` 提示仍可见、文本不变；切「翡翠」`data-skin=jade` 同样可见 + 截图。截图存本机 `/tmp/anjian_shots/notice-fallback-pro.png`、`notice-fallback-jade.png`。
+
+### 终局审计
+
+- 禁区核验：`git diff --stat src/lib/engine.js src/db.js src/migrations/ src/lib/secure-files.js public/case.html public/css/style.css package.json package-lock.json` 无输出；`files.js` diff 仅新增透传 2 行（既有响应字段/鉴权未动）；`check.sh` 仅追加 57/58 步。
+- 改动清单：`src/routes/files.js`、`public/js/case.js`、`tools/check.sh`、`tools/test-files-workspace-notice-http.js`（新）、`tools/test-case-workspace-notice.js`（新）、`docs/CHANGES.md`（未发布节补「案件夹回落提示可见化」）、`BLOCKED.md`（T2-Visible-Fallback-Notice 销案）、本文件。
+- 未 push、未打 tag、未发版、未连 jackie。本轮会话计数：1/4。

@@ -468,4 +468,10 @@ node tools/test-files-folder-fallback-http.js
 echo "[56/56] T3 文件根只读探测（挂载缺失返回 503 + GET 不创建影子空目录）"
 node tools/test-files-root-readonly.js
 
+echo "[57/57] T2 可见回落提示·透传（回落逐字带出 + 正常案省略 + 双失静默）"
+node tools/test-files-workspace-notice-http.js
+
+echo "[58/58] T2 可见回落提示·前端（textContent-only + 三皮肤类 + 列表上方 + 空值移除）"
+node tools/test-case-workspace-notice.js
+
 echo "ALL GREEN ✅"

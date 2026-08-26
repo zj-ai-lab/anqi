@@ -1382,6 +1382,20 @@ function setFileStatus(text, live) {
   s.classList.toggle('is-live', !!live);
 }
 
+// T2 可见回落提示：secure-files 判定 folder_path 失效、回落到同名目录时，API 只在该次
+// 响应里带 workspace_notice。文本一律走 textContent 防 XSS；style.css 属本轮冻结区，
+// 复用三皮肤 amber 提示类 .money-notice（同 --amber/--amber-line/--amber-bg token）。
+function renderWorkspaceNotice(notice) {
+  const prev = document.getElementById('file-workspace-notice');
+  if (!notice) { prev?.remove(); return; }
+  const text = '⚠ ' + notice;
+  if (prev) { prev.textContent = text; return; }
+  const box = document.getElementById('file-list');
+  const node = el('div', { id: 'file-workspace-notice', class: 'money-notice', role: 'status' });
+  node.textContent = text;
+  box.before(node);
+}
+
 async function loadFiles() {
   const box = document.getElementById('file-list');
   const crumbs = document.getElementById('file-crumbs');
@@ -1389,16 +1403,19 @@ async function loadFiles() {
   try {
     d = await api(`/cases/${id}/files?dir=` + encodeURIComponent(curDir));
   } catch {
+    renderWorkspaceNotice(null);
     box.replaceChildren(el('div', { class: 'section-empty' }, '文件根未配置或不可达'));
     setFileStatus('未连通', false);
     return;
   }
   if (!d.exists) {
+    renderWorkspaceNotice(null);
     box.replaceChildren(el('div', { class: 'section-empty' }, '案件夹不存在——核对 §9.3 文件夹名与 cases.name 是否一致'));
     crumbs.textContent = '';
     setFileStatus('无案件夹', false);
     return;
   }
+  renderWorkspaceNotice(d.workspace_notice || null);
   // 面包屑
   crumbs.replaceChildren(
     el('a', { href: '#', onclick: (e) => { e.preventDefault(); curDir = ''; loadFiles(); } }, '案件根'),
