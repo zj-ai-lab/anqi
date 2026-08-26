@@ -342,3 +342,9 @@
 - `src/lib/engine.js`、`public/**`、旧 migration 的 git diff 为空；`tools/check.sh` 只在原第 58 步后追加 59–61，旧步骤未改。
 - 新测试 `skip|todo|.only|process.exit(0)|\|\| true` 零命中；`git diff --check` 无输出。未连接 jackie、未发布、未部署。
 - `BLOCKED.md` 悬而未决仍为“无”；当前 AI 直写工作会话计数：1/10。
+
+## 2.7.0-beta.5 发布（2026-08-26，主会话验收 + UI 合入 + 发版）
+
+- 管理者独立验收 Track 2（572269a）：约束审计（`engine.js`/`public`/`package.json` 未碰、check.sh 只增 59–61）、暗卷红线（跨案写挡、归属服务端写死、待核不进跑道、软路径造不出正式记录）、明卷复跑 `npm run check` 61 步 ALL GREEN。判定通过。
+- Track 1 UI 合入：`23129ff` 案件页方向 A 双栏重排、`c74dd21` AI 归属标记（「AI 加的」+「AI 填·待核」确认，消费 572269a 契约）。临时 worktree `anqi-agent-ui` 已撤。前端改后复跑 check.sh 仍 61 步全绿。
+- 发 `2.7.0-beta.5`：package.json 升版、CHANGES 未发布段转正并补 UI 条目。推分支 + `v2.7.0-beta.5` tag 触发 release/docker CI（预发行守卫不动 `latest`/正式版）。尚未升级 jackie。
