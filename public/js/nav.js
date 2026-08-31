@@ -86,12 +86,16 @@ export async function mountNav() {
     if (tidy && c.llm) tidy.hidden = false;
     const badge = document.getElementById('nav-counts');
     if (!badge) return;
-    badge.append(`在办 ${c.active_cases} · 收件箱 `);
-    badge.append(
-      c.inbox_pending > 0
-        ? el('span', { class: 'badge-dot' }, String(c.inbox_pending))
-        : '0'
-    );
+    badge.append(`在办 ${c.active_cases} · `);
+    // 收件箱可点：跳今日页收件箱卡片（今日页 load 完成后见 today.js 的锚点补滚）
+    badge.append(el('a', {
+      class: 'inbox-link',
+      href: '/#sec-inbox-card',
+      title: '查看收件箱（今日页）',
+    }, '收件箱 ', c.inbox_pending > 0
+      ? el('span', { class: 'badge-dot' }, String(c.inbox_pending))
+      : '0'
+    ));
   }).catch(() => { /* counts 失败不阻塞页面 */ });
 }
 

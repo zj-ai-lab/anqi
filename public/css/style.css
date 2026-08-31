@@ -155,6 +155,9 @@ html.skin-transitioning, html.skin-transitioning * {
 .topnav .spacer { flex: 1; }
 
 .navbadge { display: flex; align-items: center; gap: 6px; white-space: nowrap; font-size: 12.5px; color: var(--muted); }
+/* 收件箱段可点（跳今日页 #sec-inbox-card）：hover 提字色，别学 .links a 加底色——这只是徽标 */
+.navbadge .inbox-link { display: inline-flex; align-items: center; gap: 6px; transition: color .12s; }
+.navbadge .inbox-link:hover { color: var(--ink); text-decoration: none; }
 .badge-dot {
   display: inline-flex; align-items: center; justify-content: center;
   min-width: 19px; height: 18px; padding: 0 5px;
@@ -2087,6 +2090,8 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
 
 /* ── A-26b 1.8 阅读层级：工作组 / 卷宗抬头 / 台账抬头 / 款项凭证 ── */
 .work-group + .work-group { margin-top: 32px; }
+/* 顶栏收件箱徽标的锚点落点：给 sticky 顶栏（--h-top 48px）让位 */
+#sec-inbox-card { scroll-margin-top: 64px; }
 .work-group > .group-title { margin-top: 0; }
 .focus-zone {
   overflow: hidden;

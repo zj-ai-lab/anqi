@@ -400,6 +400,9 @@ function fill(id, rows, emptyText) {
   else box.append(...rows);
 }
 
+// 顶栏收件箱锚点补滚只做一次（load 会被 anjian:changed 反复触发）
+let inboxScrolled = false;
+
 // ── 键盘（只提示真实实现了的键；见 index.html 的 .p-foot）─────────────
 let rwLinks = [];
 document.addEventListener('keydown', (e) => {
@@ -526,6 +529,14 @@ async function load() {
   }
   if (gapBtn) gapBtn.hidden = !gapCount;
   fill('sec-gap', d.no_deadline_cases.map(gapRow), '每个在办案件都有在追期限 ✓');
+
+  // 顶栏「收件箱」徽标带锚点跳进来时，落地瞬间卡片还是 hidden，浏览器原生滚动找不到
+  // 目标——放在 load() 最后补滚一次（各区块都已填充、页面达到最终高度，落点才准；
+  // 只补首次，anjian:changed 重载不再动视口）
+  if (location.hash === '#sec-inbox-card' && !inboxScrolled && !inboxCard.hidden) {
+    inboxScrolled = true;
+    inboxCard.scrollIntoView();
+  }
 }
 
 document.addEventListener('anjian:changed', load);
