@@ -281,10 +281,10 @@ flowchart LR
 
 ## 服务器 / Docker 部署
 
-推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.6.0`，支持 amd64 与 arm64。要在服务器版使用 [AI 助理（beta）](#内置-ai-助理beta)，改用预发行镜像 `ghcr.io/zj-ai-lab/anqi:2.7.0-beta.5`（`latest` 与 `2.6.0` 不含助理；beta 含数据库 migration，升级前备份，回退须同时恢复备份）。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
+推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.7.0-beta.5`（当前最新，内置 [AI 助理（beta）](#内置-ai-助理beta)），支持 amd64 与 arm64。不想用 beta 的话，`2.6.0` 是最后一个不含助理的稳定版（`latest` 也指向它）；beta 含数据库 migration，升级前备份，回退 2.6.0 须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
 
 ```sh
-IMAGE=ghcr.io/zj-ai-lab/anqi:2.6.0
+IMAGE=ghcr.io/zj-ai-lab/anqi:2.7.0-beta.5
 mkdir -p anqi/data anqi/case-files
 cd anqi
 docker pull "$IMAGE"
