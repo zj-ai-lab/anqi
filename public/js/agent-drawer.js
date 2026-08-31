@@ -185,7 +185,7 @@ export async function mountAgentDrawer(caseId) {
     clearEmptyHint();
     const node = el('div', { class: 'agent-card agent-card-proposal' },
       el('div', { class: 'agent-card-title' }, '已提交建议到收件箱'),
-      el('div', {}, 'AI 助理只能提交建议，不能直接写入待办/期限；是否采纳请在收件箱人工裁决。'),
+      el('div', {}, '建议不等于批准——是否采纳请在收件箱人工裁决。'),
       el('div', { class: 'agent-card-actions' },
         el('a', { class: 'btn small', href: '/#sec-inbox-card', target: '_blank', rel: 'noopener' }, '去收件箱 ↗')
       )
