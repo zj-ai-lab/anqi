@@ -221,6 +221,7 @@ Android 壳不预置任何服务器。首次启动时输入你自己部署的案
 - `DB_PATH` 指向的 SQLite 数据库；
 - 若启用了 AI 助理的「界面填 key」（未设置 `ANJIAN_SECRET` 时）：`DB_PATH` 同目录下自动生成的 `secret.key`——它是解密 settings 表里加密存储的 API key 的唯一凭据，丢了它，库里那份密文永久解不开（不会报错、不会提示，`GET /api/settings` 只会显示「未配置」）；
 - `ANJIAN_FILES_ROOT` 指向的案件夹；
+- 若使用 AI 助理图片输入：DSH 实际 home 下的 `attachments/v1/` 内容寻址库（通常为运行账户的 `~/.dsh/attachments/v1/`）；图片字节不在案件夹、`anjian.db` 或会话 transcript 中，迁移或备份时必须单独包含该目录；
 - 部署环境文件和必要的集成配置（含 `ANJIAN_SECRET`，若使用）；
 - macOS 桌面版所选的数据目录与应用配置。
 
@@ -274,7 +275,7 @@ docker start anqi
 
 - `ANJIAN_INTERNAL_KEY`——AI 助理通过内置的 `case_folder_info` 工具回调案齐自身 `/internal` API 时用于认证，不配置则助理无法启动。
 
-数据去向：AI 助理的会话记录（transcript）落在与 `DB_PATH` 同一持久化范围内——Docker 部署下默认写入 `data/agent-sessions/`（与 `data/` 卷同一挂载点，跟随你的备份策略一起保存）；macOS 桌面版写入应用数据目录下的等价位置。启动助理要求案件绑定的 `folder_path` 在 `ANJIAN_FILES_ROOT` 下真实存在；案件标题可以与目录名不同，改标题不会切换目录。
+数据去向：AI 助理的会话记录（transcript）落在与 `DB_PATH` 同一持久化范围内——Docker 部署下默认写入 `data/agent-sessions/`（与 `data/` 卷同一挂载点，跟随你的备份策略一起保存）；macOS 桌面版写入应用数据目录下的等价位置。图片输入的字节另存于 DSH home 的 `attachments/v1/`，transcript、SSE 与 UI 历史只保留 attachment 引用；备份/迁移时须把该目录与 session 数据一起带走。启动助理要求案件绑定的 `folder_path` 在 `ANJIAN_FILES_ROOT` 下真实存在；案件标题可以与目录名不同，改标题不会切换目录。
 
 第三方 DSH 插件：只在「完整 DSH」档的高级选项填写一个你已审查的绝对路径 `cordis.patch.yml`。该 patch 使用上游 Cordis 格式，文件变化会对现有 worker 热重载；插件本身是与当前本机用户等权执行的 Node 代码，不是数据文件，切勿加载来源不明的插件。依赖 DSH Web Client 专用 UI 插槽的插件不会自动出现在案齐抽屉里。项目维护者升级上游 runtime 时使用 `npm run agent:update-runtime -- <exact-version>`；它会跑真实启动/隔离/parity 门禁，App 用户仍通过经过验收的案齐版本获得 runtime 更新。
 

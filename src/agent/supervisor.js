@@ -34,7 +34,7 @@
 //     （process.versions.electron 存在时）；服务器模式直接 process.execPath
 //     ——见 electronSpawnEnv()。
 import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import {
   chmodSync,
   copyFileSync,
@@ -55,7 +55,12 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
-import { ALLOWED_AGENT_APPROVAL_TIERS, loadAgentConfig, resolveAgentApiKey } from './config.js';
+import {
+  AGENT_IMAGE_LIMITS,
+  ALLOWED_AGENT_APPROVAL_TIERS,
+  loadAgentConfig,
+  resolveAgentApiKey,
+} from './config.js';
 import {
   createDeepSeekRiskDecider,
   createRiskClassifier,
@@ -326,6 +331,73 @@ function codedError(code, message) {
   const error = new Error(message);
   error.code = code;
   return error;
+}
+
+const IMAGE_MEDIA_TYPES = new Set(AGENT_IMAGE_LIMITS.mediaTypes);
+const ATTACHMENT_ID_RE = /^sha256:[a-f0-9]{64}$/u;
+
+function projectAdmittedAttachmentRefs(result, expectedCount) {
+  const refs = result?.attachments;
+  if (!Array.isArray(refs) || refs.length !== expectedCount) {
+    throw codedError('attachment_protocol_error', 'attachment/admit returned the wrong reference count');
+  }
+  const seen = new Set();
+  return refs.map((ref) => {
+    if (
+      !ref
+      || typeof ref !== 'object'
+      || Array.isArray(ref)
+      || typeof ref.attachmentId !== 'string'
+      || !ATTACHMENT_ID_RE.test(ref.attachmentId)
+      || seen.has(ref.attachmentId)
+      || !IMAGE_MEDIA_TYPES.has(ref.mediaType)
+      || !Number.isSafeInteger(ref.bytes)
+      || ref.bytes <= 0
+      || !Number.isSafeInteger(ref.width)
+      || ref.width <= 0
+      || !Number.isSafeInteger(ref.height)
+      || ref.height <= 0
+      || ('name' in ref && (typeof ref.name !== 'string' || ref.name.length > 255))
+      || ('data' in ref)
+    ) {
+      throw codedError('attachment_protocol_error', 'attachment/admit returned an invalid reference');
+    }
+    let originalDimensions;
+    if (ref.originalDimensions !== undefined) {
+      const original = ref.originalDimensions;
+      if (
+        !original
+        || typeof original !== 'object'
+        || !Number.isSafeInteger(original.width)
+        || original.width <= 0
+        || !Number.isSafeInteger(original.height)
+        || original.height <= 0
+      ) {
+        throw codedError('attachment_protocol_error', 'attachment/admit returned invalid original dimensions');
+      }
+      originalDimensions = { width: original.width, height: original.height };
+    }
+    seen.add(ref.attachmentId);
+    return {
+      attachmentId: ref.attachmentId,
+      mediaType: ref.mediaType,
+      bytes: ref.bytes,
+      width: ref.width,
+      height: ref.height,
+      ...(ref.name === undefined ? {} : { name: ref.name }),
+      ...(originalDimensions === undefined ? {} : { originalDimensions }),
+    };
+  });
+}
+
+function publicAttachmentRef(ref) {
+  return {
+    attachmentId: ref.attachmentId,
+    mediaType: ref.mediaType,
+    width: ref.width,
+    height: ref.height,
+    ...(ref.name === undefined ? {} : { name: ref.name }),
+  };
 }
 
 // 子进程的 JSON-RPC 结果属于不可信 wire 数据。命令清单只投影上游公开描述符
@@ -811,6 +883,7 @@ class Worker {
     this.pid = null;
     this.provider = null;
     this.model = null;
+    this.supportsImages = false;
     this.error = null;
     this.exitInfo = null;
     this.skillsRootTmp = null;
@@ -818,6 +891,10 @@ class Worker {
     this.dispatch = dispatch;
     this.pendingRpc = new Map(); // outgoing request id -> {resolve,reject,method}
     this.pendingInteractions = new Map(); // interactionId -> record
+    // 完整 ImageAttachmentRef 只留在当前 live worker 内存；浏览器后续只交回
+    // attachmentId，宿主从这里恢复权威 ref，绝不信任客户端自报 mediaType/尺寸。
+    this.admittedAttachments = new Map(); // attachmentId -> full ImageAttachmentRef
+    this.referencedAttachmentIds = new Set(); // 只在本 session prompt 接受后加入
     // 只保留当前 live worker 的有限 UI 投影；DSH JSONL 仍是权威 transcript，
     // 这里不另写 DB/迁移，只让同一 worker 下的浏览器刷新能够回显。
     this.uiHistory = [];
@@ -927,6 +1004,7 @@ export class AgentSupervisor {
       startedAt: worker.startedAt,
       provider: worker.provider,
       model: worker.model,
+      supportsImages: worker.supportsImages === true,
       approvalTier: worker.approvalTier,
       error: worker.error,
       exitInfo: worker.exitInfo,
@@ -941,6 +1019,9 @@ export class AgentSupervisor {
   // sessionId 兜底，但没有理由顺手带出去）。
   publicStatus(caseId) {
     const full = this.status(caseId);
+    const configuredSupportsImages = full.supportsImages === undefined
+      ? this.loadConfigFn()?.supportsImages === true
+      : full.supportsImages;
     return {
       status: full.status,
       caseId: full.caseId,
@@ -949,6 +1030,7 @@ export class AgentSupervisor {
       startedAt: full.startedAt,
       provider: full.provider,
       model: full.model,
+      supportsImages: configuredSupportsImages,
       approvalTier: full.approvalTier,
       error: full.error,
       exitInfo: full.exitInfo,
@@ -969,11 +1051,21 @@ export class AgentSupervisor {
     let projected;
     if (item.role === 'user' || item.role === 'assistant') {
       const raw = String(item.text || '');
-      if (!raw) return;
+      const attachments = item.role === 'user' && Array.isArray(item.attachments)
+        ? item.attachments.map((attachment) => {
+          const projected = publicAttachmentRef(attachment);
+          if (projected.name !== undefined) projected.name = worker.redact(projected.name);
+          return projected;
+        })
+        : [];
+      if (!raw && attachments.length === 0) return;
       const text = typeof worker.redact?.approval === 'function'
         ? worker.redact.approval(raw)
         : worker.redact(raw);
-      projected = { role: item.role, text, at: item.at || nowIso() };
+      projected = {
+        role: item.role, text, at: item.at || nowIso(),
+        ...(attachments.length === 0 ? {} : { attachments }),
+      };
     } else if (item.role === 'tool') {
       const name = worker.redact(String(item.name || ''));
       if (!name) return;
@@ -991,7 +1083,12 @@ export class AgentSupervisor {
   listUiHistory(caseId) {
     const worker = this.workers.get(caseId);
     if (!worker || !Array.isArray(worker.uiHistory)) return [];
-    return worker.uiHistory.map((item) => ({ ...item }));
+    return worker.uiHistory.map((item) => ({
+      ...item,
+      ...(Array.isArray(item.attachments)
+        ? { attachments: item.attachments.map((attachment) => ({ ...attachment })) }
+        : {}),
+    }));
   }
 
   // 供路由层复用的权威"活着"判断——不要在 supervisor 之外复刻 LIVE_STATUSES
@@ -1255,6 +1352,7 @@ export class AgentSupervisor {
     const worker = new Worker(caseId, caseRow.name, sessionId, (event) => this._dispatch(caseId, event));
     worker.provider = config.provider;
     worker.model = config.model;
+    worker.supportsImages = config.supportsImages === true;
     worker.approvalTier = config.approvalTier;
     // 只做内部可观测性记录（供以后排障/审计参考，从不对外 HTTP/SSE 暴露）：
     // 这次注入子进程的 key 到底是从宿主环境变量读的，还是界面存的加密 key。
@@ -1399,8 +1497,108 @@ export class AgentSupervisor {
     return projectCommandDescriptors(result.commands);
   }
 
+  validateAttachmentIds(caseId, attachmentIds) {
+    const worker = this.workers.get(caseId);
+    if (!worker || !LIVE_STATUSES.has(worker.status)) {
+      throw codedError('worker_not_running', 'worker is not running');
+    }
+    if (!Array.isArray(attachmentIds) || attachmentIds.length > AGENT_IMAGE_LIMITS.maxImagesPerMessage) {
+      throw codedError('invalid_attachments', 'attachmentIds is invalid');
+    }
+    if (attachmentIds.length > 0 && worker.supportsImages !== true) {
+      throw codedError('images_not_supported', 'the current model does not support images');
+    }
+    const seen = new Set();
+    return attachmentIds.map((attachmentId) => {
+      if (
+        typeof attachmentId !== 'string'
+        || !ATTACHMENT_ID_RE.test(attachmentId)
+        || seen.has(attachmentId)
+      ) {
+        throw codedError('invalid_attachments', 'attachmentIds contains an invalid or duplicate id');
+      }
+      seen.add(attachmentId);
+      const ref = worker.admittedAttachments.get(attachmentId);
+      if (!ref) throw codedError('attachment_not_found', 'attachment was not admitted by this worker');
+      return ref;
+    });
+  }
+
+  async admitAttachments(caseId, images) {
+    const config = this.loadConfigFn();
+    if (!config.enabled) throw codedError('agent_disabled', 'agent is disabled');
+    if (config.supportsImages !== true) {
+      throw codedError('images_not_supported', 'the current model does not support images');
+    }
+    if (
+      !Array.isArray(images)
+      || images.length === 0
+      || images.length > AGENT_IMAGE_LIMITS.maxImagesPerMessage
+    ) {
+      throw codedError('invalid_images', 'images is invalid');
+    }
+    const worker = await this._commandWorker(caseId, { waitForReady: true });
+    if (worker.supportsImages !== true) {
+      throw codedError('images_not_supported', 'the running model does not support images');
+    }
+    let result;
+    try {
+      result = await this._request(worker, 'attachment/admit', {
+        sessionId: worker.sessionId,
+        images,
+      }, 60_000);
+    } catch (error) {
+      throw codedError('image_rejected', `image admission failed: ${worker.redact(error.message)}`);
+    }
+    const refs = projectAdmittedAttachmentRefs(result, images.length);
+    for (const ref of refs) worker.admittedAttachments.set(ref.attachmentId, ref);
+    return refs.map(publicAttachmentRef);
+  }
+
+  async readAttachment(caseId, attachmentId) {
+    if (typeof attachmentId !== 'string' || !ATTACHMENT_ID_RE.test(attachmentId)) {
+      throw codedError('attachment_not_found', 'attachment was not referenced by this session');
+    }
+    const worker = this.workers.get(caseId);
+    if (
+      !worker
+      || !LIVE_STATUSES.has(worker.status)
+      || !worker.referencedAttachmentIds.has(attachmentId)
+    ) {
+      throw codedError('attachment_not_found', 'attachment was not referenced by this session');
+    }
+    const ref = worker.admittedAttachments.get(attachmentId);
+    if (!ref) throw codedError('attachment_not_found', 'attachment reference is unavailable');
+    let result;
+    try {
+      result = await this._request(worker, 'attachment/read', {
+        sessionId: worker.sessionId,
+        ref,
+      }, 60_000);
+    } catch (error) {
+      throw codedError('attachment_read_failed', `attachment read failed: ${worker.redact(error.message)}`);
+    }
+    const returnedRef = projectAdmittedAttachmentRefs({ attachments: [result?.ref] }, 1)[0];
+    if (JSON.stringify(returnedRef) !== JSON.stringify(ref) || typeof result?.data !== 'string') {
+      throw codedError('attachment_protocol_error', 'attachment/read returned a mismatched reference');
+    }
+    const data = Buffer.from(result.data, 'base64');
+    if (
+      data.length !== ref.bytes
+      || data.toString('base64') !== result.data
+      || `sha256:${createHash('sha256').update(data).digest('hex')}` !== ref.attachmentId
+    ) {
+      throw codedError('attachment_protocol_error', 'attachment/read returned invalid bytes');
+    }
+    return {
+      data,
+      mediaType: ref.mediaType,
+      ...(ref.name === undefined ? {} : { name: ref.name }),
+    };
+  }
+
   // ---- turn 执行：串行 + 可取消 ----
-  async prompt(caseId, text) {
+  async prompt(caseId, text, attachmentIds = []) {
     // 不信任调用方（src/routes/agent.js 的 prompt 路由）已经检查过
     // enabled——路由层的检查与这里的调用之间隔着一次事件循环轮转，理论上
     // 存在"路由层查的时候还 enabled，supervisor 真正执行时设置已经被改成
@@ -1442,10 +1640,15 @@ export class AgentSupervisor {
         throw error;
       }
     }
-    const run = () => this._runTurn(worker, text);
+    if (attachmentIds.length > 0 && config.supportsImages !== true) {
+      throw codedError('images_not_supported', 'the current model does not support images');
+    }
+    const attachmentRefs = this.validateAttachmentIds(caseId, attachmentIds);
+    const run = () => this._runTurn(worker, text, attachmentRefs);
     // HTTP 已经完成 enabled/live/ready 门禁，到这里即视为当前 worker 接受了
     // 这条用户消息；在排队 turn 之前记录，刷新页面不会丢掉尚未开始的消息。
-    this._appendUiHistory(worker, { role: 'user', text });
+    for (const ref of attachmentRefs) worker.referencedAttachmentIds.add(ref.attachmentId);
+    this._appendUiHistory(worker, { role: 'user', text, attachments: attachmentRefs });
     const turnPromise = worker.turnLock.then(run, run);
     // 后续 turn 排队；任何一个 turn 失败不阻塞下一个 turn 排队执行。
     worker.turnLock = turnPromise.then(() => {}, () => {});
@@ -1561,7 +1764,7 @@ export class AgentSupervisor {
     }
   }
 
-  async _runTurn(worker, text) {
+  async _runTurn(worker, text, attachmentRefs = []) {
     if (!LIVE_STATUSES.has(worker.status)) {
       const error = new Error('worker is not running');
       error.code = 'worker_not_running';
@@ -1590,7 +1793,10 @@ export class AgentSupervisor {
     try {
       await this._request(worker, 'session/prompt', {
         sessionId: worker.sessionId,
-        contentBlocks: [{ type: 'text', text }],
+        contentBlocks: [
+          ...(text ? [{ type: 'text', text }] : []),
+          ...attachmentRefs.map((attachment) => ({ type: 'image', attachment })),
+        ],
       }, 60_000);
       const timeout = timeoutPromise(this.turnTimeoutMs, 'turn timed out');
       try {

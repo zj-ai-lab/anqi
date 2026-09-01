@@ -65,6 +65,16 @@
 
 ---
 
+## 未发布 — AI 助理图片输入
+
+**状态：开发分支 `feat/agent-image`，尚未合并 `main`。**
+
+- 当前模型 id 含 `vision` 时，Cordis 模型声明同时开放 text/image，案件助理状态下发布尔图片能力，输入区才显示贴图按钮并接受剪贴板图片；其余模型保持纯文本声明，前端不显示入口，服务端也会用中文 400 二次拒绝图片 prompt。
+- 图片以上游风格的 JSON base64 准入，每条消息最多 2 张、单张解码后最多 8MiB，仅允许 PNG/JPEG/WebP/GIF；宿主调用 DSH `admitEncodedImages`，发模型的 content blocks 与 prompt HTTP 只携带内容寻址 attachment ref/id，不把 base64 放进 SSE。
+- 图片字节只存 DSH `<DSH_HOME>/attachments/v1` 内容寻址库，不写案件夹、`anjian.db` 或审计日志。案件夹继续只保存律师自己的材料；supervisor 的刷新历史也只保存经投影的 attachment 引用。
+- 登录态回读路由只允许读取当前案件 live session 已实际引用过的 attachment；未引用 id、跨案 id 与未知 id 一律 404。用户气泡发送后立即显示缩略图，刷新后再从该回读路由显示历史缩略图。
+- 新增图片能力、HTTP/wire/回读及前端专项门禁（`tools/test-agent-image-capabilities.js`、`tools/test-agent-image-http.js`、`tools/test-agent-image-frontend.js`），全检尾部由 63 步增至 66 步。
+
 ## 未发布 — 完整 DSH 档斜杠命令
 
 **状态：开发分支 `feat/agent-slash`，尚未合并 `main`。**

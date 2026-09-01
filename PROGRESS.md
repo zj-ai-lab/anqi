@@ -1,5 +1,48 @@
 # PROGRESS
 
+## AI 助理图片输入工作会话 1/3 — 2026-09-01
+- 基线：公开仓 `feat/agent-image` 从斜杠命令合入提交 `6f7090b` 建立；Node `v22.23.0` 全检 `[63/63]`、skipped=0、`ALL GREEN ✅`。
+- 目标：视觉模型显示贴图入口，最多 2 张、单张 8MiB、PNG/JPEG/WebP/GIF；非视觉模型不显示且服务端二次拒绝。
+- 边界：字节只进 DSH `attachments/v1` 内容寻址库；案件夹、anjian.db、审计与 SSE 都不保存/发送 base64。
+- 上游准入：`admitEncodedImages(AttachmentStore, EncodedImageAttachment[])` 先验 canonical base64，再由 `saveImages` 原子批量准入并返回有序完整 refs。
+- 上游回读：`readImage(ref)` 必须拿完整 `ImageAttachmentRef`，没有按 id 查元数据接口；宿主须保存/核对完整 ref，不能凭 id 猜字段。
+- 模态路径：DeepSeek catalog 省略 `inputModalities` 即 `[text]`；`read_image` 经活动 route 声明检查 image，vision 声明会同时放行文件工具与 prompt 图片。
+- 顺序：任务 1 声明/状态 → 任务 2 admit/upload/prompt image block → 任务 3 引用校验回读/历史缩略图 → 文档与全检。
+- 最大风险：上传成功但未入会话的孤儿对象可存在；绝不能为方便回显放宽为“知道 attachmentId 就能读”，回读只认本案 session 已引用的完整 ref。
+
+### 任务 1：模型图片能力声明（已完成）
+
+- 反向验证（红）：新增 `tools/test-agent-image-capabilities.js` 后、实现前用 Node `v22.23.0` 实跑退出码 `1`；首个失败为 `TypeError: modelSupportsImages is not a function`，证明新门禁不是在既有实现上误绿。
+- 实现：`modelSupportsImages()` 以模型 id 大小写无关地匹配 `vision`；DeepSeek model entry 注 `inputModalities`，OpenAI-compatible entry 注对应 `input`，两侧默认均严格为 `[text]`。worker 与 `GET /api/agent/status` 都只下发布尔 `supportsImages`。
+- 求值探针曾抓到未加引号三元式被 YAML 解析成映射；按“连败 3 换项”先切去跑配置/HTTP 回归（均绿），再改成不会触发 YAML 映射语法的等价表达式，未跳过或放宽断言。
+- 恢复验证（绿）：新增门禁退出码 `0`，输出 `agent image capabilities: model id → Cordis modalities → HTTP status boolean passed`；真实 DSH project/full boot + preflight + plugin hot reload 同轮退出码 `0`。
+- 门禁：只在 `tools/check.sh` 末尾追加 `[64/64]`，既有 agent config 与 HTTP 路由测试分别退出码 `0`。
+
+### 任务 2：上行准入与 prompt 图片块（已完成）
+
+- 反向验证（红）：新增 `tools/test-agent-image-http.js` 后、路由实现前实跑退出码 `1`；首个 HTTP 断言明确为附件端点 `404 !== 400`，不是跳过或假绿。
+- 实现：专用 JSON media type 在 agent 路由内以 24MiB 传输帽解析（保留全局 JSON 1MiB 防线），解码后严格执行每条 2 张、单张 8MiB、PNG/JPEG/WebP/GIF、canonical base64；插件 `attachment/admit` 调上游 `admitEncodedImages`，supervisor 只持完整 ref，浏览器只收安全投影。
+- prompt：`attachmentIds` 先按当前案件 live worker 的已准入 map 同步核验；非 vision、未知/重复 id 均在 202 前以中文 400 拒绝。wire 固定为 text block 后接 `{type:'image',attachment:完整 ref}`，不重复携带 base64；带图片的 `/...` 不走无图片命令桥。
+- 恢复验证（绿）：Node `v22.23.0` 退出码 `0`；`EVIDENCE_IMAGE_WIRE` 显示 text + `sha256:` image ref，`EVIDENCE_IMAGE_REJECTIONS` 同时列出超张数、8MiB、错型、非视觉四类中文拒绝。真实上游 `LocalAttachmentStore` 落盘成功，案件夹仍为空，审计只记 `count=1`/`images=1`。
+- 回归：supervisor 26/26、命令 worker、命令 HTTP、agent HTTP、真实 DSH project/full boot + HMR 全部退出码 `0`；只在 `tools/check.sh` 尾部追加 `[65/65]`。
+
+### 任务 3：引用回读、历史与前端贴图（已完成）
+
+- 反向验证（红）：先扩充 `tools/test-agent-image-http.js` 的回读/历史断言，未实现时实跑退出码 `1`，首个失败为 `TypeError: Cannot read properties of undefined (reading 'length')`（`uiHistory` 尚无 attachments）；前端专项测试实现前实跑退出码 `1`，明确报 `AssertionError: 贴图入口必须使用只接受四种图片的多选 file input`。
+- 回读边界：插件 `attachment/read` 只接受 supervisor 保存的完整 ref 并调用上游 `readImage(ref)`；supervisor 只有在 prompt 已接受后才把 id 记入当前案件 session 的引用集合。登录态 GET 回读对未引用、未知、跨案 id 均返回 404，返回前重新核对 ref、canonical base64、字节数与 sha256；响应使用 `Cache-Control: private, no-store`，同一浏览器换账号后也不能靠缓存绕过逐次引用校验。
+- 历史/传输：`uiHistory` 只保存安全 attachment ref 投影，不保存字节或 base64；用户消息允许纯图片，wire 省略空 text block。HTTP 绿灯输出 `EVIDENCE_IMAGE_READBACK {"referenced":200,"unreferenced":404,"crossCase":404,"bytes":247}`；同轮 SSE 采样只含 refs/history，长 base64 正则为阴性。
+- 前端：状态 `supportsImages` 严格控制入口；剪贴板与 file picker 共用 2 张/8MiB/四 MIME 草稿校验，base64 只在上传调用内短暂生成，prompt 仅交 attachmentIds；发送后用 object URL 即时回显，刷新后经登录态回读路由显示缩略图。任务白名单不允许修改既有 `tools/smoke-agent-frontend.js`，故用新的 `tools/test-agent-image-frontend.js` 承载等价图片专项 smoke，既有 smoke 另行实跑保持九项全绿。
+- 浏览器绿灯（真实 drawer/CSS + 本地隔离夹具）：视觉模型得到 `{attachVisible:true,draftCount:1,previewVisible:true}`；发送后 `{thumbCount:1,thumbVisible:true}`，夹具实际 prompt 只有一个 `sha256:` attachmentId；刷新后 `{thumbnailCount:1,thumbnailVisible:true}`；切到非视觉模型后 `{attachButtonVisible:false,draftCountAfterPaste:0}`，历史已引用图片仍可见。
+- 回归：图片 HTTP、图片前端、agent experience、agent HTTP、命令 HTTP 与既有前端 smoke 均退出码 `0`；只在 `tools/check.sh` 尾部追加 `[66/66]`。
+
+### 最终审计（已完成）
+
+- 最终全检：Node `v22.23.0` 实跑 `npm run check` 退出码 `0`，尾部依次打印 `[64/64]`、`[65/65]`、`[66/66]` 与 `ALL GREEN ✅`；图片专项门禁实际输出 `EVIDENCE_IMAGE_SSE_BASE64_GREP long_base64_chunks=0`。
+- 完成条件证据：`EVIDENCE_IMAGE_WIRE` 为 text + 完整 `sha256:` image ref；`EVIDENCE_IMAGE_READBACK` 为 `referenced=200 / unreferenced=404 / crossCase=404 / bytes=247`；`EVIDENCE_IMAGE_REJECTIONS` 同轮列出超张数、8MiB、四 MIME 白名单与非视觉模型四类中文错误。
+- 跳过/放宽审计：三份新增图片门禁扫描输出 `skipped=0; todo=0; only=0; shell-bypass=0`；既有测试未修改，`tools/check.sh` diff 只有尾部新增 9 行，既有 63 步未删、未改号、未改阈值。
+- 范围/依赖：`git diff --check` 无输出；工作树只含任务白名单文件及任务书要求的 `PROGRESS.md/BLOCKED.md`，四份 package/lock diff 为空，运行时 parity 仍明确 `0.1.1-rc.2`，没有新增依赖。`BLOCKED.md` 当前项为“无”。
+- 交付：只在公开仓分支 `feat/agent-image` 做一个本地提交，不合并 `main`、不 push、不 tag。
+
 ## AI 助理斜杠命令工作会话 1/3 — 2026-09-01
 
 - 任务 0 通过：公开仓 `feat/agent-slash` 从 `9581827` 建立，Node `v22.23.0` 全检 `[61/61]`、`skipped=0`、`ALL GREEN ✅`；私有冻结仓入口已纠偏且未承载功能改动。

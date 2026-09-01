@@ -21,6 +21,7 @@ import { JsonRpcLineTransport } from '@deepseek-ai/dsh-sdk-protocol';
 import { HarnessSdkJsonRpcServer } from '@deepseek-ai/dsh-sdk-jsonrpc-server';
 import { SessionId } from '@deepseek-ai/dsh-session';
 import { UserQuestionError } from '@deepseek-ai/dsh-user-questions';
+import { admitEncodedImages } from '@deepseek-ai/dsh-attachment';
 
 export const name = 'dsh-anqi-jsonrpc';
 export const inject = [
@@ -30,6 +31,7 @@ export const inject = [
   'approval',
   'tools',
   'skills',
+  'attachments',
 ];
 export const Config = Schema.object({
   maxTokensAsSuccess: Schema.boolean().default(false),
@@ -238,6 +240,29 @@ export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
     return { ok: true, matched: true, execution };
   }
 
+  async admitAttachments(params) {
+    const sessionId = sessionIdFromParams(params, 'attachment/admit');
+    this.assertLiveSession(sessionId);
+    if (!Array.isArray(params?.images) || params.images.length === 0) {
+      throw new Error('attachment/admit requires a non-empty images array');
+    }
+    const attachments = await admitEncodedImages(this.ctx.attachments, params.images);
+    return { attachments };
+  }
+
+  async readAttachment(params) {
+    const sessionId = sessionIdFromParams(params, 'attachment/read');
+    this.assertLiveSession(sessionId);
+    if (!isRecord(params?.ref) || 'data' in params.ref) {
+      throw new Error('attachment/read requires an attachment reference');
+    }
+    const stored = await this.ctx.attachments.readImage(params.ref);
+    return {
+      ref: stored.ref,
+      data: Buffer.from(stored.data).toString('base64'),
+    };
+  }
+
   completePreflight(sessionId, agent, observation) {
     this.assertLiveSession(sessionId, agent);
     this.preflightedSessions.set(sessionId, agent);
@@ -368,6 +393,10 @@ export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
         return this.listCommands(params);
       case 'command/execute':
         return this.executeCommand(params);
+      case 'attachment/admit':
+        return this.admitAttachments(params);
+      case 'attachment/read':
+        return this.readAttachment(params);
       default:
         return super.handleRequest(method, params);
     }

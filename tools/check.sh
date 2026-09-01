@@ -489,4 +489,13 @@ node tools/test-agent-commands.js
 echo "[63/63] AI 助理命令宿主/HTTP 桥（登录态挂载 + supervisor session 归属 + 斜杠命中/回退 + status 状态机）"
 node tools/test-agent-commands-http.js
 
+echo "[64/64] AI 助理图片能力声明（vision 模态 + 默认文本模态 + 状态接口布尔）"
+node tools/test-agent-image-capabilities.js
+
+echo "[65/65] AI 助理图片上行（2 张/8MiB/类型限额 + DSH admission + prompt image block）"
+node tools/test-agent-image-http.js
+
+echo "[66/66] AI 助理图片回读与前端（引用 404 + 历史 refs + vision-only paste/thumbnail）"
+node tools/test-agent-image-frontend.js
+
 echo "ALL GREEN ✅"

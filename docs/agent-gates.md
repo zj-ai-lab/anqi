@@ -17,7 +17,7 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 63 步；下面按当前实际步号记录：
+`npm run check` 当前 66 步；下面按当前实际步号记录：
 
 - 第 31–37 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
@@ -48,6 +48,14 @@
 - 第 63 步：`tools/test-agent-commands-http.js`——登录态挂载、supervisor 自有
   case→worker→session 归属、命令清单 wire 投影、`/` 命中/原文回退、真实
   `session.status` 状态机与“命令不得伪造 turn”契约。
+- 第 64 步：`tools/test-agent-image-capabilities.js`——模型 id 的 vision 规则、Cordis
+  text/image 声明与状态接口 `supportsImages` 布尔保持一致；默认模型仍严格为纯文本。
+- 第 65 步：`tools/test-agent-image-http.js`——专用 JSON base64 准入的 2 张/8MiB/四类
+  MIME 上限，真实 DSH attachment store、prompt image block、非视觉模型中文 400、登录态
+  回读的本案引用校验与 SSE 不含 base64 长块。未引用、跨案与未知 attachment id 均为 404。
+- 第 66 步：`tools/test-agent-image-frontend.js`——图片专项前端 smoke，覆盖 vision-only
+  贴图入口、剪贴板/文件草稿、上传后 prompt 仅传 id、即时与刷新历史缩略图；任务白名单
+  禁止改既有 `tools/smoke-agent-frontend.js`，因此该步用独立图片专项文件承载新增断言。
 
 > **2026-08-24 现行口径**：本文后部保留的 rc.7、无文件工具与“read 没有 containment”文字是
 > 当时取证的历史记录。当前基线已升至 `0.1.1-rc.2`，并恢复文件工具：案齐自有 filesystem

@@ -70,6 +70,11 @@ const READONLY_TOOLS = new Set([
 const PROPOSE_TOOL = 'anqi_inbox_propose';
 const MAX_PROMPT_CHARS = 8000;
 const MAX_ANSWER_CHARS = 2000;
+const MAX_IMAGES_PER_MESSAGE = 2;
+const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
+const IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
+const ATTACHMENT_JSON_TYPE = 'application/vnd.anqi.agent-attachments+json';
+const ATTACHMENT_ID_RE = /^sha256:[a-f0-9]{64}$/u;
 
 export async function mountAgentDrawer(caseId) {
   const slot = document.getElementById('agent-entry-slot');
@@ -93,6 +98,9 @@ export async function mountAgentDrawer(caseId) {
     commandGeneration: 0,
     commandMenuItems: [],
     commandMenuIndex: 0,
+    supportsImages: false,
+    draftImages: [], // {file, previewUrl}；只活在当前页面，发送成功即 revoke
+    submitting: false,
   };
 
   const entryBtn = el('button', { class: 'btn small', type: 'button' }, 'AI 助理');
@@ -119,12 +127,22 @@ export async function mountAgentDrawer(caseId) {
     'aria-label': '可用斜杠命令', hidden: '',
   });
   const commandComposer = el('div', { class: 'agent-command-composer' }, textarea, commandMenu);
+  const fileInput = el('input', {
+    type: 'file', accept: 'image/png,image/jpeg,image/webp,image/gif', multiple: '', hidden: '', disabled: '',
+  });
+  const attachBtn = el('button', {
+    class: 'btn small agent-attach-btn', type: 'button', hidden: '', disabled: '',
+    'aria-label': '粘贴或选择图片', title: '粘贴或选择图片（最多 2 张，单张 8 MiB）',
+  }, '贴图');
+  const imageDrafts = el('div', { class: 'agent-image-drafts', hidden: '', 'aria-label': '待发送图片' });
   const sendBtn = el('button', { class: 'btn small primary', type: 'submit', disabled: '' }, '发送');
   const stopBtn = el('button', { class: 'btn small danger', type: 'button', disabled: '' }, '停止');
 
   const promptForm = el('form', { class: 'agent-prompt-form' },
+    imageDrafts,
     commandComposer,
-    el('div', { class: 'agent-drawer-actions' }, stopBtn, sendBtn)
+    el('div', { class: 'agent-drawer-actions' }, attachBtn, stopBtn, sendBtn),
+    fileInput,
   );
 
   const closeBtn = el('button', { class: 'iconbtn', type: 'button', 'aria-label': '关闭' }, '×');
@@ -156,7 +174,132 @@ export async function mountAgentDrawer(caseId) {
   }
 
   const appendSystem = (text) => appendMsg('agent-msg-system', text);
-  const appendUser = (text) => appendMsg('agent-msg-user', text);
+
+  function attachmentUrl(attachment) {
+    return `/api/cases/${caseId}/agent/attachments/${encodeURIComponent(attachment.attachmentId)}`;
+  }
+
+  function appendUser(text, attachments = []) {
+    const safeAttachments = Array.isArray(attachments)
+      ? attachments.filter((attachment) => (
+        attachment
+        && typeof attachment === 'object'
+        && ATTACHMENT_ID_RE.test(attachment.attachmentId)
+        && IMAGE_MEDIA_TYPES.has(attachment.mediaType)
+      ))
+      : [];
+    const node = appendMsg('agent-msg-user', '');
+    if (text) node.append(el('div', { class: 'agent-msg-text' }, text));
+    if (safeAttachments.length > 0) {
+      const images = safeAttachments.map((attachment) => {
+        const src = attachmentUrl(attachment);
+        const preview = el('img', {
+          class: 'agent-msg-attachment', src, loading: 'lazy',
+          alt: attachment.name || '对话图片',
+        });
+        return el('a', {
+          class: 'agent-msg-attachment-link', href: src, target: '_blank', rel: 'noopener',
+          title: attachment.name || '打开图片',
+        }, preview);
+      });
+      node.append(el('div', { class: 'agent-msg-attachments' }, ...images));
+    }
+    return node;
+  }
+
+  function renderImageDrafts() {
+    imageDrafts.replaceChildren(...state.draftImages.map((draft, index) => el('div', {
+      class: 'agent-image-draft',
+    },
+    el('img', { src: draft.previewUrl, alt: draft.file.name || `待发送图片 ${index + 1}` }),
+    el('button', {
+      type: 'button', class: 'agent-image-draft-remove', 'aria-label': `移除第 ${index + 1} 张图片`,
+      disabled: state.submitting ? '' : null,
+      onclick: () => {
+        if (state.submitting) return;
+        const [removed] = state.draftImages.splice(index, 1);
+        if (removed) URL.revokeObjectURL(removed.previewUrl);
+        renderImageDrafts();
+      },
+    }, '×'))));
+    imageDrafts.hidden = state.draftImages.length === 0;
+  }
+
+  function clearDraftImages() {
+    for (const draft of state.draftImages) URL.revokeObjectURL(draft.previewUrl);
+    state.draftImages = [];
+    fileInput.value = '';
+    renderImageDrafts();
+  }
+
+  function addDraftFiles(rawFiles) {
+    if (!state.supportsImages || state.submitting) return;
+    const files = [...rawFiles].filter(Boolean);
+    if (files.length === 0) return;
+    if (state.draftImages.length + files.length > MAX_IMAGES_PER_MESSAGE) {
+      toast(`一条消息最多只能附 ${MAX_IMAGES_PER_MESSAGE} 张图片`);
+      return;
+    }
+    for (const file of files) {
+      if (!IMAGE_MEDIA_TYPES.has(file.type)) {
+        toast('图片类型只允许 PNG、JPEG、WebP 或 GIF');
+        return;
+      }
+      if (file.size > MAX_IMAGE_BYTES) {
+        toast('单张图片不能超过 8 MiB，请先压缩');
+        return;
+      }
+    }
+    hideCommandMenu();
+    for (const file of files) {
+      state.draftImages.push({ file, previewUrl: URL.createObjectURL(file) });
+    }
+    renderImageDrafts();
+  }
+
+  function encodeDraftImage(file) {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('图片读取失败，请重新选择'));
+      reader.onload = () => {
+        const value = typeof reader.result === 'string' ? reader.result : '';
+        const comma = value.indexOf(',');
+        if (comma < 0) return reject(new Error('图片读取失败，请重新选择'));
+        resolve({ mediaType: file.type, data: value.slice(comma + 1), name: file.name || '粘贴图片' });
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  async function uploadDraftImages() {
+    if (state.draftImages.length === 0) return [];
+    const encodedImages = await Promise.all(state.draftImages.map((draft) => encodeDraftImage(draft.file)));
+    const response = await fetch(`/api/cases/${caseId}/agent/attachments`, {
+      method: 'POST',
+      headers: { 'Content-Type': ATTACHMENT_JSON_TYPE, Accept: 'application/json' },
+      body: JSON.stringify({ images: encodedImages }),
+    });
+    let payload = null;
+    try { payload = await response.json(); } catch { /* 下面按通用错误处理 */ }
+    if (response.status === 401) {
+      location.href = '/login.html';
+      throw new Error('登录状态已失效');
+    }
+    if (!response.ok) {
+      const message = payload?.error || `图片上传失败（HTTP ${response.status}）`;
+      toast('❌ ' + message);
+      throw new Error(message);
+    }
+    const attachments = Array.isArray(payload?.attachments) ? payload.attachments : [];
+    if (
+      attachments.length !== state.draftImages.length
+      || attachments.some((attachment) => !ATTACHMENT_ID_RE.test(attachment?.attachmentId))
+    ) {
+      toast('❌ 图片保存响应不完整，请重试');
+      throw new Error('图片保存响应不完整');
+    }
+    return attachments;
+  }
 
   function hideCommandMenu() {
     commandMenu.hidden = true;
@@ -205,6 +348,7 @@ export async function mountAgentDrawer(caseId) {
     const prefix = commandPrefix();
     if (
       document.activeElement !== textarea
+      || state.draftImages.length > 0
       || prefix == null
       || !Array.isArray(state.commands)
       || state.commands.length === 0
@@ -276,6 +420,10 @@ export async function mountAgentDrawer(caseId) {
   }
 
   async function updateCommandMenu() {
+    if (state.draftImages.length > 0) {
+      hideCommandMenu();
+      return;
+    }
     if (commandPrefix() == null) {
       hideCommandMenu();
       return;
@@ -288,7 +436,9 @@ export async function mountAgentDrawer(caseId) {
     if (state.historyLoaded) return;
     state.historyLoaded = true;
     for (const item of Array.isArray(items) ? items : []) {
-      if (item?.role === 'user' && item.text) appendUser(item.text);
+      if (item?.role === 'user' && (item.text || item.attachments?.length)) {
+        appendUser(item.text || '', item.attachments);
+      }
       else if (item?.role === 'assistant' && item.text) {
         const node = appendMsg('agent-msg-assistant', '');
         renderMarkdownInto(node, item.text);
@@ -430,6 +580,12 @@ export async function mountAgentDrawer(caseId) {
     scrollLogDown();
   }
 
+  function applyImageCapability(supportsImages) {
+    state.supportsImages = supportsImages === true;
+    attachBtn.hidden = !state.supportsImages;
+    if (!state.supportsImages && state.draftImages.length > 0) clearDraftImages();
+  }
+
   function applyStatus(status, errorMsg) {
     const previousStatus = state.status;
     state.status = status;
@@ -441,7 +597,9 @@ export async function mountAgentDrawer(caseId) {
     const canSend = isReady || STARTABLE_STATUSES.has(status);
     approvalTierSelect.disabled = !['starting', 'ready', 'running'].includes(status);
     textarea.disabled = !canSend;
-    sendBtn.disabled = !canSend;
+    sendBtn.disabled = !canSend || state.submitting;
+    attachBtn.disabled = !canSend || state.submitting;
+    fileInput.disabled = !canSend || state.submitting;
     stopBtn.disabled = !isRunning;
     if (
       (status === 'starting' && previousStatus !== 'starting')
@@ -459,6 +617,7 @@ export async function mountAgentDrawer(caseId) {
   // publicStatus() 投影（含 pendingInteractions），把已经在等待应答的
   // approval/question 卡片一并补渲染出来。
   function applySnapshot(data) {
+    applyImageCapability(data.supportsImages);
     applyStatus(data.status, data.error);
     if (['1', '2', '3'].includes(data.approvalTier)) {
       approvalTierSelect.value = data.approvalTier;
@@ -655,6 +814,23 @@ export async function mountAgentDrawer(caseId) {
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden && !dockMedia.matches) closeDrawer(); });
   dockMedia.addEventListener('change', applyLayout);
 
+  attachBtn.addEventListener('click', () => {
+    if (state.supportsImages && !state.submitting) fileInput.click();
+  });
+  fileInput.addEventListener('change', () => {
+    addDraftFiles(fileInput.files || []);
+    fileInput.value = '';
+  });
+  textarea.addEventListener('paste', (event) => {
+    if (!state.supportsImages || state.submitting) return;
+    const files = [...(event.clipboardData?.items || [])]
+      .filter((item) => item.kind === 'file')
+      .map((item) => item.getAsFile())
+      .filter(Boolean);
+    if (files.length === 0) return;
+    event.preventDefault();
+    addDraftFiles(files);
+  });
   textarea.addEventListener('input', () => { updateCommandMenu(); });
   textarea.addEventListener('keydown', (event) => {
     if (commandMenu.hidden) return;
@@ -696,25 +872,40 @@ export async function mountAgentDrawer(caseId) {
   promptForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     const text = textarea.value.trim();
-    if (!text) return;
+    if (!text && state.draftImages.length === 0) return;
+    if (state.draftImages.length > 0 && !state.supportsImages) {
+      toast('当前模型不支持图片，请切换到名称含 vision 的模型');
+      return;
+    }
     hideCommandMenu();
     const statusBeforeSubmit = state.status;
+    state.submitting = true;
+    renderImageDrafts();
     sendBtn.disabled = true;
+    attachBtn.disabled = true;
+    fileInput.disabled = true;
     try {
       if (STARTABLE_STATUSES.has(state.status)) {
         applyStatus('starting');
         const snapshot = await api(`/cases/${caseId}/agent/start`, { method: 'POST' });
         applySnapshot(snapshot);
       }
-      await api(`/cases/${caseId}/agent/prompt`, { method: 'POST', body: { text } });
-      appendUser(text);
+      const attachments = await uploadDraftImages();
+      const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
+      await api(`/cases/${caseId}/agent/prompt`, { method: 'POST', body: { text, attachmentIds } });
+      appendUser(text, attachments);
       textarea.value = '';
+      clearDraftImages();
     } catch {
       // 自动启动失败时恢复原可发送终态，让律师修正配置后可以直接重试；不能
       // 把抽屉永久卡在本地伪造的 starting（服务端其实没有 live worker）。
       if (state.status === 'starting') applyStatus(statusBeforeSubmit);
       // api() 已经 toast 过错误，这里不重复。
     }
-    finally { sendBtn.disabled = !(state.status === 'ready' || STARTABLE_STATUSES.has(state.status)); }
+    finally {
+      state.submitting = false;
+      renderImageDrafts();
+      applyStatus(state.status);
+    }
   });
 }

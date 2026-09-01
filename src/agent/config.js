@@ -32,6 +32,11 @@ export const ALLOWED_PROVIDERS = new Set(['deepseek-official', 'openai-completio
 export const ALLOWED_AGENT_CAPABILITY_MODES = new Set(['project', 'full']);
 export const ALLOWED_AGENT_APPROVAL_TIERS = new Set(['1', '2', '3']);
 export const ENV_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+export const AGENT_IMAGE_LIMITS = Object.freeze({
+  maxImagesPerMessage: 2,
+  maxImageBytes: 8 * 1024 * 1024,
+  mediaTypes: Object.freeze(['image/png', 'image/jpeg', 'image/webp', 'image/gif']),
+});
 
 export function validateAgentPluginPatch(value) {
   const filename = String(value ?? '').trim();
@@ -354,7 +359,12 @@ function readSetting(key) {
 //     enabled 门之后——调用方不应该把 error 当成"已启用但配置坏了"以外的
 //     含义来用。
 //   { enabled: true, capabilityMode, provider, runtimeProvider, baseURL, model,
-//     apiKeyEnv, pluginPatch } ——白名单字段全部合法；apiKeyEnv 仍然只是变量名，不含值。
+//     supportsImages, apiKeyEnv, pluginPatch } ——白名单字段全部合法；apiKeyEnv
+//     仍然只是变量名，不含值。
+export function modelSupportsImages(model) {
+  return String(model ?? '').toLowerCase().includes('vision');
+}
+
 export function loadAgentConfig() {
   const enabledRaw = readSetting(AGENT_SETTINGS_KEYS.enabled);
   if (enabledRaw !== 'true') {
@@ -420,6 +430,10 @@ export function loadAgentConfig() {
     runtimeProvider: provider === 'openai-completions' ? 'anqi-openai' : 'deepseek-official',
     baseURL: parsed.toString().replace(/\/$/, ''),
     model,
+    // 与 anqi.cordis.yml 的 llm model 声明共用同一条、故意收敛的命名约定：
+    // 只有 id 字面含 vision 才主动宣称图片能力；宁可漏报，也不把图片送给一个
+    // 未声明支持图片的 provider，让它在消息已经进入 session 后才中途失败。
+    supportsImages: modelSupportsImages(model),
     capabilityMode,
     approvalTier,
     pluginPatch,

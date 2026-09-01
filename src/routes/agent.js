@@ -65,10 +65,11 @@
 //   - proposal accept/decline 不在本文件——继续走既有 inbox 人类路由
 //     （src/routes/views.js 的 /api/inbox/:id/accept|decline），本文件不新开
 //     任何模型可达的 accept API。
-import { Router } from 'express';
+import { Router, json as parseJson } from 'express';
 import { db, audit } from '../db.js';
 import {
   AGENT_SETTINGS_KEYS,
+  AGENT_IMAGE_LIMITS,
   ALLOWED_AGENT_APPROVAL_TIERS,
   ALLOWED_PROVIDERS,
   agentKeyStatus,
@@ -86,6 +87,71 @@ const MAX_PROMPT_CHARS = 8000;
 // user-question 每题答案上限,防止把整篇案卷粘贴回答案里绕开"只读工具返回
 // 事实"的边界。
 const MAX_ANSWER_CHARS = 2000;
+export const AGENT_ATTACHMENT_JSON_TYPE = 'application/vnd.anqi.agent-attachments+json';
+const ATTACHMENT_BODY_LIMIT = '24mb';
+const IMAGE_MEDIA_TYPES = new Set(AGENT_IMAGE_LIMITS.mediaTypes);
+const ATTACHMENT_ID_RE = /^sha256:[a-f0-9]{64}$/u;
+
+function normalizeEncodedImages(rawImages) {
+  if (!Array.isArray(rawImages) || rawImages.length === 0) {
+    return { ok: false, error: '请至少选择 1 张图片' };
+  }
+  if (rawImages.length > AGENT_IMAGE_LIMITS.maxImagesPerMessage) {
+    return { ok: false, error: `一条消息最多只能附 ${AGENT_IMAGE_LIMITS.maxImagesPerMessage} 张图片` };
+  }
+  const images = [];
+  for (let index = 0; index < rawImages.length; index += 1) {
+    const raw = rawImages[index];
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+      return { ok: false, error: `第 ${index + 1} 张图片格式不合法` };
+    }
+    if (!IMAGE_MEDIA_TYPES.has(raw.mediaType)) {
+      return { ok: false, error: '图片类型只允许 PNG、JPEG、WebP 或 GIF' };
+    }
+    const data = raw.data;
+    if (typeof data !== 'string' || data.length === 0) {
+      return { ok: false, error: `第 ${index + 1} 张图片缺少 base64 内容` };
+    }
+    // 先按编码长度做无分配的快速上限检查，再解码并回编码核对 canonical
+    // base64；data URL、空白、宽松解码可吞掉的垃圾字符都不能混进 DSH。
+    const maximumEncodedChars = 4 * Math.ceil(AGENT_IMAGE_LIMITS.maxImageBytes / 3);
+    if (data.length > maximumEncodedChars) {
+      return { ok: false, error: `单张图片不能超过 ${AGENT_IMAGE_LIMITS.maxImageBytes / 1024 / 1024} MiB，请先压缩` };
+    }
+    const decoded = Buffer.from(data, 'base64');
+    if (decoded.length === 0 || decoded.toString('base64') !== data) {
+      return { ok: false, error: `第 ${index + 1} 张图片的 base64 内容不合法` };
+    }
+    if (decoded.length > AGENT_IMAGE_LIMITS.maxImageBytes) {
+      return { ok: false, error: `单张图片不能超过 ${AGENT_IMAGE_LIMITS.maxImageBytes / 1024 / 1024} MiB，请先压缩` };
+    }
+    let name;
+    if (raw.name !== undefined) {
+      if (typeof raw.name !== 'string') return { ok: false, error: `第 ${index + 1} 张图片名称不合法` };
+      name = raw.name.trim();
+      if (!name || name.length > 255 || /[\0-\x1f\x7f]/u.test(name)) {
+        return { ok: false, error: `第 ${index + 1} 张图片名称不合法` };
+      }
+    }
+    images.push({ mediaType: raw.mediaType, data, ...(name === undefined ? {} : { name }) });
+  }
+  return { ok: true, images };
+}
+
+function normalizeAttachmentIds(rawIds) {
+  if (rawIds === undefined) return { ok: true, attachmentIds: [] };
+  if (!Array.isArray(rawIds) || rawIds.length > AGENT_IMAGE_LIMITS.maxImagesPerMessage) {
+    return { ok: false, error: `一条消息最多只能附 ${AGENT_IMAGE_LIMITS.maxImagesPerMessage} 张图片` };
+  }
+  const seen = new Set();
+  for (const attachmentId of rawIds) {
+    if (typeof attachmentId !== 'string' || !ATTACHMENT_ID_RE.test(attachmentId) || seen.has(attachmentId)) {
+      return { ok: false, error: '图片引用不合法，请重新粘贴图片' };
+    }
+    seen.add(attachmentId);
+  }
+  return { ok: true, attachmentIds: [...rawIds] };
+}
 
 const SSE_HEARTBEAT_MS = 25000; // 与 files.js 的 SSE 心跳惯例一致,穿透反代空闲超时
 
@@ -141,6 +207,7 @@ export function createAgentRouter(supervisor, {
   fetchModels = fetchProviderModels,
 } = {}) {
   const r = Router();
+  const parseAttachmentJson = parseJson({ type: AGENT_ATTACHMENT_JSON_TYPE, limit: ATTACHMENT_BODY_LIMIT });
 
   // 只读:配置层可用性 + (可选)某案件当前 worker 状态。不带 case_id 时只反映
   // 设置白名单是否合法/启用,完全不触碰 supervisor.workers——这就是冒烟脚本
@@ -164,7 +231,10 @@ export function createAgentRouter(supervisor, {
     const apiKey = agentKeyStatus();
     const caseIdRaw = req.query.case_id;
     if (caseIdRaw === undefined || caseIdRaw === '') {
-      return res.json({ status: 'stopped', enabled: true, error: null, configured, worker: null, apiKey });
+      return res.json({
+        status: 'stopped', enabled: true, error: null, configured, worker: null, apiKey,
+        supportsImages: config.supportsImages,
+      });
     }
     const caseId = Number(caseIdRaw);
     if (!Number.isInteger(caseId) || caseId <= 0) return res.status(400).json({ error: 'case_id 非法' });
@@ -173,7 +243,12 @@ export function createAgentRouter(supervisor, {
     // 下发安全投影(publicStatus),不带 sessionId/cwd/pid——见 supervisor.js
     // publicStatus() 的注释。
     const worker = supervisor.publicStatus(caseId);
-    res.json({ status: worker.status, enabled: true, error: null, configured, worker, apiKey });
+    res.json({
+      status: worker.status, enabled: true, error: null, configured, worker, apiKey,
+      // case 查询以当前 live worker（或 publicStatus 的配置态回落）为准，避免
+      // 设置刚改而旧 worker 尚未重启时，把“将启用的模型”误报成“正在跑的模型”。
+      supportsImages: worker.supportsImages === true,
+    });
   });
 
   // POST /api/agent/models——设置页"拉取该 key 可用的模型列表"这一步的
@@ -323,6 +398,67 @@ export function createAgentRouter(supervisor, {
     }
   });
 
+  // server.js 的全局 application/json 解析上限是 1 MiB；图片 JSON 使用专用
+  // vendor media type，绕开全局 parser 后在本路由以 24 MiB 传输上限解析，再按
+  // 解码后的“每张 8 MiB / 每条 2 张”硬限制逐项校验。仍是 JSON base64，不引
+  // multipart，也不改变其它 API 的既有 1 MiB 防线。
+  r.post('/cases/:id/agent/attachments', parseAttachmentJson, async (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    }
+    if (config.supportsImages !== true) {
+      return res.status(400).json({ error: '当前模型不支持图片，请切换到名称含 vision 的模型', code: 'images_not_supported' });
+    }
+    if (!supervisor.isLive(caseId)) {
+      return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: 'worker_not_running' });
+    }
+    const normalized = normalizeEncodedImages(req.body?.images);
+    if (!normalized.ok) return res.status(400).json({ error: normalized.error, code: 'invalid_images' });
+    try {
+      const attachments = await supervisor.admitAttachments(caseId, normalized.images);
+      audit(req.actor, 'agent-attachment-upload', 'agent-worker', caseId, `count=${attachments.length}`);
+      return res.status(201).json({ attachments });
+    } catch (error) {
+      if (error?.code === 'images_not_supported') {
+        return res.status(400).json({ error: '当前模型不支持图片，请切换到名称含 vision 的模型', code: error.code });
+      }
+      if (error?.code === 'worker_not_running' || error?.code === 'agent_disabled') {
+        return res.status(409).json({ error: 'AI 助理当前不可用，请重新打开后再粘贴图片', code: error.code });
+      }
+      if (error?.code === 'image_rejected' || error?.code === 'invalid_images') {
+        return res.status(400).json({ error: '图片内容无法读取，请换一张 PNG、JPEG、WebP 或 GIF', code: 'image_rejected' });
+      }
+      return res.status(502).json({ error: '图片保存失败，请稍后重试', code: 'attachment_bridge_failed' });
+    }
+  });
+
+  r.get('/cases/:id/agent/attachments/:attachmentId', async (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    const attachmentId = String(req.params.attachmentId || '');
+    if (!ATTACHMENT_ID_RE.test(attachmentId)) return res.status(404).json({ error: '图片不存在' });
+    try {
+      const image = await supervisor.readAttachment(caseId, attachmentId);
+      res.set({
+        'Content-Type': image.mediaType,
+        'Content-Length': String(image.data.length),
+        // 同一浏览器登出/换账号后也不能凭 HTTP cache 绕开下面的本案 session
+        // 引用校验；每次回显都必须重新经过登录态路由。
+        'Cache-Control': 'private, no-store',
+        'X-Content-Type-Options': 'nosniff',
+      });
+      return res.status(200).send(image.data);
+    } catch (error) {
+      if (error?.code === 'attachment_not_found' || error?.code === 'worker_not_running') {
+        return res.status(404).json({ error: '图片不存在' });
+      }
+      return res.status(502).json({ error: '图片暂时无法读取，请稍后重试', code: 'attachment_read_failed' });
+    }
+  });
+
   r.post('/cases/:id/agent/prompt', (req, res) => {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
@@ -336,11 +472,17 @@ export function createAgentRouter(supervisor, {
     if (!config.enabled) {
       return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
     }
+    const normalizedIds = normalizeAttachmentIds(req.body?.attachmentIds);
+    if (!normalizedIds.ok) return res.status(400).json({ error: normalizedIds.error, code: 'invalid_attachments' });
+    const { attachmentIds } = normalizedIds;
     const raw = req.body?.text;
     const text = typeof raw === 'string' ? raw.trim() : '';
-    if (!text) return res.status(400).json({ error: 'text 不能为空' });
+    if (!text && attachmentIds.length === 0) return res.status(400).json({ error: 'text 不能为空' });
     if (text.length > MAX_PROMPT_CHARS) {
       return res.status(400).json({ error: `text 过长（上限 ${MAX_PROMPT_CHARS} 字符）` });
+    }
+    if (attachmentIds.length > 0 && config.supportsImages !== true) {
+      return res.status(400).json({ error: '当前模型不支持图片，请切换到名称含 vision 的模型', code: 'images_not_supported' });
     }
     // 权威判断留在 supervisor.isLive()——不在这里复刻它的状态机字面量集合
     // （见 src/agent/supervisor.js isLive() 的注释）;badge 只是取来拼错误
@@ -349,7 +491,20 @@ export function createAgentRouter(supervisor, {
     if (!supervisor.isLive(caseId)) {
       return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: 'worker_not_running', status: badge });
     }
-    audit(req.actor, 'agent-prompt', 'agent-worker', caseId, `chars=${text.length}`);
+    if (attachmentIds.length > 0) {
+      if (supervisor.status(caseId).supportsImages !== true) {
+        return res.status(400).json({ error: '当前运行中的模型不支持图片，请重新打开 AI 助理', code: 'images_not_supported' });
+      }
+      try {
+        supervisor.validateAttachmentIds(caseId, attachmentIds);
+      } catch (error) {
+        if (error?.code === 'images_not_supported') {
+          return res.status(400).json({ error: '当前模型不支持图片，请切换到名称含 vision 的模型', code: error.code });
+        }
+        return res.status(400).json({ error: '图片不存在或已失效，请重新粘贴图片', code: 'attachment_not_found' });
+      }
+    }
+    audit(req.actor, 'agent-prompt', 'agent-worker', caseId, `chars=${text.length} images=${attachmentIds.length}`);
     // 不 await 整轮完成:一次 turn 可能耗时到 supervisor 的 turnTimeoutMs
     // （默认 10 分钟）,HTTP 请求/反向代理/浏览器都不适合被这么长的调用阻塞。
     // 真正的进度与最终结果只经由 SSE 的 turn/start ... turn/end 事件下行
@@ -357,9 +512,9 @@ export function createAgentRouter(supervisor, {
     // 校验——如果 worker 恰好在这一行判断之后、supervisor.prompt() 真正执行
         // 之前退出,turn 会在 supervisor 内部落一个 fail 态,只是不会有对应的
     // turn/start 事件,调用方应以 SSE/status 而非这个 202 作为权威依据。
-    const dispatched = text.startsWith('/')
+    const dispatched = attachmentIds.length === 0 && text.startsWith('/')
       ? supervisor.dispatchSlash(caseId, text)
-      : supervisor.prompt(caseId, text);
+      : supervisor.prompt(caseId, text, attachmentIds);
     dispatched.catch(() => { /* 生命周期由 SSE/session.status 或 worker 终态下行；这里只防 unhandledRejection */ });
     res.status(202).json({ accepted: true });
   });

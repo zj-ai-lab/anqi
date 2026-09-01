@@ -340,6 +340,7 @@
     baseURL: !!js process.env.DSH_BASE_URL ?? 'https://api.deepseek.com'
     models:
       - id: !!js process.env.DSH_MODEL ?? 'deepseek-v4-flash'
+        inputModalities: !!js String(process.env.DSH_MODEL ?? 'deepseek-v4-flash').toLowerCase().includes('vision') && ['text', 'image'] || ['text']
 
 - id: llm-pi-ai
   name: '@deepseek-ai/dsh-llm-pi-ai'
@@ -354,6 +355,7 @@
         models:
           - id: !!js process.env.DSH_MODEL
             name: !!js process.env.DSH_MODEL
+            input: !!js String(process.env.DSH_MODEL ?? '').toLowerCase().includes('vision') && ['text', 'image'] || ['text']
 
 # 内置的单案 MCP 是 dsh-mcp-client 的受控实例。第三方 MCP 不在这里默认挂载；
 # 只能由设置页校验过的绝对路径 Cordis patch 在 full 档加入，工具名遵循
