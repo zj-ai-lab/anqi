@@ -17,7 +17,7 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 46 步；下面按当前实际步号记录：
+`npm run check` 当前 63 步；下面按当前实际步号记录：
 
 - 第 31–37 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
@@ -26,7 +26,8 @@
 - 第 40 步：sidecar 前端行为冒烟（`tools/test-agent-markdown.js` +
   `tools/smoke-agent-frontend.js`）——assistant Markdown 纯解析与 fake-DOM 安全回归（原始 HTML
   不执行、危险协议不链接、图片不自动请求），以及 counts.agent 特性探测门、agent_* 配置往返、
-  SSE 帧到 DOM 映射静态审查。
+  SSE 帧到 DOM 映射静态审查；2026-09-01 扩充为斜杠菜单只取服务端清单、前端零命令名硬编码、
+  4xx/空清单不渲染、上下键/Tab/点选补全，以及 `command/run·done` 真事件来源审查。
 - 第 41 步：设置面前端回归（`tools/smoke-agent-profile-frontend.js`）
   ——「用户中心 · AI 助理」设置面新控件/联动逻辑的静态审查，加上真实 server.js 固定端口 3013 上
   agent_api_key 掩码往返、apiKeyEnv 优先级、本地假 `/models` 服务器的整合冒烟。
@@ -38,12 +39,29 @@
 - 第 44–46 步：secret-box 静态加密自检、
   `POST /api/agent/models` 的网络层（本地假服务器：OpenAI 兼容格式解析、超时/大小上限、
   3xx 重定向拦截）与路由层（provider/baseURL SSRF 字符串校验 + apiKey 取值优先级）回归。
+- 第 47–54 步：full/bash 真沙箱、审批、联网与 bash 三档策略、刷新历史/首次发送体验、外部
+  DSH/MCP 文档以及二档分类政策门禁。
+- 第 55–58 步：案件夹失效安全回落、文件根只读探测与前端可见提示。
+- 第 59–61 步：migration 018、AI 五类直写 HTTP 与 dsh-anqi 直写工具契约。
+- 第 62 步：`tools/test-agent-commands.js`——案齐 JSON-RPC worker 桥的可选命令服务、exact live
+  session agent、清单/执行/未命中与 `commands_unavailable` 契约。
+- 第 63 步：`tools/test-agent-commands-http.js`——登录态挂载、supervisor 自有
+  case→worker→session 归属、命令清单 wire 投影、`/` 命中/原文回退、真实
+  `session.status` 状态机与“命令不得伪造 turn”契约。
 
 > **2026-08-24 现行口径**：本文后部保留的 rc.7、无文件工具与“read 没有 containment”文字是
 > 当时取证的历史记录。当前基线已升至 `0.1.1-rc.2`，并恢复文件工具：案齐自有 filesystem
 > provider 覆盖标准读写路径，额外的执行守卫覆盖上游直接调用 ripgrep 的 glob/grep；绝对路径、
 > `..` 和越界符号链接均有真实回归。默认 `project` 档不发布 shell/联网/子 Agent，显式 `full`
 > 档恢复上游完整能力；完整档 shell 与受信任第三方插件拥有更宽宿主权限，属于已明示边界。
+
+> **2026-09-01 斜杠命令桥口径**：命令桥只存在于案齐自有 `dsh-anqi-jsonrpc`，不组合上游
+> Web/API gateway、host proxy/server 或 client connection。`commands` 不进入强制 inject，插件以
+> Cordis `ctx.get('commands')` 可选读取；所以默认 project 档既不因缺服务崩溃，也不会向前端返回
+> 命令入口。HTTP 清单端点只接收已核验的 URL caseId，session 永远从 supervisor 自有 live worker
+> 反查；请求体/query 自报 session 无效。斜杠执行未命中或服务缺失时同一原文回普通 prompt，命中
+> 时只转发上游 `command/run·done`，不制造 `turn/*`，状态只认 exact session 的真实
+> `session.status`。机械证据为 check 第 40、62、63 步；浏览器走查记录见 `PROGRESS.md`。
 
 ---
 

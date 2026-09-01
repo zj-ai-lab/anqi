@@ -22,6 +22,7 @@
 //      interaction/pending/interaction/expired）都能在 src/routes/agent.js +
 //      src/agent/supervisor.js 里找到对应的真实广播来源，确保前端监听的事件
 //      名不是凭空编造、后端确实会发这些帧。
+//      完整档命令另新增 command/run/command/done，同样必须命中真实广播源。
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
@@ -59,6 +60,31 @@ const say = (msg) => console.log(`  [${++step}] ${msg}`);
   assert.ok(gateIdx < mountIdx, 'counts.agent 门必须在挂载入口按钮之前——否则 counts.agent=false 时静态 HTML 断言 (a) 就不成立');
   say('agent-drawer.js 源码：counts.agent 门确实挡在挂载入口按钮之前（(a) 的不变量由此保证，不是巧合）');
 
+  // 斜杠菜单必须完全由当前案件 worker 的 HTTP 清单驱动：源码里有唯一的清单
+  // 路由请求，但不出现任何产品命令名字面量；4xx/空数组均主动隐藏菜单。键盘
+  // 和点选补全的四个入口也逐项钉住，避免只做了鼠标可点的“半个菜单”。
+  assert.ok(
+    drawerJs.includes('fetch(`/api/cases/${caseId}/agent/commands`'),
+    '输入斜杠后必须向当前案件命令清单路由取数据',
+  );
+  assert.doesNotMatch(
+    drawerJs,
+    /\/(?:compact|goal|feedback|plan)(?=[\s'"`])/u,
+    '前端不得硬编码任何已知命令名，菜单项只能来自服务端 descriptors',
+  );
+  assert.match(drawerJs, /response\.status >= 400 && response\.status < 500[\s\S]*?state\.commands = \[\]/u);
+  assert.match(drawerJs, /state\.commands\.length === 0[\s\S]*?hideCommandMenu\(\)/u);
+  assert.match(drawerJs, /state\.commands\.filter\(\(command\) => command\.name\.startsWith\(prefix\)\)/u);
+  for (const key of ['ArrowDown', 'ArrowUp', 'Tab']) {
+    assert.ok(drawerJs.includes(`event.key === '${key}'`), `命令菜单缺少 ${key} 键处理`);
+  }
+  assert.match(drawerJs, /onclick: \(\) => completeCommand\(command\)/u, '命令菜单缺少点选补全');
+  const styleCss = fs.readFileSync(path.join(ROOT, 'public/css/style.css'), 'utf8');
+  for (const selector of ['.agent-command-menu', '.agent-command-option', '.agent-command-name']) {
+    assert.ok(styleCss.includes(selector), `命令菜单样式缺少 ${selector}`);
+  }
+  say('斜杠菜单静态审查：服务端清单驱动、命令名零硬编码、4xx/空清单不渲染、上下键+Tab+点选补全均存在');
+
   // SSE 帧到 DOM 的映射静态审查：前端监听的每个事件类型，后端必须有真实广播
   // 来源——但"广播来源"分两种形状，不能用同一条正则一把抓：
   //   ① supervisor 自己的生命周期事件（worker/ready、turn/start、turn/end、
@@ -85,6 +111,8 @@ const say = (msg) => console.log(`  [${++step}] ${msg}`);
   let m;
   while ((m = listenerRe.exec(drawerJs))) listenedTypes.add(m[1]);
   assert.ok(listenedTypes.size >= 10, '至少应该监听到两位数个 SSE 事件类型，说明上面的正则真的抓到了东西');
+  assert.ok(listenedTypes.has('command/run'), '前端必须监听 command/run 并渲染命令开始系统行');
+  assert.ok(listenedTypes.has('command/done'), '前端必须监听 command/done 并渲染命令结束系统行');
   assert.ok(backend.includes('worker.emit(wireType,'), 'supervisor.js 必须存在把子进程 wire 事件通用转发出去的那一行——wire 事件类型没有字面量 emit() 调用，全靠这一条通用转发');
   const runtimeRoot = path.join(ROOT, 'src/agent/runtime/node_modules/@deepseek-ai');
   const runtimeSource = fs.readdirSync(runtimeRoot)

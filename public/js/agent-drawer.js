@@ -39,6 +39,8 @@
 //     错配到 B。
 //   - 'interaction/pending' / 'interaction/expired'：origin 'supervisor'，
 //     approval 卡片（允许一次/拒绝）与 question 卡片（受限答案表单）。
+//   - 'command/run' / 'command/done'：origin 'wire'，按 commandId 关联，渲染
+//     命令开始/结束系统行；不依赖也不伪造 turn/*。
 import { api, el, toast } from './api.js';
 import { renderMarkdownInto } from './markdown.js';
 
@@ -83,8 +85,14 @@ export async function mountAgentDrawer(caseId) {
     currentBubble: null,
     currentBubbleText: '',
     pendingToolCalls: new Map(), // callId -> name（tool/call 与 tool/result 按 callId 关联，不能按顺序猜——并行工具调用下顺序会错配）
+    pendingCommands: new Map(), // commandId -> name（command/done 不重复携带 name）
     cards: new Map(), // interactionId -> { el }
     historyLoaded: false,
+    commands: null, // null=尚未请求；[]=服务端 4xx/空清单，当前 worker 不渲染入口
+    commandFetch: null,
+    commandGeneration: 0,
+    commandMenuItems: [],
+    commandMenuIndex: 0,
   };
 
   const entryBtn = el('button', { class: 'btn small', type: 'button' }, 'AI 助理');
@@ -104,12 +112,18 @@ export async function mountAgentDrawer(caseId) {
 
   const textarea = el('textarea', {
     placeholder: '给 AI 助理下达指令……（首次发送会自动启动）', rows: '2', maxlength: String(MAX_PROMPT_CHARS), disabled: '',
+    'aria-controls': 'agent-command-menu', 'aria-expanded': 'false', 'aria-autocomplete': 'list', autocomplete: 'off',
   });
+  const commandMenu = el('div', {
+    id: 'agent-command-menu', class: 'agent-command-menu', role: 'listbox',
+    'aria-label': '可用斜杠命令', hidden: '',
+  });
+  const commandComposer = el('div', { class: 'agent-command-composer' }, textarea, commandMenu);
   const sendBtn = el('button', { class: 'btn small primary', type: 'submit', disabled: '' }, '发送');
   const stopBtn = el('button', { class: 'btn small danger', type: 'button', disabled: '' }, '停止');
 
   const promptForm = el('form', { class: 'agent-prompt-form' },
-    textarea,
+    commandComposer,
     el('div', { class: 'agent-drawer-actions' }, stopBtn, sendBtn)
   );
 
@@ -143,6 +157,132 @@ export async function mountAgentDrawer(caseId) {
 
   const appendSystem = (text) => appendMsg('agent-msg-system', text);
   const appendUser = (text) => appendMsg('agent-msg-user', text);
+
+  function hideCommandMenu() {
+    commandMenu.hidden = true;
+    commandMenu.replaceChildren();
+    state.commandMenuItems = [];
+    state.commandMenuIndex = 0;
+    textarea.setAttribute('aria-expanded', 'false');
+    textarea.removeAttribute('aria-activedescendant');
+  }
+
+  function resetCommandDiscovery() {
+    state.commandGeneration += 1;
+    state.commands = null;
+    state.commandFetch = null;
+    hideCommandMenu();
+  }
+
+  function commandPrefix() {
+    const match = /^\/([a-z0-9_-]*)$/iu.exec(textarea.value);
+    return match ? match[1].toLowerCase() : null;
+  }
+
+  function selectCommandMenuItem(index) {
+    const options = [...commandMenu.querySelectorAll('.agent-command-option')];
+    if (options.length === 0) return;
+    state.commandMenuIndex = (index + options.length) % options.length;
+    options.forEach((option, optionIndex) => {
+      const selected = optionIndex === state.commandMenuIndex;
+      option.classList.toggle('is-selected', selected);
+      option.setAttribute('aria-selected', String(selected));
+    });
+    const selected = options[state.commandMenuIndex];
+    textarea.setAttribute('aria-activedescendant', selected.id);
+    selected.scrollIntoView({ block: 'nearest' });
+  }
+
+  function completeCommand(command) {
+    const suffix = command.input?.hint ? ' ' : '';
+    textarea.value = `/${command.name}${suffix}`;
+    hideCommandMenu();
+    textarea.focus();
+    textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+  }
+
+  function renderCommandMenu() {
+    const prefix = commandPrefix();
+    if (
+      document.activeElement !== textarea
+      || prefix == null
+      || !Array.isArray(state.commands)
+      || state.commands.length === 0
+    ) {
+      hideCommandMenu();
+      return;
+    }
+    const matches = state.commands.filter((command) => command.name.startsWith(prefix));
+    if (matches.length === 0) {
+      hideCommandMenu();
+      return;
+    }
+    state.commandMenuItems = matches;
+    state.commandMenuIndex = 0;
+    const options = matches.map((command, index) => el('button', {
+      id: `agent-command-option-${index}`,
+      class: 'agent-command-option', type: 'button', role: 'option', 'aria-selected': 'false',
+      onmousedown: (event) => event.preventDefault(),
+      onclick: () => completeCommand(command),
+    },
+    el('span', { class: 'agent-command-option-main' },
+      el('span', { class: 'agent-command-name' }, `/${command.name}`),
+      ...(command.input?.hint ? [el('span', { class: 'agent-command-hint' }, command.input.hint)] : []),
+    ),
+    el('span', { class: 'agent-command-description' }, command.description)));
+    commandMenu.replaceChildren(...options);
+    commandMenu.hidden = false;
+    textarea.setAttribute('aria-expanded', 'true');
+    selectCommandMenuItem(0);
+  }
+
+  async function loadCommands() {
+    if (state.commands !== null) return state.commands;
+    if (state.commandFetch) return state.commandFetch;
+    const generation = state.commandGeneration;
+    const request = (async () => {
+      try {
+        const response = await fetch(`/api/cases/${caseId}/agent/commands`, {
+          method: 'GET', headers: { Accept: 'application/json' },
+        });
+        // project 档、未运行、未启用等 4xx 都是「本 worker 不呈现命令 UI」；
+        // 不调用 api()，避免用户只是输入普通斜杠文本就收到业务错误 toast。
+        if (response.status >= 400 && response.status < 500) {
+          if (generation === state.commandGeneration) state.commands = [];
+          return [];
+        }
+        if (!response.ok) throw new Error(`command list HTTP ${response.status}`);
+        const payload = await response.json();
+        const commands = Array.isArray(payload?.commands)
+          ? payload.commands.filter((command) => (
+            command
+            && typeof command === 'object'
+            && typeof command.name === 'string'
+            && /^[a-z][a-z0-9_-]*$/u.test(command.name)
+            && typeof command.description === 'string'
+          ))
+          : [];
+        if (generation === state.commandGeneration) state.commands = commands;
+        return commands;
+      } catch {
+        // 5xx/网络故障不冒充「确定为空」：本次不渲染，下一次输入仍可重试。
+        return [];
+      } finally {
+        if (generation === state.commandGeneration) state.commandFetch = null;
+      }
+    })();
+    state.commandFetch = request;
+    return request;
+  }
+
+  async function updateCommandMenu() {
+    if (commandPrefix() == null) {
+      hideCommandMenu();
+      return;
+    }
+    await loadCommands();
+    renderCommandMenu();
+  }
 
   function renderHistory(items) {
     if (state.historyLoaded) return;
@@ -291,6 +431,7 @@ export async function mountAgentDrawer(caseId) {
   }
 
   function applyStatus(status, errorMsg) {
+    const previousStatus = state.status;
     state.status = status;
     badge.replaceChildren();
     badge.className = `chip ${STATUS_CHIP_CLASS[status] || 'c-gray'}`;
@@ -302,6 +443,15 @@ export async function mountAgentDrawer(caseId) {
     textarea.disabled = !canSend;
     sendBtn.disabled = !canSend;
     stopBtn.disabled = !isRunning;
+    if (
+      (status === 'starting' && previousStatus !== 'starting')
+      || (status === 'ready' && !['ready', 'running'].includes(previousStatus))
+      || ['disabled', 'stopped', 'error', 'crashed'].includes(status)
+    ) {
+      resetCommandDiscovery();
+    } else if (!canSend) {
+      hideCommandMenu();
+    }
     if (errorMsg) appendSystem(`⚠ ${errorMsg}`);
   }
 
@@ -381,6 +531,7 @@ export async function mountAgentDrawer(caseId) {
       // 无限增长，也避免下次重启后的新 worker 若恰好复用了同一个 callId 字面
       // 值时被错配到上一任 worker 遗留的工具名。
       state.pendingToolCalls.clear();
+      state.pendingCommands.clear();
       appendSystem(`AI 助理已停止${data.detail ? '：' + data.detail : ''}`);
     });
     es.addEventListener('assistant/chunk', (e) => {
@@ -425,6 +576,25 @@ export async function mountAgentDrawer(caseId) {
       const name = callId != null ? state.pendingToolCalls.get(callId) : undefined;
       if (callId != null) state.pendingToolCalls.delete(callId);
       if (name === PROPOSE_TOOL && readProposalCreated(data)) appendProposalNotice();
+    });
+    es.addEventListener('command/run', (e) => {
+      const frame = JSON.parse(e.data);
+      if (frame.origin !== 'wire') return;
+      const { commandId, name } = frame.data || {};
+      if (typeof commandId !== 'string' || typeof name !== 'string' || !name) return;
+      state.pendingCommands.set(commandId, name);
+      appendSystem(`命令开始：/${name}`);
+    });
+    es.addEventListener('command/done', (e) => {
+      const frame = JSON.parse(e.data);
+      if (frame.origin !== 'wire') return;
+      const { commandId, kind, text } = frame.data || {};
+      if (typeof commandId !== 'string' || !['success', 'error'].includes(kind)) return;
+      const name = state.pendingCommands.get(commandId);
+      state.pendingCommands.delete(commandId);
+      const label = name ? `：/${name}` : '';
+      const detail = typeof text === 'string' && text ? `\n${text}` : '';
+      appendSystem(`${kind === 'success' ? '命令完成' : '命令失败'}${label}${detail}`);
     });
     es.addEventListener('interaction/pending', (e) => {
       const data = JSON.parse(e.data).data || {};
@@ -471,6 +641,7 @@ export async function mountAgentDrawer(caseId) {
     scrollLogDown();
   }
   function closeDrawer() {
+    hideCommandMenu();
     drawer.hidden = true; drawer.setAttribute('aria-hidden', 'true');
     applyLayout();
     try { localStorage.removeItem(DOCK_KEY); } catch { /* 同上 */ }
@@ -483,6 +654,28 @@ export async function mountAgentDrawer(caseId) {
   //（关日期弹层、收折叠），不该顺手把助理面板一起带走
   document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden && !dockMedia.matches) closeDrawer(); });
   dockMedia.addEventListener('change', applyLayout);
+
+  textarea.addEventListener('input', () => { updateCommandMenu(); });
+  textarea.addEventListener('keydown', (event) => {
+    if (commandMenu.hidden) return;
+    if (event.key === 'ArrowDown') {
+      event.preventDefault();
+      selectCommandMenuItem(state.commandMenuIndex + 1);
+    } else if (event.key === 'ArrowUp') {
+      event.preventDefault();
+      selectCommandMenuItem(state.commandMenuIndex - 1);
+    } else if (event.key === 'Tab') {
+      const selected = state.commandMenuItems[state.commandMenuIndex];
+      if (!selected) return;
+      event.preventDefault();
+      completeCommand(selected);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      hideCommandMenu();
+    }
+  });
+  textarea.addEventListener('blur', hideCommandMenu);
 
   // 上次离开时面板是开着的 → 宽视口下自动恢复停靠。这会立即建 SSE，与顶部
   // 「懒建连接」的初衷不冲突：那是防「谁都没点过抽屉的标签页」空转长连接，
@@ -504,6 +697,7 @@ export async function mountAgentDrawer(caseId) {
     e.preventDefault();
     const text = textarea.value.trim();
     if (!text) return;
+    hideCommandMenu();
     const statusBeforeSubmit = state.status;
     sendBtn.disabled = true;
     try {

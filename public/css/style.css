@@ -2441,7 +2441,7 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .agent-msg-assistant.is-streaming::after { content: '▍'; margin-left: 2px; opacity: .55; }
 .agent-msg-system {
   align-self: center; max-width: 100%; padding: 2px 6px; background: none; border: none;
-  color: var(--meta); font-size: 12px; text-align: center;
+  color: var(--meta); font-size: 12px; text-align: center; white-space: pre-wrap;
 }
 .agent-msg-tool {
   align-self: flex-start; max-width: 100%;
@@ -2503,7 +2503,26 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .agent-question-item textarea { width: 100%; font-size: 13px; }
 .agent-drawer-foot { border-top: 1px solid var(--border); padding: 10px 12px; }
 .agent-prompt-form { display: flex; flex-direction: column; gap: 8px; }
+.agent-command-composer { position: relative; }
 .agent-prompt-form textarea { width: 100%; resize: vertical; min-height: 52px; font: 400 13.5px/1.4 var(--sans); }
+.agent-command-menu {
+  position: absolute; left: 0; right: 0; bottom: calc(100% + 6px); z-index: 2;
+  max-height: min(280px, 42vh); padding: 5px; overflow-y: auto;
+  border: 1px solid var(--border); border-radius: var(--r-panel);
+  background: var(--surface-pop); box-shadow: var(--sh-pop);
+  backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf);
+}
+.agent-command-menu[hidden] { display: none; }
+.agent-command-option {
+  width: 100%; display: flex; align-items: flex-start; justify-content: space-between;
+  gap: 12px; padding: 8px 9px; border: 0; border-radius: var(--r-btn);
+  background: transparent; color: var(--ink); text-align: left; cursor: pointer;
+}
+.agent-command-option:hover, .agent-command-option.is-selected { background: var(--green-bg); }
+.agent-command-option-main { min-width: 0; display: flex; align-items: baseline; gap: 7px; }
+.agent-command-name { flex: 0 0 auto; color: var(--green); font: 650 12.5px/1.35 var(--mono); }
+.agent-command-hint { min-width: 0; color: var(--meta); font: 500 11.5px/1.35 var(--mono); overflow-wrap: anywhere; }
+.agent-command-description { min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.35; text-align: right; }
 .agent-drawer-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* ── A-27 响应式（≥1280 桌面 / 768–1279 平板 / <768 移动） ── */

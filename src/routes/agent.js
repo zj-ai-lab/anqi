@@ -296,6 +296,33 @@ export function createAgentRouter(supervisor, {
     res.json(supervisor.publicStatus(caseId));
   });
 
+  // 登录门由 server.js 的 `app.use('/api', apiAuth, ..., agentRouter)` 统一持有。
+  // 本端点只接收 URL 中已经过 mustCaseId() 核验的案件 id；session/worker 归属
+  // 必须由 supervisor 自己的 live worker 表反查，绝不接受 body/query 自报。
+  r.get('/cases/:id/agent/commands', async (req, res) => {
+    const caseId = mustCaseId(req, res);
+    if (caseId == null) return;
+    const config = loadAgentConfig();
+    if (!config.enabled) {
+      return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    }
+    try {
+      const commands = await supervisor.listCommands(caseId);
+      return res.json({ commands });
+    } catch (error) {
+      if (error?.code === 'worker_not_running') {
+        return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: error.code });
+      }
+      if (error?.code === 'agent_disabled') {
+        return res.status(409).json({ error: 'AI 助理未启用', code: error.code });
+      }
+      if (error?.code === 'commands_unavailable') {
+        return res.status(404).json({ error: '当前助理档位没有可用命令', code: error.code });
+      }
+      return res.status(502).json({ error: '命令清单读取失败', code: 'command_bridge_failed' });
+    }
+  });
+
   r.post('/cases/:id/agent/prompt', (req, res) => {
     const caseId = mustCaseId(req, res);
     if (caseId == null) return;
@@ -330,7 +357,10 @@ export function createAgentRouter(supervisor, {
     // 校验——如果 worker 恰好在这一行判断之后、supervisor.prompt() 真正执行
         // 之前退出,turn 会在 supervisor 内部落一个 fail 态,只是不会有对应的
     // turn/start 事件,调用方应以 SSE/status 而非这个 202 作为权威依据。
-    supervisor.prompt(caseId, text).catch(() => { /* 失败结果经 turn/end 广播,这里只防 unhandledRejection */ });
+    const dispatched = text.startsWith('/')
+      ? supervisor.dispatchSlash(caseId, text)
+      : supervisor.prompt(caseId, text);
+    dispatched.catch(() => { /* 生命周期由 SSE/session.status 或 worker 终态下行；这里只防 unhandledRejection */ });
     res.status(202).json({ accepted: true });
   });
 

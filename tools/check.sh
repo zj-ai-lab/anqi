@@ -483,4 +483,10 @@ node tools/test-agent-direct-write-http.js
 echo "[61/61] dsh-anqi 五个直写工具（精确工具集 + 描述 + contacts/facts 白名单 + 服务端强制字段）"
 node tools/test-agent-direct-tools.js
 
+echo "[62/62] dsh-anqi 斜杠命令 worker 桥（可选服务 + exact session agent + list/execute/miss 契约）"
+node tools/test-agent-commands.js
+
+echo "[63/63] AI 助理命令宿主/HTTP 桥（登录态挂载 + supervisor session 归属 + 斜杠命中/回退 + status 状态机）"
+node tools/test-agent-commands-http.js
+
 echo "ALL GREEN ✅"

@@ -1,5 +1,45 @@
 # PROGRESS
 
+## AI 助理斜杠命令工作会话 1/3 — 2026-09-01
+
+- 任务 0 通过：公开仓 `feat/agent-slash` 从 `9581827` 建立，Node `v22.23.0` 全检 `[61/61]`、`skipped=0`、`ALL GREEN ✅`；私有冻结仓入口已纠偏且未承载功能改动。
+- 目标：仅在 full DSH 档把服务端命令清单/执行桥到案件助理抽屉；project 档继续无命令 UI，未知 `/...` 原样发模型。
+- 顺序：worker 可选 `ctx.get('commands')` RPC → supervisor 与 session 绑定 HTTP/Prompt 分流 → 服务端清单驱动菜单和 command 生命周期系统行 → 文档/全检/提交。
+- 信任边界：HTTP 只用 supervisor 的 live worker 反查案件与 session，不信任请求体；不挂任何 DSH web/host/client 上游插件。
+- 验收：每个任务先让新断言故意红一次再恢复绿；最终命令清单 ≥4、`/compact` 回流 run/done、门禁 ≥63 且既有断言零放宽。
+- 最大风险：命令执行没有 turn 事件；状态只能沿现有 `session.status` 驱动，任何伪造 turn 或把未知斜杠吞掉都会破坏现有状态机/输入语义。
+
+### 任务 1：worker 命令桥（已完成）
+
+- 实现：`dsh-anqi-jsonrpc` 不扩充强制 `inject`，用 Cordis `ctx.get('commands')` 可选读取；`command/list` 与 `command/execute` 都先以 `sessionId` 锁定 exact live agent。project 档返回 `{ok:false,error:{code:'commands_unavailable'}}`，已知命令返回执行结果，未知命令返回 `{ok:true,matched:false}`。
+- 反向验证（红）：临时把新测试的清单长度断言故意写成 `5`，Node `v22.23.0` 实跑退出码 `1`：`AssertionError: 反向验证：故意写错的命令数量`，证据 `4 !== 5`。
+- 恢复验证（绿）：撤销故意错误后退出码 `0`；输出 `EVIDENCE_COMMAND_LIST` 含 `compact/feedback/goal/plan` 四条，`EVIDENCE_COMMAND_EXECUTE {"ok":true,"matched":true,"execution":{"commandId":"command-test-1","result":{"kind":"success","text":"compacted"}}}`。
+- 门禁：新增 `tools/test-agent-commands.js`，仅在 `tools/check.sh` 末尾追加 `[62/62]`；本任务未改任何既有断言。
+
+### 任务 2：宿主桥、HTTP 与斜杠分流（已完成）
+
+- 实现：supervisor 只按 `caseId→自身 live worker→sessionId` 调 `command/list|execute`；清单 wire 数据经字段投影/有界校验。`GET /api/cases/:id/agent/commands` 继承 `server.js` 的 `apiAuth`，不读取 body/query 的 session/case/cwd；project 缺服务为 404，未运行为 409。
+- 分流/状态：Prompt 路由仅在裁剪后文本以 `/` 开头时调用 `dispatchSlash()`；权威服务未命中或缺失时，同一串行锁把原文送 `session/prompt`。命中命令不生成宿主 `turn/*`；若命令触发 agent 工作，只由真实 `session.status running→idle` 维持 worker 状态并决定释放锁。
+- 反向验证（红）：临时把新测试改成期待 query 中的 `attacker-session`，Node `v22.23.0` 退出码 `1`；diff 明确显示实际仍是 `owned-session-command-http`、期望才是 `attacker-session`。
+- 恢复验证（绿）：退出码 `0`；`EVIDENCE_HTTP_COMMAND_LIST` 返回 `compact/feedback/goal/plan`；`EVIDENCE_HTTP_COMPACT_EVENTS` 仅含 wire `command/run`、`command/done`；未知命令证据为 `command/execute` 后用同一 session 原文进入 `session/prompt`。
+- 回归：既有 `tools/test-agent-supervisor.js` 实跑 26/26 全绿；既有 `tools/test-agent-http.js` 全绿。新增 `tools/test-agent-commands-http.js`，只在 `check.sh` 尾部追加 `[63/63]`，未改既有测试断言。
+- 最终竞态补强：新增测试让 `command/execute` 响应后才晚到 `session.status:running`，并立即排一条普通 prompt；实跑证明真实 idle 前没有 `session/prompt`，idle 后才启动下一 turn，退出码 `0`。
+
+### 任务 3：命令菜单与生命周期系统行（已完成）
+
+- 实现：ready worker 输入 `/` 时懒取当前案件清单；菜单只遍历服务端 descriptors，前端不含命令名白名单。4xx/空数组缓存为空且不渲染/不 toast；worker 重启重置。支持上下键循环、Tab、点选补全；`command/run·done` 按 commandId 关联并渲染开始/完成（或失败）系统行。
+- 反向验证（红）：临时新增错误断言要求监听不存在的 `command/finish`，Node `v22.23.0` 退出码 `1`，明确报 `AssertionError: 反向验证：故意要求不存在的 command/finish`；恢复后冒烟退出码 `0`。
+- 静态绿灯：扩充既有 `tools/smoke-agent-frontend.js`（仅新增断言），输出前端监听 13 个事件，新增 `command/run`、`command/done` 均核对到 DSH runtime 真事件与 supervisor 通用转发；服务端清单驱动、零硬编码、4xx/空清单隐藏、上下键+Tab+点选均通过。
+- Playwright（内置浏览器、真实 drawer/CSS + 隔离边界夹具）：完整清单 `optionCount:4`；Down 后选中索引 1，Tab 值 `/feedback `；Up 从首项循环到索引 3；点选首项值 `/compact`。发送后 DOM 为 `userLines:["/compact"]`、`systemLines:["命令开始：/compact","命令完成：/compact\nFixture command completed."]`。
+- Playwright 负路径：清单 404 与 `commands:[]` 各自重载后均为 `menuVisible:false, optionCount:0, ariaExpanded:"false", toastCount:0`；实际截图核对菜单停靠在输入框上方、四项可读且当前项高亮。浏览器标签、夹具进程及临时脚本均已清理。
+
+### 最终审计（已完成）
+
+- 最终全检：Node `v22.23.0` 实跑 `npm run check` 退出码 `0`，尾部依次打印 `[62/62]`、`[63/63]` 与 `ALL GREEN ✅`；同轮 `EVIDENCE_HTTP_COMMAND_LIST` 为四条，`EVIDENCE_HTTP_COMPACT_EVENTS` 为真实 wire `command/run·done`。新测试无 `skip/todo/|| true`，`skipped=0`。
+- 既有测试零放宽：`git diff --unified=0 -- tools/check.sh tools/smoke-agent-frontend.js` 只含新增行；前者 `+6/-0`，后者 `+28/-0`。最后一处仅调整新增注释后，前端真实服务 smoke 再跑退出码 `0`、九项全绿。
+- 范围/依赖：工作树只有任务白名单文件及任务书要求的 `PROGRESS.md/BLOCKED.md`；`git diff --check` 无输出；四份 package/lock 文件 diff 为空，所有 `@deepseek-ai/*` 仍为 `0.1.1-rc.2`，无新增运行时依赖。
+- 交付：只在公开仓分支 `feat/agent-slash` 做本地提交，不合并 `main`、不 push、不 tag；`BLOCKED.md` 当前项为“无”。
+
 ## 工作会话 1 — 2026-08-25
 
 ### 任务 0：基线核验（已完成，结论：通过）

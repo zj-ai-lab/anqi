@@ -65,6 +65,16 @@
 
 ---
 
+## 未发布 — 完整 DSH 档斜杠命令
+
+**状态：开发分支 `feat/agent-slash`，尚未合并 `main`。**
+
+- 案件 AI 助理的完整 DSH 档现在把 worker 已注册的斜杠命令接到现有对话面：输入框键入 `/` 后按服务端实时清单显示菜单，支持上下键、Tab 与点选补全；默认 `project` 档没有命令服务，继续不显示任何命令入口。前端不保存命令名白名单。
+- 命令仍从既有 prompt 端点进入。宿主只按 URL 中已核验的案件 id，从 supervisor 自己持有的 live worker 取 session；已知命令直达 worker 命令服务，未知 `/...` 或缺少命令服务时把同一文本当普通 prompt 交给模型，不吞输入、不另报“未知命令”。
+- worker 桥只扩展案齐自有 `dsh-anqi-jsonrpc`，没有挂载上游 Web/API gateway、host proxy/server 或 client connection。命令服务通过 Cordis 可选读取，因此默认档缺服务会返回结构化 `commands_unavailable`，不会令 worker 启动失败。
+- `command/run` 与 `command/done` 继续走既有 session.event → SSE 通路，在对话流中显示开始与完成/失败系统行。命令不伪造 `turn/*`；可能唤醒 agent 的命令只依据真实 `session.status running→idle` 更新宿主状态与串行边界。
+- 新增 worker 契约与宿主/HTTP 信任边界门禁（`tools/test-agent-commands.js`、`tools/test-agent-commands-http.js`），全检尾部由 61 步增至 63 步；前端既有冒烟扩充为清单驱动、零硬编码、负路径和命令事件静态审查。
+
 ## 2.7.0-beta.5 — AI 助理直写案件记录 + 案件页工作台
 
 **状态：预发布版；分支 `feat/agent-sidecar`，尚未合并 `main`。**

@@ -39,6 +39,14 @@ export const Config = Schema.object({
 
 const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
 const REQUIRED_SKILL = 'anqi-case-brief';
+const MAX_COMMAND_CHARS = 8_000;
+const COMMANDS_UNAVAILABLE = Object.freeze({
+  ok: false,
+  error: Object.freeze({
+    code: 'commands_unavailable',
+    message: 'slash commands are unavailable for this worker capability mode',
+  }),
+});
 
 const APPROVAL_OUTCOMES = new Set([
   'allowed-once',
@@ -62,6 +70,19 @@ function sessionIdFromParams(params, method) {
     throw new Error(`${method} requires a valid sessionId`);
   }
   return sessionId;
+}
+
+function commandLineFromParams(params) {
+  const line = params?.line;
+  if (
+    typeof line !== 'string'
+    || line.length === 0
+    || line.length > MAX_COMMAND_CHARS
+    || line.includes('\0')
+  ) {
+    throw new Error(`command/execute requires a non-empty line of at most ${MAX_COMMAND_CHARS} characters`);
+  }
+  return line;
 }
 
 function abortReason(signal) {
@@ -115,7 +136,7 @@ function validateQuestionAnswer(value, sessionId, questions) {
   return { answers: normalized };
 }
 
-class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
+export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
   constructor(ctx, transport, options = {}) {
     super(ctx, transport, options);
     this.interactionTimeoutMs = options.interactionTimeoutMs ?? 120_000;
@@ -182,6 +203,39 @@ class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
       throw new Error(`session/preflight is required before session/prompt: ${sessionId}`);
     }
     return super.handleRequest('session/prompt', params);
+  }
+
+  commandService() {
+    // commands 是 full capability 才会挂载的可选服务。这里不能把它加入
+    // inject，否则 project 档会在 Cordis 组合阶段直接启动失败。
+    return this.ctx.get('commands');
+  }
+
+  listCommands(params) {
+    const sessionId = sessionIdFromParams(params, 'command/list');
+    const { agent } = this.assertLiveSession(sessionId);
+    const commands = this.commandService();
+    if (commands === undefined) return COMMANDS_UNAVAILABLE;
+    return {
+      ok: true,
+      commands: commands.list(agent),
+    };
+  }
+
+  async executeCommand(params) {
+    const sessionId = sessionIdFromParams(params, 'command/execute');
+    const line = commandLineFromParams(params);
+    const { agent } = this.assertLiveSession(sessionId);
+    const commands = this.commandService();
+    if (commands === undefined) return COMMANDS_UNAVAILABLE;
+    const execution = await commands.execute(
+      agent,
+      line,
+      [],
+      this.shutdownController.signal,
+    );
+    if (execution === undefined) return { ok: true, matched: false };
+    return { ok: true, matched: true, execution };
   }
 
   completePreflight(sessionId, agent, observation) {
@@ -310,6 +364,10 @@ class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
         return this.preflightSession(params);
       case 'session/prompt':
         return this.promptSession(params);
+      case 'command/list':
+        return this.listCommands(params);
+      case 'command/execute':
+        return this.executeCommand(params);
       default:
         return super.handleRequest(method, params);
     }

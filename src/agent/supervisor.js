@@ -320,6 +320,59 @@ function isPreflightReady(preflight) {
     && preflight.skills?.ready === true;
 }
 
+const COMMAND_NAME = /^[a-z][a-z0-9_-]*$/u;
+
+function codedError(code, message) {
+  const error = new Error(message);
+  error.code = code;
+  return error;
+}
+
+// 子进程的 JSON-RPC 结果属于不可信 wire 数据。命令清单只投影上游公开描述符
+// 的三个字段，并在送到 HTTP/UI 前做有界校验；不把插件对象上的任意额外字段
+// 顺手透传给浏览器。
+function projectCommandDescriptors(value) {
+  if (!Array.isArray(value)) throw codedError('command_protocol_error', 'command/list returned a non-array command list');
+  const seen = new Set();
+  return value.map((descriptor) => {
+    if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor)) {
+      throw codedError('command_protocol_error', 'command/list returned an invalid descriptor');
+    }
+    const { name, description, input } = descriptor;
+    if (
+      typeof name !== 'string'
+      || name.length > 128
+      || !COMMAND_NAME.test(name)
+      || seen.has(name)
+    ) {
+      throw codedError('command_protocol_error', 'command/list returned an invalid or duplicate command name');
+    }
+    if (typeof description !== 'string' || description.trim() === '' || description.length > 1_000) {
+      throw codedError('command_protocol_error', 'command/list returned an invalid command description');
+    }
+    seen.add(name);
+    const projected = { name, description };
+    if (input !== undefined) {
+      if (
+        !input
+        || typeof input !== 'object'
+        || Array.isArray(input)
+        || typeof input.hint !== 'string'
+        || input.hint.trim() === ''
+        || input.hint.length > 500
+        || (input.images !== undefined && typeof input.images !== 'boolean')
+      ) {
+        throw codedError('command_protocol_error', 'command/list returned invalid command input metadata');
+      }
+      projected.input = {
+        hint: input.hint,
+        ...(input.images === true ? { images: true } : {}),
+      };
+    }
+    return projected;
+  });
+}
+
 // repo-root/data：与 src/db.js 的 DB_PATH 默认值同一目录，已经被 .gitignore 的
 // `data/` 规则覆盖，不需要额外忽略规则。这个默认值只对"裸 node server.js 跑
 // 在仓库里"（dev、Docker、tools/check.sh）成立——__dirname 在 Electron 打包后
@@ -775,6 +828,10 @@ class Worker {
     this.nextTurnId = 1;
     this.turnLock = Promise.resolve();
     this.currentAbort = null;
+    // 命令可能不产生 turn/*；若命令触发 goal round，则只用真实
+    // session.status running→idle 维持宿主状态和串行锁。
+    this._commandState = null;
+    this._idleWaiters = new Set();
     this.firstTurnChecked = false;
     this.redact = redactor([]); // 占位版本（含 .deep），start() 里换成真正带 secret 值的版本
     this.readyPromise = null;
@@ -1281,6 +1338,67 @@ export class AgentSupervisor {
     worker.emit('worker/ready', {});
   }
 
+  async _commandWorker(caseId, { waitForReady }) {
+    const config = this.loadConfigFn();
+    if (!config.enabled) {
+      if (this.workers.has(caseId) && LIVE_STATUSES.has(this.workers.get(caseId).status)) {
+        this.stop(caseId, config.error ? `disabled-by-settings:${config.error}` : 'disabled-by-settings').catch(() => {});
+      }
+      throw codedError('agent_disabled', 'agent is disabled');
+    }
+    const worker = this.workers.get(caseId);
+    if (!worker || !LIVE_STATUSES.has(worker.status)) {
+      throw codedError('worker_not_running', 'worker is not running');
+    }
+    if (worker.status === 'starting') {
+      if (!waitForReady || !worker.readyPromise) {
+        throw codedError('worker_not_running', 'worker is not ready yet');
+      }
+      await worker.readyPromise;
+      if (worker.status !== 'ready') {
+        throw codedError('worker_not_running', 'worker failed to become ready');
+      }
+    }
+    return worker;
+  }
+
+  async _waitForExternalIdle(worker) {
+    // turnLock 已覆盖宿主自己发起的 turn/command；这里专门承接命令结算后才
+    // 异步启动的 goal round 等外部 activity。它没有宿主 turn resolver，唯一
+    // 权威边界就是 exact session 的 status:idle。
+    if (worker.status !== 'running' || worker._turnResolvers || worker._commandState) return;
+    let resolveIdle;
+    let rejectIdle;
+    const waiter = new Promise((resolve, reject) => {
+      resolveIdle = resolve;
+      rejectIdle = reject;
+    });
+    waiter.catch(() => {});
+    const record = { resolve: resolveIdle, reject: rejectIdle };
+    worker._idleWaiters.add(record);
+    const timeout = timeoutPromise(this.turnTimeoutMs, 'agent activity did not return to idle');
+    try {
+      await Promise.race([waiter, timeout.promise]);
+    } finally {
+      timeout.cancel();
+      worker._idleWaiters.delete(record);
+    }
+  }
+
+  // 只从 supervisor 持有的 caseId→worker→sessionId 绑定取命令清单。调用方
+  // 没有 sessionId 参数，也没有任何机会自报另一个 worker 的会话。
+  async listCommands(caseId) {
+    const worker = await this._commandWorker(caseId, { waitForReady: false });
+    const result = await this._request(worker, 'command/list', { sessionId: worker.sessionId });
+    if (result?.ok === false && result.error?.code === 'commands_unavailable') {
+      throw codedError('commands_unavailable', 'slash commands are unavailable for this worker');
+    }
+    if (result?.ok !== true) {
+      throw codedError('command_protocol_error', 'command/list returned an invalid result');
+    }
+    return projectCommandDescriptors(result.commands);
+  }
+
   // ---- turn 执行：串行 + 可取消 ----
   async prompt(caseId, text) {
     // 不信任调用方（src/routes/agent.js 的 prompt 路由）已经检查过
@@ -1334,7 +1452,122 @@ export class AgentSupervisor {
     return turnPromise;
   }
 
+  // `/` 前缀的唯一宿主入口：先让 worker 的权威命令表解析；服务缺失或名称
+  // 未命中时，仍在同一串行锁里把完全相同的文本交给普通 turn，不吞输入。
+  async dispatchSlash(caseId, text) {
+    const worker = await this._commandWorker(caseId, { waitForReady: true });
+    const run = async () => {
+      const command = await this._executeSlashCommand(worker, text);
+      if (!command.available || !command.matched) return this._runTurn(worker, text);
+      return command;
+    };
+    this._appendUiHistory(worker, { role: 'user', text });
+    const commandPromise = worker.turnLock.then(run, run);
+    worker.turnLock = commandPromise.then(() => {}, () => {});
+    return commandPromise;
+  }
+
+  async _executeSlashCommand(worker, line) {
+    if (!LIVE_STATUSES.has(worker.status)) {
+      throw codedError('worker_not_running', 'worker is not running');
+    }
+    await this._waitForExternalIdle(worker);
+    if (!LIVE_STATUSES.has(worker.status)) {
+      throw codedError('worker_not_running', 'worker is not running');
+    }
+    let resolveIdle;
+    let rejectIdle;
+    const idlePromise = new Promise((resolve, reject) => {
+      resolveIdle = resolve;
+      rejectIdle = reject;
+    });
+    idlePromise.catch(() => {});
+    const state = {
+      sawRunning: false,
+      sawIdle: false,
+      resolveIdle,
+      rejectIdle,
+    };
+    if (worker._commandState) {
+      throw codedError('command_protocol_error', 'another slash command is already active');
+    }
+    worker._commandState = state;
+    try {
+      const result = await this._request(worker, 'command/execute', {
+        sessionId: worker.sessionId,
+        line,
+      }, this.turnTimeoutMs);
+      if (result?.ok === false && result.error?.code === 'commands_unavailable') {
+        return { available: false, matched: false };
+      }
+      if (result?.ok !== true || typeof result.matched !== 'boolean') {
+        throw codedError('command_protocol_error', 'command/execute returned an invalid result');
+      }
+      if (!result.matched) {
+        if (state.sawRunning) {
+          throw codedError('command_protocol_error', 'an unmatched command changed the agent status');
+        }
+        return { available: true, matched: false };
+      }
+      const execution = result.execution;
+      if (
+        !execution
+        || typeof execution !== 'object'
+        || typeof execution.commandId !== 'string'
+        || execution.commandId.length === 0
+        || execution.commandId.length > 512
+        || !execution.result
+        || typeof execution.result !== 'object'
+        || !['success', 'error'].includes(execution.result.kind)
+        || (execution.result.text !== undefined && typeof execution.result.text !== 'string')
+      ) {
+        throw codedError('command_protocol_error', 'command/execute returned an invalid execution');
+      }
+      // 某些命令（如 /goal）会在命令 handler 结算后继续唤醒 agent。若真实
+      // session.status 已经进入 running，就等它真实回 idle 再释放 turnLock；
+      // /compact 这类 maintenance 不产生 running，RPC 自身结算即已完成。
+      if (state.sawRunning && !state.sawIdle) {
+        const timeout = timeoutPromise(this.turnTimeoutMs, 'slash command did not return to idle');
+        try {
+          await Promise.race([idlePromise, timeout.promise]);
+        } finally {
+          timeout.cancel();
+        }
+      }
+      const safeResult = {
+        kind: execution.result.kind,
+        ...(execution.result.text === undefined ? {} : { text: worker.redact(execution.result.text) }),
+        ...(Number.isSafeInteger(execution.result.sourceEventSeq) && execution.result.sourceEventSeq >= 0
+          ? { sourceEventSeq: execution.result.sourceEventSeq }
+          : {}),
+      };
+      return {
+        available: true,
+        matched: true,
+        commandId: worker.redact(execution.commandId),
+        result: safeResult,
+      };
+    } catch (error) {
+      // 真实 running 已出现却没有回 idle 时，宿主已经无法证明子进程仍可安全
+      // 接受下一条输入；同步离开 LIVE 并走现有 stop 收尾，避免锁释放后串线。
+      if (state.sawRunning && !state.sawIdle && LIVE_STATUSES.has(worker.status)) {
+        worker.status = 'stopping';
+        this._expirePendingInteractions(worker, 'command_failed');
+        this.stop(worker.caseId, `command_failed:${worker.redact(error.message)}`.slice(0, 200)).catch(() => {});
+      }
+      throw error;
+    } finally {
+      if (worker._commandState === state) worker._commandState = null;
+    }
+  }
+
   async _runTurn(worker, text) {
+    if (!LIVE_STATUSES.has(worker.status)) {
+      const error = new Error('worker is not running');
+      error.code = 'worker_not_running';
+      throw error;
+    }
+    await this._waitForExternalIdle(worker);
     if (!LIVE_STATUSES.has(worker.status)) {
       const error = new Error('worker is not running');
       error.code = 'worker_not_running';
@@ -1669,11 +1902,33 @@ export class AgentSupervisor {
   _handleNotification(worker, message) {
     const params = message.params || {};
     if (message.method === 'session.status') {
-      if (params.sessionId === worker.sessionId && worker._turnResolvers) {
-        if (params.status === 'running') worker._turnResolvers.sawRunning = true;
+      if (params.sessionId === worker.sessionId) {
+        // startup 仍由 initialize/create/preflight 固定序列决定，不能让一个过早
+        // idle 帧把 starting 冒充 ready。除此之外，没有宿主 turn resolver 的
+        // activity（典型是命令结算后异步启动的 goal round）由真实 status 帧
+        // 更新 worker；不制造任何 turn 事件。
+        if (!worker._turnResolvers && worker.status !== 'starting') {
+          if (params.status === 'running' && LIVE_STATUSES.has(worker.status)) worker.status = 'running';
+          if (params.status === 'idle' && LIVE_STATUSES.has(worker.status)) worker.status = 'ready';
+        }
         if (params.status === 'idle') {
-          worker._turnResolvers.sawIdle = true;
-          this._maybeResolveTurn(worker);
+          for (const waiter of worker._idleWaiters || []) waiter.resolve();
+          worker._idleWaiters?.clear();
+        }
+        if (worker._turnResolvers) {
+          if (params.status === 'running') worker._turnResolvers.sawRunning = true;
+          if (params.status === 'idle') {
+            worker._turnResolvers.sawIdle = true;
+            this._maybeResolveTurn(worker);
+          }
+        } else if (worker._commandState) {
+          if (params.status === 'running') {
+            worker._commandState.sawRunning = true;
+          }
+          if (params.status === 'idle') {
+            worker._commandState.sawIdle = true;
+            worker._commandState.resolveIdle();
+          }
         }
       }
       return;
@@ -2065,6 +2320,9 @@ export class AgentSupervisor {
     for (const entry of worker.pendingRpc.values()) entry.reject(error);
     worker.pendingRpc.clear();
     worker._turnResolvers?.rejectTurn(error);
+    worker._commandState?.rejectIdle(error);
+    for (const waiter of worker._idleWaiters || []) waiter.reject(error);
+    worker._idleWaiters?.clear();
     if (LIVE_STATUSES.has(worker.status)) worker.status = 'error';
     this._expirePendingInteractions(worker, reason);
   }
