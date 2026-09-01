@@ -261,7 +261,7 @@ docker start anqi
 
 ## AI 助理（可选）
 
-案齐还包含一个可选的 AI 助理（进程外 DSH sidecar），能在案件范围内多轮对话、读取案卷并给出建议；它与上面「可选 LLM」的快录/提取按钮是两套独立功能。每个案件的 `folder_path` 对应目录就是该案 Agent 项目：在案件页打开助理会自动把该目录设为 `cwd`，无需再选路径。标准 read/read_image/write/edit/glob/grep 都会解析真实路径并拒绝越出本案目录；指向外部的符号链接同样拒绝。
+案齐还包含一个可选的 AI 助理（进程外 sidecar，基于 [DSH · DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 运行时），能在案件范围内多轮对话、读取案卷并给出建议；它与上面「可选 LLM」的快录/提取按钮是两套独立功能。每个案件的 `folder_path` 对应目录就是该案 Agent 项目：在案件页打开助理会自动把该目录设为 `cwd`，无需再选路径。标准 read/read_image/write/edit/glob/grep 都会解析真实路径并拒绝越出本案目录；指向外部的符号链接同样拒绝。
 
 **默认关闭**。不启用时，AI 助理相关的依赖只以文件形式存在于镜像/安装目录中，不会被加载、不占用内存，也不会发起任何网络请求；对绝大多数只用手动案件管理的部署没有任何影响。
 

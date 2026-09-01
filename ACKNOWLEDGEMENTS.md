@@ -13,6 +13,7 @@
 | [electron-builder](https://www.electron.build/) | 桌面发行物构建 | MIT |
 | [electron-updater](https://www.electron.build/auto-update.html) | 桌面版本检查 | MIT |
 | [@electron/rebuild](https://github.com/electron/rebuild) | 原生模块 ABI 重建 | MIT |
+| [DSH（DeepSeek Harness）](https://github.com/deepseek-ai/deepseek-harness) | 案件 AI 助理的 agent 运行时（进程外 sidecar，`@deepseek-ai/dsh-*` 包族，随发行物分发、不进仓库） | BSD-3-Clause |
 
 安装依赖时还会取得上述项目的传递依赖。它们不因案齐采用 AGPL-3.0-only 而改变各自许可证。
 
