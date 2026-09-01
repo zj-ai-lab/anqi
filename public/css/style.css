@@ -683,8 +683,16 @@ a.chip:hover { background: var(--hover); border-color: var(--border-h); text-dec
 .rw-key { text-align: center; }
 /* 跑道操作位：改期 + 完成双键。紧凑行用 .rw-acts 叠放在第 5 列（56px）；
    头条的 .rw-key 同理纵向排。断档规则见各 media 块（与 .rw-done 同列）。 */
-.rw-acts { display: flex; flex-direction: column; gap: 4px; align-items: center; justify-self: center; }
+/* 操作列与其他列一样自带 14px 右侧留白（本网格的列 gutter 由单元格自持，
+   见 .rw-due / .rw-main / .rw-colhead > *）——没有它按钮会贴行右边线 */
+.rw-acts {
+  display: flex; flex-direction: column; gap: 4px; align-items: center; justify-self: center;
+  padding: 6px 14px 6px 4px;
+}
 .rw-lead .rw-key { display: flex; flex-direction: column; gap: 4px; align-items: center; }
+/* 案件页头条行的操作位是 .rw-lead 的直接网格单元，与 .rw-acts 同理自持 gutter；
+   今日页头条的 .rw-key 包在 .focus-actions 里（留白由那层负责），不受此规则影响 */
+.rw-lead > .rw-key { padding: 6px 14px 6px 4px; }
 .rw-done { justify-self: center; }
 
 /* 时间轴条形图：16 日刻度（逾期 2 日 + 未来 14 日），今日原点 = 12.5% */
@@ -2390,11 +2398,20 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
 .voucher-input { display: none; }
 .voucher-tail { margin-left: auto; color: var(--meta); font-size: 11px; }
 
-/* ── A-26c 案件助理抽屉（js/agent-drawer.js 运行时注入，counts.agent=true 才挂载）──
-   入口是 case-context-tools 里的普通 .btn.small（无新样式）；抽屉本身是右侧
-   滑出面板，宽度复用双栏工作台右栏同一刻度 --w-right，窄屏 min() 自动收到
-   100vw，不需要单独的响应式覆写。 */
+/* ── A-26c 案件助理面板（js/agent-drawer.js 运行时注入，counts.agent=true 才挂载）──
+   入口是 case-context-tools 里的普通 .btn.small（无新样式）；面板本身固定在
+   右侧，宽度复用双栏工作台右栏同一刻度 --w-right，窄屏 min() 自动收到 100vw。
+   两种形态由 JS 按 matchMedia(≥1100px) 决定（本段规则自身不带媒体查询）：
+   - 停靠（宽视口）：body 挂 .agent-docked，主体 padding-right 让位 + 快录条
+     right 收窄，无遮罩，左侧工作台与面板可同时操作；
+   - 悬浮（窄视口）：沿用遮罩层，点遮罩/Escape 关闭。 */
 .agent-drawer-backdrop { position: fixed; inset: 0; z-index: 76; background: var(--scrim); }
+body.agent-docked { padding-right: min(var(--w-right), 100vw); }
+body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
+/* 停靠挤压后，案件双栏在中等视口提前塌单栏（自身断点 1180px + 面板 404px） */
+@media (max-width: 1584px) {
+  body.agent-docked .case-layout { grid-template-columns: 1fr; }
+}
 .agent-drawer {
   position: fixed; top: var(--h-top); right: 0; bottom: 0; z-index: 77;
   width: min(var(--w-right), 100vw); max-width: 100vw;
@@ -2509,7 +2526,8 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
   .sk { min-width: 40px; }
 }
 @media (max-width: 980px) {
-  .rw-colhead, .rw-lead, .rw-row { grid-template-columns: 96px minmax(0, 1fr) 78px 56px; }
+  /* 操作列 auto：56px 硬宽刚好等于按钮宽，等于把 .rw-acts 的 gutter 挤没 */
+  .rw-colhead, .rw-lead, .rw-row { grid-template-columns: 96px minmax(0, 1fr) 78px auto; }
   .h-trk, .rw-trk, .rw-track { display: none; }
   .h-due, .rw-due { grid-column: 3; }
   .h-key, .rw-key, .rw-done, .rw-acts { grid-column: 4; }
@@ -2606,7 +2624,8 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
   .rw-due { grid-column: 2; grid-row: 2; padding: 0 14px 10px; text-align: left; }
   .rw-key { display: none; }
   .rw-done { grid-column: 3; grid-row: 1 / 3; justify-self: end; margin-right: 12px; }
-  .rw-acts { grid-column: 3; grid-row: 1 / 3; justify-self: end; margin-right: 12px; flex-direction: row; }
+  /* 手机横排：基础规则的 14px 右 padding 已提供 gutter，不再叠加 margin */
+  .rw-acts { grid-column: 3; grid-row: 1 / 3; justify-self: end; flex-direction: row; }
   .rw-lead { grid-template-columns: 1fr; }
   .hd-main { grid-column: 1; }
   .rw-lead .rw-due { display: none; }

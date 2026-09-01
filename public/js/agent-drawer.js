@@ -445,20 +445,51 @@ export async function mountAgentDrawer(caseId) {
     es.onerror = () => { /* EventSource 自己会重连，不额外处理——重连后会再收一次 status 首帧 */ };
   }
 
+  // 停靠 vs 悬浮：≥1100px 视口把面板停靠在右侧——body 挂 agent-docked 让主体
+  // 和快录条让位（CSS 见 A-26c），无遮罩，左侧工作台可同时操作；更窄视口回落
+  // 原有的遮罩悬浮层。JS 是唯一状态源：CSS 的 body.agent-docked 规则不带媒体
+  // 查询，靠这里的 matchMedia 监听保证只在宽视口挂类。
+  const dockMedia = window.matchMedia('(min-width: 1100px)');
+  const DOCK_KEY = 'agent-dock-open';
+
+  function applyLayout() {
+    if (drawer.hidden) {
+      document.body.classList.remove('agent-docked');
+      backdrop.hidden = true;
+      return;
+    }
+    const docked = dockMedia.matches;
+    document.body.classList.toggle('agent-docked', docked);
+    backdrop.hidden = docked;
+  }
+
   function openDrawer() {
     drawer.hidden = false; drawer.setAttribute('aria-hidden', 'false');
-    backdrop.hidden = false;
+    applyLayout();
+    try { localStorage.setItem(DOCK_KEY, '1'); } catch { /* 隐私模式等存不了就不记 */ }
     connectSSE();
     scrollLogDown();
   }
   function closeDrawer() {
     drawer.hidden = true; drawer.setAttribute('aria-hidden', 'true');
-    backdrop.hidden = true;
+    applyLayout();
+    try { localStorage.removeItem(DOCK_KEY); } catch { /* 同上 */ }
   }
-  entryBtn.addEventListener('click', openDrawer);
+  // 入口按钮是开关：面板停靠后左侧仍可操作，得有一个不进面板也能关它的地方
+  entryBtn.addEventListener('click', () => { if (drawer.hidden) openDrawer(); else closeDrawer(); });
   closeBtn.addEventListener('click', closeDrawer);
   backdrop.addEventListener('click', closeDrawer);
-  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden) closeDrawer(); });
+  // Escape 只在悬浮（遮罩）模式关面板：停靠时人在左侧工作台里正常用 Escape
+  //（关日期弹层、收折叠），不该顺手把助理面板一起带走
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !drawer.hidden && !dockMedia.matches) closeDrawer(); });
+  dockMedia.addEventListener('change', applyLayout);
+
+  // 上次离开时面板是开着的 → 宽视口下自动恢复停靠。这会立即建 SSE，与顶部
+  // 「懒建连接」的初衷不冲突：那是防「谁都没点过抽屉的标签页」空转长连接，
+  // 而这里是用户明确留着面板没关——关掉面板即清除记忆，不会再自动连。
+  let restoreOpen = false;
+  try { restoreOpen = localStorage.getItem(DOCK_KEY) === '1'; } catch { /* 读不了当没记过 */ }
+  if (restoreOpen && dockMedia.matches) openDrawer();
 
   stopBtn.addEventListener('click', async () => {
     stopBtn.disabled = true;
