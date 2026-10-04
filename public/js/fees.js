@@ -5,7 +5,7 @@
 import { api, el, toast, todayStr } from './api.js';
 import { mountNav } from './nav.js';
 import { datePrompt } from './dateedit.js';
-import { feeSettlementActions, openFeeSettlement } from './fee-settlement.js';
+import { feeSettlementActions, openFeeSettlement, openPrimaryFeeSettlement } from './fee-settlement.js';
 import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
 
@@ -209,13 +209,13 @@ function itemRow(f, c) {
   const shareText = firstShare
     ? `${firstShare.direction === 'payable' ? '应付' : '应收'} ${firstShare.counterpart} ${fmt(firstShare.amount)}`
     : '无分成';
-  // 主按钮：paid → 记分成；unpaid → 标记已收；waived → 无主按钮
+  // 主按钮：paid → 处理分成；unpaid → 收到钱了；waived → 无主按钮
   const primaryBtn = f.status === 'paid'
     ? el('button', { class: 'ledger-btn primary is-paid', type: 'button',
-        onclick: () => openFeeSettlement({ fee: f, onChanged: load }) }, '记分成')
+        onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: load }) }, '处理分成')
     : f.status === 'unpaid'
       ? el('button', { class: 'ledger-btn primary', type: 'button',
-          onclick: () => openFeeSettlement({ fee: f, onChanged: load }) }, '标记已收')
+          onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: load }) }, '收到钱了')
       : null;
   return el('div', {
     class: 'ledger-item fee-ledger-item',

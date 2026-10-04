@@ -181,6 +181,10 @@ function relationText(direction, counterpart) {
   return direction === 'receivable' ? `${counterpart}应给我` : `我应给${counterpart}`;
 }
 
+function shareDirectionText(direction, counterpart) {
+  return direction === 'receivable' ? `我应收 ${counterpart}` : `我应付 ${counterpart}`;
+}
+
 function moneyEquation(view, { compact = false } = {}) {
   const box = el('div', { class: `settlement-equation${compact ? ' compact' : ''}` });
   for (const row of view?.equation || []) {
@@ -710,8 +714,8 @@ function planDecisionRow(agreement, { fee, onSaved }) {
   const plan = agreement.plan;
   const decision = selectOf([
     { value: '', label: '请选择…' },
-    { value: 'assigned', label: '这笔律师费参与分成' },
-    { value: 'not_applicable', label: '这笔律师费不参与分成' },
+    { value: 'assigned', label: agreement.direction === 'receivable' ? '这笔律师费形成应收' : '这笔律师费形成应付' },
+    { value: 'not_applicable', label: '这笔律师费不关联这项分成' },
   ], plan?.status || '');
   const note = inputOf({ value: plan?.decision_note || '', placeholder: '可选：补充说明这笔钱为什么参与或不参与' });
   const choiceBox = el('div', { class: 'settlement-plan-choice' });
@@ -838,7 +842,8 @@ function planDecisionRow(agreement, { fee, onSaved }) {
   const displayedRevision = currentRevision || latestRevision;
   return el('div', { class: `settlement-plan-row${issue ? ' is-unresolved' : ''}` },
     el('div', { class: 'settlement-plan-main' },
-      el('span', { class: 'chip c-amber' }, `我应给${agreement.counterpart}`),
+      el('span', { class: `chip ${agreement.direction === 'receivable' ? 'c-blue' : 'c-amber'}` },
+        shareDirectionText(agreement.direction, agreement.counterpart)),
       el('span', { class: 'grow meta' }, displayedRevision?.money_view?.human_summary || displayedRevision?.formula_summary || '')
     ),
     el('div', { class: 'settlement-plan-fields' },
@@ -883,13 +888,13 @@ function publicPreview(preview) {
     el('span', {}, '这次新增', el('b', { class: 'num' }, money(preview.totals.new_amount_fen)))
   ));
   if (!preview.settlements.length) {
-    wrap.append(el('div', { class: 'settlement-warning' }, '这笔律师费没有需要分给别人的约定。确认后只更新收款状态，不会新增待分记录。'));
+    wrap.append(el('div', { class: 'settlement-warning' }, '这笔律师费没有关联的应收或应付分成。确认后只更新收款状态。'));
     return wrap;
   }
   for (const settlement of preview.settlements) {
     wrap.append(el('div', { class: 'settlement-preview-card' },
       el('div', { class: 'settlement-plan-main' },
-        el('b', {}, `我应给${settlement.counterpart}`),
+        el('b', {}, shareDirectionText(settlement.direction, settlement.counterpart)),
         el('span', { class: 'grow meta' }, settlement.money_view?.human_summary || settlement.formula_summary),
         el('b', { class: 'num' }, money(settlement.new_amount_fen))
       ),
@@ -920,7 +925,7 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
     title: runKind
       ? `${runKind === 'receipt' ? '确认收到律师费' : runKind === 'correction' ? '修改这笔结算' : '撤销这次收款'} · ${fee.label}`
       : `这笔律师费怎么分 · ${fee.label}`,
-    hint: '确认谁参与、怎么分和实际到账日；金额始终由系统按保存的规则计算。',
+    hint: '确认这笔钱关联哪些应收 / 应付分成和实际到账日；金额由系统按已保存的规则计算。',
   });
   modal.body.append(statusMessage('正在读取这笔律师费和分成约定…'));
 
@@ -940,22 +945,41 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
   function renderPlans(section) {
     const list = el('div', { class: 'settlement-plan-list' });
     const onSaved = () => reload({ refreshHost: true });
-    for (const agreement of bundle.agreements) {
-      list.append(planDecisionRow(agreement, { fee: bundle.fee, onSaved }));
-    }
+    const receivable = bundle.agreements.filter((agreement) => agreement.direction === 'receivable');
+    const payable = bundle.agreements.filter((agreement) => agreement.direction === 'payable');
+    const appendGroup = (direction, agreements) => {
+      if (!agreements.length) return;
+      list.append(el('div', { class: 'settlement-plan-group-title' },
+        el('span', { class: `chip ${direction === 'receivable' ? 'c-blue' : 'c-amber'}` },
+          direction === 'receivable' ? '我应收' : '我应付'),
+        el('span', {}, direction === 'receivable' ? '别人应给我的分成' : '我应给别人的分成')
+      ));
+      for (const agreement of agreements) list.append(planDecisionRow(agreement, { fee: bundle.fee, onSaved }));
+    };
+    appendGroup('receivable', receivable);
+    appendGroup('payable', payable);
     if (!bundle.agreements.length) {
-      list.append(el('div', { class: 'section-empty' }, '本案还没有“我分给别人”的约定；可以先新增，也可以直接确认收款且不产生分成。'));
+      list.append(el('div', { class: 'section-empty' }, '本案还没有可关联的应收或应付分成约定；可以直接确认收款。'));
     }
-    const add = el('button', { class: 'btn small', type: 'button', onclick: async () => {
-      await openFormulaEditor({
-        caseId: bundle.fee.case_id,
-        direction: 'payable',
-        onChanged: async () => reload({ refreshHost: true }),
-      });
-    } }, '新增“我分给别人”约定');
+    const add = el('span', { class: 'settlement-add-actions' },
+      el('button', { class: 'btn small', type: 'button', onclick: async () => {
+        await openFormulaEditor({
+          caseId: bundle.fee.case_id,
+          direction: 'receivable',
+          onChanged: async () => reload({ refreshHost: true }),
+        });
+      } }, '新增我应收'),
+      el('button', { class: 'btn small', type: 'button', onclick: async () => {
+        await openFormulaEditor({
+          caseId: bundle.fee.case_id,
+          direction: 'payable',
+          onChanged: async () => reload({ refreshHost: true }),
+        });
+      } }, '新增我应付')
+    );
     section.append(
       el('div', { class: 'settlement-section-head' },
-        el('div', {}, el('b', {}, '谁参与这笔分成'), el('div', { class: 'meta' }, '逐条确认这笔律师费是否按该约定分。')),
+        el('div', {}, el('b', {}, '这笔钱怎么走'), el('div', { class: 'meta' }, '已有约定直接选择是否关联这笔律师费。')),
         add
       ),
       list
@@ -967,7 +991,7 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
     const status = statusMessage('修改输入后请重新预览。');
     const previewBox = el('div', { class: 'settlement-preview-box' });
     const previewButton = el('button', { class: 'btn primary', type: 'button' }, '算一算');
-    const unresolved = bundle.unresolved_active_payable_agreements || [];
+    const unresolved = bundle.unresolved_active_fee_agreements || bundle.unresolved_active_payable_agreements || [];
     const sourceRequired = runKind !== 'receipt';
 
     if (sourceRequired && !controls.source) {
@@ -1060,7 +1084,10 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
         status.className = 'settlement-status warn';
         status.textContent = errorText(error);
       } finally {
-        previewButton.disabled = Boolean(runKind !== 'reversal' && bundle.unresolved_active_payable_agreements.length);
+        previewButton.disabled = Boolean(
+          runKind !== 'reversal'
+          && (bundle.unresolved_active_fee_agreements || bundle.unresolved_active_payable_agreements).length
+        );
       }
     });
 
@@ -1086,8 +1113,8 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
         el('b', {}, bundle.fee.label),
         el('span', { class: 'num' }, money(bundle.fee.amount_fen)),
         el('span', { class: 'grow meta' }, bundle.fee.paid_on || bundle.fee.due_on || '日期待定'),
-        bundle.unresolved_active_payable_agreements.length
-          ? el('span', { class: 'chip c-amber' }, `${bundle.unresolved_active_payable_agreements.length} 条分成待确认`)
+        (bundle.unresolved_active_fee_agreements || bundle.unresolved_active_payable_agreements).length
+          ? el('span', { class: 'chip c-amber' }, `${(bundle.unresolved_active_fee_agreements || bundle.unresolved_active_payable_agreements).length} 条分成待确认`)
           : el('span', { class: 'chip c-green' }, '分成办法已确认')
       )
     );
@@ -1136,9 +1163,19 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
   }
 }
 
+// 费用台账行的主按钮直接进入下一步：没有收款记录时确认收款，已有记录时修改本次结算。
+export function openPrimaryFeeSettlement({ fee, onChanged = null } = {}) {
+  const hasSettlementRun = (fee?.settlement_runs || []).length > 0;
+  return openFeeSettlement({
+    fee,
+    onChanged,
+    runKind: hasSettlementRun ? 'correction' : 'receipt',
+  });
+}
+
 function planChips(fee, { includeUnresolved = true } = {}) {
   const chips = [];
-  const unresolved = fee.unresolved_active_payable_agreements || [];
+  const unresolved = fee.unresolved_active_fee_agreements || fee.unresolved_active_payable_agreements || [];
   if (includeUnresolved && unresolved.length) {
     chips.push(el('span', { class: 'chip c-amber' }, `${unresolved.length} 条分成待确认`));
   }
@@ -1151,7 +1188,7 @@ function planChips(fee, { includeUnresolved = true } = {}) {
     chips.push(el('span', {
       class: 'chip',
       title: `${agreement.counterpart} · ${revision?.money_view?.human_summary || agreement.plan.formula_summary || ''}`,
-    }, `我应给${agreement.counterpart} · ${projection}`));
+    }, `${shareDirectionText(agreement.direction, agreement.counterpart)} · ${projection}`));
   }
   return chips;
 }
@@ -1172,18 +1209,18 @@ export function feeSettlementActions({ fee, onChanged, extraActions = [] }) {
   }
   const runs = fee.settlement_runs || [];
   const head = runs.at(-1) || null;
-  const unresolvedCount = (fee.unresolved_active_payable_agreements || []).length;
+  const unresolvedCount = (fee.unresolved_active_fee_agreements || fee.unresolved_active_payable_agreements || []).length;
   const primaryLabel = (fallback) => unresolvedCount
     ? `先确认分成办法（${unresolvedCount} 条）`
     : fallback;
   const buttons = [
-    el('button', { class: 'btn small', type: 'button', onclick: () => openFeeSettlement({ fee, onChanged }) }, '这笔怎么分'),
+    el('button', { class: 'btn small', type: 'button', onclick: () => openFeeSettlement({ fee, onChanged }) }, '设置钱怎么走'),
   ];
   if (!head) {
     buttons.push(el('button', {
       class: 'btn small primary', type: 'button',
       onclick: () => openFeeSettlement({ fee, onChanged, runKind: 'receipt' }),
-    }, primaryLabel(fee.status === 'paid' ? '补记分成' : '确认收到律师费')));
+    }, primaryLabel(fee.status === 'paid' ? '补记分成' : '收到钱了')));
   } else if (head.target_status === 'paid') {
     buttons.push(
       el('button', { class: 'btn small primary', type: 'button', onclick: () => openFeeSettlement({ fee, onChanged, runKind: 'correction' }) }, primaryLabel('修改这笔结算')),

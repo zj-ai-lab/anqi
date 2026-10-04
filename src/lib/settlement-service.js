@@ -175,13 +175,40 @@ export function enrichShareAgreementForRead(agreement, { baseFen = null } = {}) 
 function loadPlanBundle(fee) {
   const agreements = db.prepare(
     `SELECT * FROM fee_share_agreements
-      WHERE case_id = ? AND direction = 'payable' AND status = 'active' ORDER BY id`
-  ).all(fee.case_id);
+      WHERE case_id = ? AND status = 'active'
+        AND (
+          direction = 'payable'
+          OR (
+            direction = 'receivable'
+            AND (
+              COALESCE((
+                SELECT is_provisional
+                  FROM fee_share_formula_revisions latest
+                 WHERE latest.agreement_id = fee_share_agreements.id
+                   AND latest.sealed = 1
+                 ORDER BY latest.revision_no DESC LIMIT 1
+              ), 1) = 0
+              OR EXISTS (
+                SELECT 1 FROM fee_share_assignments assignment
+                 WHERE assignment.fee_item_id = ?
+                   AND assignment.agreement_id = fee_share_agreements.id
+              )
+              OR EXISTS (
+                SELECT 1 FROM fee_share_settlement_snapshots snapshot
+                 WHERE snapshot.fee_item_id = ?
+                   AND snapshot.agreement_id = fee_share_agreements.id
+              )
+            )
+          )
+        )
+      ORDER BY direction = 'payable', id`
+  ).all(fee.case_id, fee.id, fee.id);
   const assignments = db.prepare(
     'SELECT * FROM fee_share_assignments WHERE fee_item_id = ? ORDER BY agreement_id'
   ).all(fee.id);
   const assignmentByAgreement = new Map(assignments.map((row) => [row.agreement_id, row]));
   const unresolved = [];
+  const unresolvedPayable = [];
 
   const views = agreements.map((rawAgreement) => {
     const agreement = enrichShareAgreementForRead(rawAgreement, { baseFen: fee.amount_fen });
@@ -212,11 +239,13 @@ function loadPlanBundle(fee) {
     }
 
     if (issue) {
-      unresolved.push({
+      const item = {
         agreement_id: agreement.id,
         counterpart: agreement.counterpart,
         ...issue,
-      });
+      };
+      unresolved.push(item);
+      if (agreement.direction === 'payable') unresolvedPayable.push(item);
     }
 
     return {
@@ -243,7 +272,8 @@ function loadPlanBundle(fee) {
   return {
     fee,
     agreements: views,
-    unresolved_active_payable_agreements: unresolved,
+    unresolved_active_payable_agreements: unresolvedPayable,
+    unresolved_active_fee_agreements: unresolved,
     write_allowed: fee.status === 'unpaid' || fee.status === 'paid',
   };
 }
@@ -299,10 +329,10 @@ function normalizePlanInput(value) {
   return { agreementId, status: value.status, version, decisionNote, revisionId, choice };
 }
 
-function assertNoDuplicateActivePayableAgreements(caseId) {
-  const duplicates = findActiveAgreementDuplicates({ caseId, direction: 'payable' });
+function assertNoDuplicateActiveShareAgreements(caseId) {
+  const duplicates = findActiveAgreementDuplicates({ caseId });
   if (duplicates.length) {
-    fail(409, 'active_agreement_identity_conflict', '本案存在重复的有效应付约定，请先退役重复项', {
+    fail(409, 'active_agreement_identity_conflict', '本案存在重复的有效分成约定，请先退役重复项', {
       duplicate_agreements: duplicates,
     });
   }
@@ -321,14 +351,15 @@ export function putFeeSharePlans(feeId, body, actor) {
     if (!['unpaid', 'paid'].includes(fee.status)) {
       fail(409, 'fee_not_plannable', '只有未收或已收款项可设置分成方案');
     }
-    assertNoDuplicateActivePayableAgreements(fee.case_id);
+    assertNoDuplicateActiveShareAgreements(fee.case_id);
 
     for (const input of inputs) {
       const agreement = db.prepare(
         `SELECT * FROM fee_share_agreements
-          WHERE id = ? AND case_id = ? AND direction = 'payable' AND status = 'active'`
+          WHERE id = ? AND case_id = ?
+            AND direction IN ('payable', 'receivable') AND status = 'active'`
       ).get(input.agreementId, fee.case_id);
-      if (!agreement) fail(400, 'agreement_not_active_payable', '方案只允许本案 active payable 约定');
+      if (!agreement) fail(400, 'agreement_not_active_share', '方案只允许本案 active 分成约定');
       const current = db.prepare(
         'SELECT * FROM fee_share_assignments WHERE fee_item_id = ? AND agreement_id = ?'
       ).get(fee.id, agreement.id);
@@ -560,7 +591,8 @@ function historicalCorrectionAgreements(fee, request, bundle, priorSnapshots) {
     .map((agreementId) => {
       const rawAgreement = db.prepare(
         `SELECT * FROM fee_share_agreements
-          WHERE id = ? AND case_id = ? AND direction = 'payable' AND status = 'retired'`
+          WHERE id = ? AND case_id = ?
+            AND direction IN ('payable', 'receivable') AND status = 'retired'`
       ).get(agreementId, fee.case_id);
       const assignment = db.prepare(
         `SELECT * FROM fee_share_assignments
@@ -593,9 +625,10 @@ function historicalCorrectionAgreements(fee, request, bundle, priorSnapshots) {
 }
 
 function assignedSettlementSpecs(fee, request, bundle) {
-  if (bundle.unresolved_active_payable_agreements.length) {
-    fail(409, 'settlement_plan_unresolved', '尚有 active payable 约定未完成方案决定', {
+  if (bundle.unresolved_active_fee_agreements.length) {
+    fail(409, 'settlement_plan_unresolved', '尚有分成约定未完成本款决定', {
       unresolved_active_payable_agreements: bundle.unresolved_active_payable_agreements,
+      unresolved_active_fee_agreements: bundle.unresolved_active_fee_agreements,
     });
   }
   const priorSnapshots = latestSnapshots(fee.id);
@@ -630,7 +663,7 @@ function assignedSettlementSpecs(fee, request, bundle) {
       revision_choice: plan.revision_choice,
       formula_revision_id: revision.id,
       revision_no: revision.revision_no,
-      direction: 'payable',
+      direction: agreement.direction,
       counterpart: agreement.counterpart,
       formula: revision.formula,
       formula_json: revision.formula_json,
@@ -704,6 +737,7 @@ function settlementPublic(spec) {
     revision_choice: spec.revision_choice,
     formula_revision_id: spec.formula_revision_id,
     revision_no: spec.revision_no,
+    direction: spec.direction,
     counterpart: spec.counterpart,
     formula: spec.formula,
     formula_summary: spec.formula_summary,
@@ -736,7 +770,7 @@ function buildPreview(feeId, body) {
   const head = currentHead(fee.id);
   const request = normalizeSettlementRequest(fee, body, head);
   if (request.run_kind !== 'reversal') {
-    assertNoDuplicateActivePayableAgreements(fee.case_id);
+    assertNoDuplicateActiveShareAgreements(fee.case_id);
   }
   const bundle = loadPlanBundle(fee);
   const settlements = request.run_kind === 'reversal'
@@ -1090,6 +1124,7 @@ export function enrichFeeForRead(fee, shares = null, settlementContext = null) {
     shares: shares || actualShares(fee.id),
     share_plans: bundle.agreements,
     unresolved_active_payable_agreements: bundle.unresolved_active_payable_agreements,
+    unresolved_active_fee_agreements: bundle.unresolved_active_fee_agreements,
     settlement_runs: settlementHistory(fee.id),
     settlement_context: settlementContext || feeSettlementContext(fee),
   };
