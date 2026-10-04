@@ -123,6 +123,7 @@ function syncEditStages(stage) {
 efProc.addEventListener('change', () => syncEditStages(''));
 
 let bundle = null;
+let people = [];
 const TIMELINE_PREVIEW_LIMIT = 5;
 let timelineExpanded = false;
 let timelineItems = [];
@@ -277,6 +278,60 @@ document.getElementById('contact-form').addEventListener('submit', async (e) => 
   await load();
 });
 
+function renderParticipants() {
+  const participants = bundle?.participants || [];
+  const summary = document.getElementById('case-participant-summary');
+  summary.textContent = participants.length ? participants.map((p) => p.name).join('、') : '未登记';
+  const list = document.getElementById('case-participant-list');
+  list.replaceChildren();
+  if (!participants.length) list.append(el('div', { class: 'section-empty' }, '尚未加入案件参与人；先在通讯录建立对象，再加入本案。'));
+  for (const p of participants) {
+    const row = el('div', { class: 'row participant-row' },
+      el('span', { class: 'pill acc' }, p.role),
+      el('b', {}, p.name),
+      p.org ? el('span', { class: 'meta' }, p.org) : null,
+      el('span', { class: 'grow meta' }, p.note || ''),
+      el('button', {
+        class: 'btn small danger', type: 'button',
+        onclick: async () => {
+          if (!confirm(`从本案移除「${p.name}」？已发生的分成记录不会删除。`)) return;
+          await api(`/cases/${id}/participants/${p.person_id}`, { method: 'DELETE' });
+          toast('已从本案移除');
+          await load();
+        },
+      }, '移除')
+    );
+    list.append(row);
+  }
+  const used = new Set(participants.map((p) => Number(p.person_id)));
+  const caseSelect = document.getElementById('case-participant-person');
+  caseSelect.replaceChildren(el('option', { value: '' }, people.length ? '请选择' : '请先在通讯录新增对象'));
+  for (const p of people) {
+    if (used.has(Number(p.id))) continue;
+    caseSelect.append(el('option', { value: p.id }, p.org ? `${p.name} · ${p.org}` : p.name));
+  }
+  caseSelect.disabled = !people.some((p) => !used.has(Number(p.id)));
+  const shareSelect = document.getElementById('share-person');
+  shareSelect.replaceChildren(el('option', { value: '' }, '不从本案选择'));
+  for (const p of participants) shareSelect.append(el('option', { value: p.person_id }, `${p.name} · ${p.role}`));
+}
+
+document.getElementById('case-participant-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const body = Object.fromEntries(new FormData(e.target).entries());
+  body.person_id = Number(body.person_id);
+  await api(`/cases/${id}/participants`, { body });
+  toast('已加入本案参与人 ✓');
+  e.target.reset();
+  await load();
+});
+
+document.getElementById('share-person').addEventListener('change', (e) => {
+  const selected = (bundle?.participants || []).find((p) => String(p.person_id) === e.target.value);
+  const input = document.querySelector('#share-form [name="counterpart"]');
+  if (selected && input) input.value = selected.name;
+});
+
 const ROLE_PILL = { 当事人: 'ok', 对方当事人: 'warn', 承办法官: 'acc', 法官助理: 'acc', 书记员: '', 对方律师: 'warn', 合作律师: 'acc', 其他: '' };
 
 function contactRow(p) {
@@ -371,6 +426,7 @@ document.getElementById('fee-form').addEventListener('submit', async (e) => {
 
 const openShareAgreement = (direction) => openFormulaEditor({
   caseId: Number(id), direction,
+  participants: bundle?.participants || [],
   onChanged: async () => Promise.all([loadShares(), loadFees()]),
 });
 document.getElementById('share-receivable-add').addEventListener('click', () => openShareAgreement('receivable'));
@@ -380,6 +436,11 @@ document.getElementById('share-form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const body = Object.fromEntries(new FormData(e.target).entries());
   body.case_id = Number(id);
+  if (!body.person_id) delete body.person_id;
+  if (!body.counterpart) delete body.counterpart;
+  if (!body.amount) delete body.amount;
+  if (!body.base_amount) delete body.base_amount;
+  if (!body.rate) delete body.rate;
   if (!body.due_month) delete body.due_month;
   await api('/shares', { body });
   toast('分成已记录 ✓');
@@ -941,6 +1002,7 @@ async function loadShares() {
     agreements: d.agreements,
     target: document.getElementById('share-agreements'),
     caseId: Number(id),
+    participants: bundle?.participants || [],
     onChanged: async () => Promise.all([loadShares(), loadFees()]),
   });
   const activeAgreements = d.agreements.filter((agreement) => agreement.status === 'active');
@@ -1168,6 +1230,7 @@ function render() {
     `代理人 ${firstContact('合作律师', '对方律师') || '待补'}`,
   ].join(' · ');
   document.getElementById('contact-summary').textContent = contactSummary;
+  renderParticipants();
 
   // 本案期限跑道（母题）
   const today = todayStr();
@@ -1827,7 +1890,7 @@ if (drop) {
 }
 
 async function load() {
-  bundle = await api(`/cases/${id}`);
+  [bundle, people] = await Promise.all([api(`/cases/${id}`), api('/people')]);
   render();
   await Promise.all([loadFees(), loadShares(), loadWorkspacePicker()]);
   await Promise.all([loadFiles(), loadFileCandidates()]);

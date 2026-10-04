@@ -30,6 +30,7 @@
 //   · #p-quick                                   年度速览（.kpi-row append）
 //   · #trend-range #trend-chart                  收结案趋势（折线）
 //   · #fee-unit #fee-range #fee-net-tiles #fee-chart #fee-foot  已收律师费（净收 tile + 柱状）
+//   · #cooperation-meta #cooperation-chart #cooperation-foot  合作对象排行
 //   · #p-aging #ar-meta #ar-foot                 应收账龄（.prog-row insertBefore(#ar-foot)）
 //   ⚠ .kpi-row / .prog-row 必须直接挂 .panel（分隔线靠 :first-child 与 .p-head + .prog-row
 //     两条位置选择器归零），所以一律 insertBefore 进面板，不套容器 div。
@@ -377,6 +378,32 @@ function renderFee(t, f) {
     + (f.tbd_count > 0 ? ` · 另 ${f.tbd_count} 项金额待定` : '');
 }
 
+function renderCooperation(cooperation = {}) {
+  const rows = cooperation.by_person || [];
+  $('cooperation-meta').textContent = rows.length ? `${rows.length} 位对象 · 最密切 ${rows[0].name}` : '暂未形成记录';
+  const box = $('cooperation-chart');
+  box.replaceChildren();
+  if (!rows.length) {
+    box.append(emptyBox('还没有分成记录；在案件页选择参与人后，这里会自动形成合作排行。'));
+    return;
+  }
+  const max = Math.max(1, ...rows.map((row) => row.share_count));
+  for (const row of rows.slice(0, 8)) {
+    const amount = [row.receivable ? `我收 ${yuan(row.receivable)}` : '', row.payable ? `我分 ${yuan(row.payable)}` : '']
+      .filter(Boolean).join(' · ') || '金额待记';
+    box.append(el('div', { class: 'cooperation-row' },
+      el('div', {}, el('b', {}, row.name), el('div', { class: 'meta' }, `${row.case_count} 案 · ${row.share_count} 笔`)),
+      el('span', { class: 'cooperation-amount meta' }, amount),
+      el('div', { class: 'cooperation-bar', title: `${row.name}：${row.share_count} 笔分成` },
+        el('i', { style: `width:${((row.share_count / max) * 100).toFixed(1)}%` })
+      )
+    ));
+  }
+  $('cooperation-foot').textContent = rows.length > 8
+    ? `已显示前 8 位；完整对象和案件关联见通讯录。`
+    : '按已记录的应收 / 应付分成次数和案件数统计；约定本身不计入。';
+}
+
 // ═══════════════ 板块 8 · 应收账龄（4 档进度条） ═══════════════
 function renderAging(f) {
   const a = f.aging;
@@ -440,5 +467,6 @@ if (!d) {
   renderQuick(d);
   renderTrend(d.trend);
   renderFee(d.trend, d.fees);
+  renderCooperation(d.cooperation);
   renderAging(d.fees);
 }

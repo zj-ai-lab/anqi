@@ -285,6 +285,11 @@ export function getFeeSharePlans(feeId) {
   }
   return {
     ...loadPlanBundle(fee),
+    participants: db.prepare(
+      `SELECT cp.person_id, cp.role, cp.note, p.name, p.org
+         FROM case_participants cp JOIN people p ON p.id = cp.person_id
+        WHERE cp.case_id = ? ORDER BY p.name COLLATE NOCASE, cp.id`
+    ).all(fee.case_id),
     settlement_runs: settlementHistory(fee.id),
   };
 }
@@ -665,6 +670,7 @@ function assignedSettlementSpecs(fee, request, bundle) {
       revision_no: revision.revision_no,
       direction: agreement.direction,
       counterpart: agreement.counterpart,
+      person_id: agreement.person_id ?? null,
       formula: revision.formula,
       formula_json: revision.formula_json,
       formula_summary: revision.formula_summary,
@@ -710,6 +716,7 @@ function reversalSettlementSpecs(fee, request, head) {
         .get(source.formula_revision_id).revision_no,
       direction: source.direction,
       counterpart: source.counterpart,
+      person_id: db.prepare('SELECT person_id FROM fee_share_agreements WHERE id = ?').get(source.agreement_id)?.person_id ?? null,
       formula,
       formula_json: source.formula_json,
       formula_summary: summarizeSettlementFormula(formula),
@@ -739,6 +746,7 @@ function settlementPublic(spec) {
     revision_no: spec.revision_no,
     direction: spec.direction,
     counterpart: spec.counterpart,
+    person_id: spec.person_id ?? null,
     formula: spec.formula,
     formula_summary: spec.formula_summary,
     trace: spec.trace,
@@ -1048,11 +1056,11 @@ export function confirmSettlement(feeId, body, actor) {
       db.prepare(
         `INSERT INTO fee_shares
            (case_id,agreement_id,fee_item_id,assignment_id,settlement_snapshot_id,entry_kind,
-            direction,counterpart,base_amount,base_amount_fen,amount,amount_fen,due_month,note)
-         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+            person_id,direction,counterpart,base_amount,base_amount_fen,amount,amount_fen,due_month,note)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
       ).run(
         fee.case_id, spec.agreement_id, fee.id, spec.assignment_id,
-        snapshotIds.get(spec.agreement_id), spec.entry_kind, spec.direction, spec.counterpart,
+        snapshotIds.get(spec.agreement_id), spec.entry_kind, spec.person_id ?? null, spec.direction, spec.counterpart,
         spec.base_amount_fen === null ? null : fenToYuan(spec.base_amount_fen), spec.base_amount_fen,
         fenToYuan(spec.new_amount_fen), spec.new_amount_fen, spec.due_month,
         `settlement run ${runId}`
@@ -1067,7 +1075,7 @@ export function confirmSettlement(feeId, body, actor) {
 
 function actualShares(feeId) {
   return db.prepare(
-    `SELECT id,fee_item_id,agreement_id,direction,counterpart,amount,amount_fen,status,
+    `SELECT id,fee_item_id,agreement_id,person_id,direction,counterpart,amount,amount_fen,status,
             due_month,settled_on,entry_kind,settlement_snapshot_id
        FROM fee_shares
       WHERE fee_item_id = ? AND is_void = 0 AND cancelled_at = ''

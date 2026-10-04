@@ -227,7 +227,27 @@
           <span class="factstrip-fact" id="contact-summary">委托人待补 · 对方待补 · 代理人待补</span>
           <button class="factstrip-edit" type="button" id="case-contacts-toggle" aria-expanded="false">展开</button>
         </div>
+        <div class="factstrip-row case-participant-summary-row">
+          <span class="factstrip-label">合作参与人</span>
+          <span class="factstrip-fact" id="case-participant-summary">未登记</span>
+          <a class="factstrip-edit" href="/contacts.html">通讯录</a>
+        </div>
         <div class="factstrip-more" id="case-contacts-more" hidden>
+          <section class="case-participant-box" aria-label="案件参与人">
+            <div class="case-participant-head">
+              <div><b>本案可选参与人</b><span class="meta">加入后可在应收、应付分成中直接选择</span></div>
+              <a class="btn small" href="/contacts.html">管理通讯录</a>
+            </div>
+            <div id="case-participant-list"></div>
+            <form id="case-participant-form" class="participant-form">
+              <div class="formgrid">
+                <label class="f">从通讯录选择<select name="person_id" id="case-participant-person" required><option value="">请选择</option></select></label>
+                <label class="f">参与角色<select name="role"><option>合作律师</option><option>对方律师</option><option>其他</option></select></label>
+                <label class="f grow">本案备注<input name="note" placeholder="可空"></label>
+              </div>
+              <div class="formrow"><button class="btn primary" type="submit">加入本案</button></div>
+            </form>
+          </section>
           <div id="contact-list"></div>
           <div class="panel-body">
         <details class="adder">
@@ -305,18 +325,27 @@
         <div id="share-list"></div>
         <div class="panel-body money-entry money-entry-last">
         <details class="adder money-advanced">
-          <summary>历史或特殊事项：直接记一笔金额</summary>
-          <p class="meta">只用于已有明确金额但无法对应正常收款流程的旧账或特殊事项。</p>
+          <summary>记录分成结果</summary>
+          <p class="meta">知道对方收款和比例就填基数；只知道我实际收到 / 分出的金额，也可以直接记结果。</p>
           <form id="share-form">
             <div class="formgrid">
               <label class="f">方向<select name="direction">
                 <option value="receivable">我应收（对方分给我）</option>
                 <option value="payable">我应付（我分给对方）</option>
               </select></label>
-              <label class="f">合作律师 / 付款方<input name="counterpart" required placeholder="张三"></label>
-              <label class="f">金额（元）<input name="amount" type="number" step="0.01" required></label>
+              <label class="f">案件参与人<select name="person_id" id="share-person"><option value="">不从本案选择</option></select></label>
+              <label class="f">临时填写对象<input name="counterpart" placeholder="不知道参与人时可直接填写"></label>
+              <label class="f">我收到 / 分出的分成（元）<input name="amount" type="number" step="0.01" placeholder="已知结果就填"></label>
               <label class="f">应分月份<input name="due_month" type="month"></label>
             </div>
+            <details class="money-advanced share-base-details">
+              <summary>知道他方收款时，再填收款基数和比例（可不填）</summary>
+              <p class="meta">基数 + 比例与上面的分成结果二选一；不知道他方收款就只填结果。</p>
+              <div class="formgrid">
+                <label class="f">他方收款基数（元）<input name="base_amount" type="number" step="0.01" placeholder="可空"></label>
+                <label class="f">分成比例（%）<input name="rate" type="number" min="0.01" max="100" step="0.01" placeholder="可空"></label>
+              </div>
+            </details>
             <div class="formrow">
               <label class="f grow">备注<input name="note"></label>
               <button class="btn primary" type="submit">记录</button>

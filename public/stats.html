@@ -43,6 +43,7 @@
        #p-quick                                          （.kpi-row 由 JS 追加）
        #trend-range · #trend-chart
        #fee-unit · #fee-range · #fee-net-tiles · #fee-chart · #fee-foot
+       #cooperation-meta · #cooperation-chart · #cooperation-foot
        #p-aging > #ar-meta · #ar-foot                    （.prog-row 由 JS 插在 #ar-foot 前）
 
      ⚠ .kpi-row / .prog-row 必须是 .panel 的**直接子元素** —— 分隔线靠
@@ -172,6 +173,25 @@
             <div class="factstrip-row">
               <span class="factstrip-label">口径</span>
               <span class="factstrip-fact" id="fee-foot"></span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═════ 合作记录：按通讯录对象排行 ═════ -->
+      <section class="panel" id="p-cooperation" aria-labelledby="h-cooperation">
+        <div class="p-head">
+          <h2 class="p-title" id="h-cooperation">合作记录</h2>
+          <span class="p-meta" id="cooperation-meta"></span>
+        </div>
+        <div class="panel-body">
+          <div class="cooperation-list" id="cooperation-chart"></div>
+        </div>
+        <div class="p-foot">
+          <div class="factstrip is-wrap">
+            <div class="factstrip-row">
+              <span class="factstrip-label">口径</span>
+              <span class="factstrip-fact" id="cooperation-foot">按已记录的应收 / 应付分成次数和案件数统计</span>
             </div>
           </div>
         </div>

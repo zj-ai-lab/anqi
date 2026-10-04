@@ -47,6 +47,38 @@
   --page-pad: 16px;   /* 页面左右留白（响应式梯度，见 A-9） */
   --fs-body: 14px;    /* 正文（可访问性硬底线 ≥14px） */
 }
+
+/* 通讯录与案件参与人：保持一行摘要，低频管理才展开。 */
+.case-participant-box { margin: 14px 0 18px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-solid); }
+.case-participant-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
+.case-participant-head > div { display: grid; gap: 3px; }
+.case-participant-head .meta { font-size: 12px; }
+.participant-form { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
+.participant-row, .person-row { gap: 10px; }
+.person-main { display: flex; align-items: baseline; gap: 9px; min-width: 170px; }
+.contacts-page .panel-body { padding-top: 6px; }
+.contacts-page .person-row { padding: 13px 0; border-bottom: 1px solid var(--line); }
+.contacts-page .person-row:last-child { border-bottom: 0; }
+
+/* 费用页：默认只显示摘要，待处理分成按需展开。 */
+.fee-secondary-panel #share-rows { margin-top: 6px; }
+.fee-pending-more[hidden] { display: none; }
+.fee-pending-more { padding-top: 4px; }
+.fee-fold-toggle { margin-left: auto; }
+
+/* 统计页合作排行：数量优先，金额作为辅助信息。 */
+.cooperation-list { display: grid; gap: 0; }
+.cooperation-row { display: grid; grid-template-columns: minmax(120px, 1.2fr) auto minmax(180px, 2fr); align-items: center; gap: 12px; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.cooperation-row:last-child { border-bottom: 0; }
+.cooperation-bar { height: 6px; border-radius: 999px; background: var(--track); overflow: hidden; }
+.cooperation-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--green); }
+.cooperation-amount { text-align: right; white-space: nowrap; }
+@media (max-width: 700px) {
+  .cooperation-row { grid-template-columns: minmax(100px, 1fr) auto; }
+  .cooperation-row .cooperation-bar { grid-column: 1 / -1; grid-row: 2; }
+  .cooperation-amount { font-size: 12px; }
+  .person-main { min-width: 120px; flex-wrap: wrap; }
+}
 @media (min-width: 768px)  { :root { --page-pad: 20px; } }
 @media (min-width: 1280px) { :root { --page-pad: 24px; } }
 @media (min-width: 1900px) { :root { --page-pad: 32px; } }

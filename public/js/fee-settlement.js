@@ -200,7 +200,7 @@ function moneyEquation(view, { compact = false } = {}) {
   return box;
 }
 
-function agreementMoneyCard(agreement, { caseId, onChanged }) {
+function agreementMoneyCard(agreement, { caseId, onChanged, participants = [] }) {
   const active = agreement.status === 'active';
   const revisions = agreement.revisions || [];
   const latest = agreement.latest_revision || revisions.at(-1);
@@ -235,7 +235,7 @@ function agreementMoneyCard(agreement, { caseId, onChanged }) {
       el('span', { class: 'meta' }, nextText),
       view?.provisional ? el('button', {
         class: 'btn small primary', type: 'button',
-        onclick: () => openFormulaEditor({ caseId, agreement, onChanged }),
+        onclick: () => openFormulaEditor({ caseId, agreement, onChanged, participants }),
       }, '完善扣费') : null
     ));
   }
@@ -251,8 +251,8 @@ function agreementMoneyCard(agreement, { caseId, onChanged }) {
     )
   )));
   advanced.append(el('div', { class: 'settlement-row-actions' },
-    el('button', { class: 'btn small', type: 'button', onclick: () => openAgreementMetadata({ agreement, onChanged }) }, '改对象/时间/备注'),
-    active ? el('button', { class: 'btn small', type: 'button', onclick: () => openFormulaEditor({ caseId, agreement, onChanged }) }, '调整分法') : null,
+    el('button', { class: 'btn small', type: 'button', onclick: () => openAgreementMetadata({ agreement, onChanged, participants }) }, '改对象/时间/备注'),
+    active ? el('button', { class: 'btn small', type: 'button', onclick: () => openFormulaEditor({ caseId, agreement, onChanged, participants }) }, '调整分法') : null,
     active ? el('button', { class: 'btn small danger', type: 'button', onclick: async () => {
       if (!confirm(`停用与「${agreement.counterpart}」的分成约定？\n\n已有记录和历史计算仍会保留。`)) return;
       await api(`/share-agreements/${agreement.id}`, { method: 'DELETE' });
@@ -380,7 +380,7 @@ function formulaPayload({ resultKind, resultBasis, resultValue, deductions }) {
   };
 }
 
-export function openFormulaEditor({ caseId, agreement = null, direction = '', onChanged = null } = {}) {
+export function openFormulaEditor({ caseId, agreement = null, direction = '', onChanged = null, participants = [] } = {}) {
   return new Promise((resolve) => {
     const isRevision = Boolean(agreement);
     const resolvedDirection = agreement?.direction || direction || 'payable';
@@ -398,6 +398,7 @@ export function openFormulaEditor({ caseId, agreement = null, direction = '', on
 
     let directionSelect = null;
     let counterpartInput = null;
+    let personSelect = null;
     let noteInput = null;
     if (!isRevision) {
       directionSelect = selectOf([
@@ -409,6 +410,14 @@ export function openFormulaEditor({ caseId, agreement = null, direction = '', on
         directionSelect.setAttribute('aria-hidden', 'true');
         directionSelect.tabIndex = -1;
       }
+      personSelect = selectOf([
+        { value: '', label: participants.length ? '不从本案选择（可临时填写）' : '本案还没有参与人' },
+        ...participants.map((person) => ({ value: String(person.person_id), label: `${person.name}${person.role ? ` · ${person.role}` : ''}` })),
+      ], agreement?.person_id ? String(agreement.person_id) : '');
+      personSelect.addEventListener('change', () => {
+        const person = participants.find((item) => String(item.person_id) === personSelect.value);
+        if (person) counterpartInput.value = person.name;
+      });
       counterpartInput = inputOf({ required: '', placeholder: copy.counterpartPlaceholder });
       noteInput = inputOf({ placeholder: copy.notePlaceholder });
       stableGrid.append(
@@ -419,7 +428,8 @@ export function openFormulaEditor({ caseId, agreement = null, direction = '', on
             directionSelect
           )
           : field('方向', directionSelect),
-        field(copy.counterpart, counterpartInput),
+        field('本案参与人（可选）', personSelect),
+        field(`${copy.counterpart}（未选参与人时填写）`, counterpartInput),
         field('补充说明（可选）', noteInput, 'span-2')
       );
     } else {
@@ -629,9 +639,10 @@ export function openFormulaEditor({ caseId, agreement = null, direction = '', on
         } else {
           payload.direction = directionSelect.value;
           payload.counterpart = counterpartInput.value.trim();
+          payload.person_id = personSelect.value || undefined;
           payload.note = noteInput.value.trim();
           payload.settlement_term = settlementTermInput.value.trim();
-          if (!payload.counterpart) throw new Error('合作对象不能为空');
+          if (!payload.counterpart && !payload.person_id) throw new Error('请选择本案参与人或填写合作对象');
           if (!payload.settlement_term) throw new Error('请填写什么时候结算');
           result = await api(`/cases/${caseId}/share-agreements`, { body: payload });
           toast(copy.success);
@@ -648,16 +659,25 @@ export function openFormulaEditor({ caseId, agreement = null, direction = '', on
   });
 }
 
-function openAgreementMetadata({ agreement, onChanged }) {
+function openAgreementMetadata({ agreement, onChanged, participants = [] }) {
   return new Promise((resolve) => {
     const modal = modalShell({ title: `修改「${agreement.counterpart}」`, hint: '这里只改合作对象、结算时间和补充说明；分成算法请用“调整分法”。', wide: false, onClose: resolve });
     const counterpart = inputOf({ value: agreement.counterpart, required: '' });
+    const person = selectOf([
+      { value: '', label: participants.length ? '不绑定本案参与人' : '本案还没有参与人' },
+      ...participants.map((item) => ({ value: String(item.person_id), label: `${item.name}${item.role ? ` · ${item.role}` : ''}` })),
+    ], agreement.person_id ? String(agreement.person_id) : '');
+    person.addEventListener('change', () => {
+      const selected = participants.find((item) => String(item.person_id) === person.value);
+      if (selected) counterpart.value = selected.name;
+    });
     const settlementTerm = inputOf({ value: agreement.settlement_term || '待确定', required: '' });
     const note = inputOf({ value: agreement.note || '' });
     const status = statusMessage('这不会改动已经发生的分成金额或历史记录。');
     const submit = el('button', { class: 'btn primary', type: 'submit' }, '保存');
     const form = el('form', { class: 'dmodal-form' },
-      field('合作对象', counterpart),
+      field('本案参与人（可选）', person),
+      field('合作对象（未选参与人时填写）', counterpart),
       field('什么时候结算', settlementTerm),
       field('备注', note),
       status,
@@ -674,6 +694,7 @@ function openAgreementMetadata({ agreement, onChanged }) {
           method: 'PATCH',
           body: {
             counterpart: counterpart.value.trim(),
+            person_id: person.value || null,
             settlement_term: settlementTerm.value.trim(),
             note: note.value.trim(),
           },
@@ -692,7 +713,7 @@ function openAgreementMetadata({ agreement, onChanged }) {
   });
 }
 
-export function renderAgreementManager({ agreements = [], target, caseId, onChanged = null }) {
+export function renderAgreementManager({ agreements = [], target, caseId, onChanged = null, participants = [] }) {
   const receivable = agreements.filter((agreement) => agreement.direction === 'receivable');
   const payable = agreements.filter((agreement) => agreement.direction === 'payable');
   const group = (direction, rows) => el('section', { class: `settlement-agreement-group is-${direction}` },
@@ -702,7 +723,7 @@ export function renderAgreementManager({ agreements = [], target, caseId, onChan
       el('span', { class: 'meta' }, `${rows.length} 条约定`)
     ),
     rows.length
-      ? rows.map((agreement) => agreementMoneyCard(agreement, { caseId, onChanged }))
+      ? rows.map((agreement) => agreementMoneyCard(agreement, { caseId, onChanged, participants }))
       : el('div', { class: 'section-empty' }, direction === 'receivable'
         ? '尚未登记别人应给我的分成约定'
         : '尚未登记我应给别人的分成约定')
@@ -966,6 +987,7 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
         await openFormulaEditor({
           caseId: bundle.fee.case_id,
           direction: 'receivable',
+          participants: bundle.participants || [],
           onChanged: async () => reload({ refreshHost: true }),
         });
       } }, '新增我应收'),
@@ -973,6 +995,7 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
         await openFormulaEditor({
           caseId: bundle.fee.case_id,
           direction: 'payable',
+          participants: bundle.participants || [],
           onChanged: async () => reload({ refreshHost: true }),
         });
       } }, '新增我应付')

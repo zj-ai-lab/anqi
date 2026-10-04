@@ -5,6 +5,7 @@ import { todayCN, isDate } from '../lib/dates.js';
 import { computeShare } from '../lib/share.js';
 import { fenToYuan, normalizeSettlementFormula } from '../lib/settlement.js';
 import { enrichShareAgreementForRead } from '../lib/settlement-service.js';
+import { participantForCase } from './people.js';
 import {
   findActiveAgreementConflict,
   findShareWriteConflict,
@@ -18,8 +19,8 @@ const r = Router();
 const DIRECTIONS = ['payable', 'receivable'];
 const STATUSES = ['pending', 'settled', 'waived'];
 const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
-const AGREEMENT_FIELDS = ['counterpart', 'note', 'contact_id', 'status', 'settlement_term'];
-const SHARE_FIELDS = ['counterpart', 'amount', 'base_amount', 'due_month', 'status', 'settled_on', 'note', 'external_case'];
+const AGREEMENT_FIELDS = ['counterpart', 'person_id', 'note', 'contact_id', 'status', 'settlement_term'];
+const SHARE_FIELDS = ['counterpart', 'person_id', 'amount', 'base_amount', 'due_month', 'status', 'settled_on', 'note', 'external_case'];
 const REPAIR_STATUSES = ['open', 'claimed', 'retained_unlinked', 'voided_duplicate'];
 const AGREEMENT_STATUSES = ['active', 'retired'];
 const FORMULA_FIELDS = [
@@ -29,7 +30,7 @@ const REVISION_META_FIELDS = [
   'effective_on', 'label', 'change_note', 'rounding_mode', 'is_provisional', 'pending_deductions',
 ];
 const CREATE_AGREEMENT_FIELDS = new Set([
-  'direction', 'counterpart', 'contact_id', 'note', 'settlement_term',
+  'direction', 'counterpart', 'person_id', 'contact_id', 'note', 'settlement_term',
   ...REVISION_META_FIELDS, ...FORMULA_FIELDS,
 ]);
 const CREATE_REVISION_FIELDS = new Set(['settlement_term', ...REVISION_META_FIELDS, ...FORMULA_FIELDS]);
@@ -444,8 +445,11 @@ r.post('/cases/:id/share-agreements', (req, res) => {
   if (unknown.length) return res.status(400).json({ error: `含未知字段 ${unknown.join(',')}` });
   const direction = directionOf(b.direction);
   if (!direction) return res.status(400).json({ error: 'direction 非法' });
-  const counterpart = String(b.counterpart || '').trim();
-  if (!counterpart) return res.status(400).json({ error: '合作律师必填' });
+  const selectedPerson = blank(b.person_id) ? { row: null } : participantForCase(b.person_id, c.id);
+  if (selectedPerson.error) return res.status(400).json({ error: selectedPerson.error });
+  const personId = selectedPerson.row?.person_id || null;
+  const counterpart = selectedPerson.row?.name || String(b.counterpart || '').trim();
+  if (!counterpart) return res.status(400).json({ error: '请选择本案参与人或填写合作对象' });
   const contact = contactForCase(b.contact_id, c.id);
   if (contact.error) return res.status(400).json({ error: contact.error });
   const definition = revisionDefinition(b);
@@ -468,11 +472,11 @@ r.post('/cases/:id/share-agreements', (req, res) => {
     }
     const agreement = db.prepare(
       `INSERT INTO fee_share_agreements
-         (case_id, direction, counterpart, contact_id, rate, flat_amount, note,
+         (case_id, direction, counterpart, person_id, contact_id, rate, flat_amount, note,
           settlement_term, status, version, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, datetime('now','+8 hours'))`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'active', 1, datetime('now','+8 hours'))`
     ).run(
-      c.id, direction, counterpart, contact.id, projection.rate, projection.flatAmount,
+      c.id, direction, counterpart, personId, contact.id, projection.rate, projection.flatAmount,
       String(b.note ?? ''), settlementTerm
     );
     const revisionId = insertAndSealRevision({
@@ -562,6 +566,13 @@ r.patch('/share-agreements/:id', (req, res) => {
       const v = String(b[f] || '').trim();
       if (!v) return res.status(400).json({ error: '合作律师必填' });
       sets.push('counterpart = ?'); args.push(v);
+    } else if (f === 'person_id') {
+      const selected = blank(b[f]) ? { row: null } : participantForCase(b[f], row.case_id);
+      if (selected.error) return res.status(400).json({ error: selected.error });
+      sets.push('person_id = ?'); args.push(selected.row?.person_id || null);
+      if (!('counterpart' in b) && selected.row) {
+        sets.push('counterpart = ?'); args.push(selected.row.name);
+      }
     } else if (f === 'contact_id') {
       const contact = contactForCase(b[f], row.case_id);
       if (contact.error) return res.status(400).json({ error: contact.error });
@@ -644,8 +655,7 @@ r.post('/shares', (req, res) => {
   }
   const direction = directionOf(b.direction);
   if (!direction) return res.status(400).json({ error: 'direction 非法' });
-  const counterpart = String(b.counterpart || '').trim();
-  if (!counterpart) return res.status(400).json({ error: '合作律师必填' });
+  let counterpart = String(b.counterpart || '').trim();
 
   let caseId = optionalId(b.case_id);
   if (caseId === undefined) return res.status(400).json({ error: 'case_id 非法' });
@@ -698,6 +708,14 @@ r.post('/shares', (req, res) => {
       return res.status(409).json({ error: '未收款项须先配置分成方案', code: 'unpaid_fee_requires_plan' });
     }
   }
+  let personId = null;
+  if (!blank(b.person_id)) {
+    if (caseId === null) return res.status(400).json({ error: '外部案件不能选择本案参与人' });
+    const selected = participantForCase(b.person_id, caseId);
+    if (selected.error) return res.status(400).json({ error: selected.error });
+    personId = selected.row.person_id;
+    counterpart = selected.row.name;
+  }
   let attachedAgreement = null;
   if (agreement.id !== null) {
     attachedAgreement = db.prepare('SELECT * FROM fee_share_agreements WHERE id = ?').get(agreement.id);
@@ -705,10 +723,16 @@ r.post('/shares', (req, res) => {
     if (caseId === null || attachedAgreement.case_id !== caseId) {
       return res.status(400).json({ error: '约定不属于该案件' });
     }
+    if (!counterpart) counterpart = attachedAgreement.counterpart.trim();
     if (attachedAgreement.direction !== direction || attachedAgreement.counterpart.trim() !== counterpart) {
       return res.status(400).json({ error: '分成方向或合作对象与约定不一致', code: 'share_agreement_identity_mismatch' });
     }
+    if (personId === null && attachedAgreement.person_id) personId = attachedAgreement.person_id;
+    if (personId !== null && attachedAgreement.person_id && Number(attachedAgreement.person_id) !== Number(personId)) {
+      return res.status(400).json({ error: '参与人与分成约定不一致', code: 'share_agreement_person_mismatch' });
+    }
   }
+  if (!counterpart) return res.status(400).json({ error: '请选择本案参与人或填写合作对象' });
   if (feeItemId !== null && agreement.id !== null) {
     const engineExisting = db.prepare(
       `SELECT id FROM fee_shares
@@ -785,9 +809,9 @@ r.post('/shares', (req, res) => {
 
     const info = db.prepare(
       `INSERT INTO fee_shares
-         (case_id, external_case, agreement_id, fee_item_id, direction, counterpart, base_amount, amount, due_month, note)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    ).run(caseId, externalCase, agreement.id, feeItemId, direction, counterpart, baseAmount, amount, dueMonth, b.note || '');
+         (case_id, external_case, agreement_id, fee_item_id, person_id, direction, counterpart, base_amount, amount, due_month, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(caseId, externalCase, agreement.id, feeItemId, personId, direction, counterpart, baseAmount, amount, dueMonth, b.note || '');
     audit(req.actor, 'create', 'share', info.lastInsertRowid, `${direction} ${counterpart} ${amount} ${dueMonth}`);
     return { share: db.prepare('SELECT * FROM fee_shares WHERE id = ?').get(info.lastInsertRowid) };
   });
@@ -892,6 +916,14 @@ r.patch('/shares/:id', (req, res) => {
       const v = String(b[f] || '').trim();
       if (!v) return res.status(400).json({ error: '合作律师必填' });
       sets.push('counterpart = ?'); args.push(v);
+    } else if (f === 'person_id') {
+      if (row.case_id == null && !blank(b[f])) return res.status(400).json({ error: '外部案件不能选择本案参与人' });
+      const selected = blank(b[f]) ? { row: null } : participantForCase(b[f], row.case_id);
+      if (selected.error) return res.status(400).json({ error: selected.error });
+      sets.push('person_id = ?'); args.push(selected.row?.person_id || null);
+      if (!('counterpart' in b) && selected.row) {
+        sets.push('counterpart = ?'); args.push(selected.row.name);
+      }
     } else if (f === 'amount') {
       const v = amountOf(b[f]);
       if (v === undefined) return res.status(400).json({ error: 'amount 非法' });

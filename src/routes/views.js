@@ -123,6 +123,37 @@ r.get('/stats', (req, res) => {
     WHERE is_void = 0 AND cancelled_at = '' AND status IN ('pending','settled')`, year, year);
   const sharePayableYear = share.payable_year || 0;
   const shareReceivableYear = share.receivable_year || 0;
+  // 合作记录按通讯录对象聚合；旧数据没有 person_id 时保留姓名聚合，避免历史记录消失。
+  const cooperationMap = new Map();
+  const cooperationRows = all(
+    `SELECT s.person_id, s.counterpart, s.direction, s.amount, s.status, s.case_id,
+            p.name AS person_name
+       FROM fee_shares s LEFT JOIN people p ON p.id = s.person_id
+      WHERE s.is_void = 0 AND s.cancelled_at = '' AND s.status IN ('pending','settled')`
+  );
+  for (const row of cooperationRows) {
+    const key = row.person_id ? `person:${row.person_id}` : `name:${row.counterpart}`;
+    let item = cooperationMap.get(key);
+    if (!item) {
+      item = {
+        person_id: row.person_id || null,
+        name: row.person_name || row.counterpart,
+        share_count: 0,
+        case_count: 0,
+        receivable: 0,
+        payable: 0,
+        _cases: new Set(),
+      };
+      cooperationMap.set(key, item);
+    }
+    item.share_count += 1;
+    if (row.case_id != null) item._cases.add(Number(row.case_id));
+    if (row.direction === 'receivable') item.receivable += Number(row.amount || 0);
+    if (row.direction === 'payable') item.payable += Number(row.amount || 0);
+  }
+  const cooperation = [...cooperationMap.values()]
+    .map(({ _cases, ...item }) => ({ ...item, case_count: _cases.size, total: item.receivable + item.payable }))
+    .sort((a, b) => b.share_count - a.share_count || b.total - a.total || a.name.localeCompare(b.name, 'zh-CN'));
   // 应收账龄（只看 unpaid 且有金额；无 due_on 的归「未到期」——没约定到期日就谈不上逾期）
   const aging = one(`
     SELECT
@@ -168,6 +199,11 @@ r.get('/stats', (req, res) => {
         overdue_90: aging.d90 || 0,
         overdue_90p: aging.d90p || 0,
       },
+    },
+    cooperation: {
+      total_people: cooperation.length,
+      top_partner: cooperation[0] || null,
+      by_person: cooperation,
     },
   });
 });

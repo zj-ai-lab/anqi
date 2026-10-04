@@ -501,4 +501,7 @@ node tools/test-agent-image-frontend.js
 echo "[67/67] migration 019（公开仓 017/018 之后的双向分成方向，幂等/原子回滚）"
 node tools/test-migration-019.js
 
+echo "[68/68] migration 020（通讯录、案件参与人、分成关联与存量联系人回填）"
+node tools/test-migration-020.js
+
 echo "ALL GREEN ✅"

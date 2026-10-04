@@ -1,6 +1,7 @@
 // 律师费台账：总账等式 · 经营信号 · 按案收款规模 · 案件资金明细 · 人类可读分成约定与实际台账。
 // DOM 契约见 fees.html：#subtitle #ledger-overview #fee-signals #detail
 //   #share-meta #share-rows #share-foot #share-payable #share-receivable #share-repairs-link
+//   #fees-pending-more #fees-pending-toggle（待处理分成默认收起）
 // v2 骨架：标题零图标（CRITIQUE 修复项：icon slop）；颜色一律走 class，不写内联色。
 import { api, el, toast, todayStr } from './api.js';
 import { mountNav } from './nav.js';
@@ -646,6 +647,14 @@ function renderShares(s) {
   document.getElementById('share-payable').textContent = fmt(s.totals.payable_pending);
   document.getElementById('share-receivable').textContent = fmt(s.totals.receivable_pending);
   document.getElementById('share-foot').hidden = !s.items.length;
+  const more = document.getElementById('fees-pending-more');
+  const toggle = document.getElementById('fees-pending-toggle');
+  toggle.disabled = !s.items.length;
+  toggle.textContent = s.items.length ? (pendingCount ? `展开 ${pendingCount} 笔` : '查看历史') : '暂无记录';
+  if (!s.items.length) {
+    more.setAttribute('hidden', '');
+    toggle.setAttribute('aria-expanded', 'false');
+  }
 }
 
 async function load() {
@@ -666,11 +675,14 @@ async function load() {
   document.getElementById('subtitle').textContent = `截至 ${d.date} · 全期权责口径`;
 
   renderLedger(d.totals, cases, today);
+  const signals = [
+    d.totals.unpaid ? signalRow('待收', d.totals.unpaid, 'warn') : null,
+    d.totals.overdue ? signalRow('其中已到期', d.totals.overdue, 'crit') : null,
+    d.totals.waived ? signalRow('放弃 / 减免', d.totals.waived) : null,
+    d.totals.tbd ? signalRow('金额待定项', `${d.totals.tbd} 项`) : null,
+  ].filter(Boolean);
   document.getElementById('fee-signals').replaceChildren(
-    signalRow('待收', d.totals.unpaid, d.totals.unpaid ? 'warn' : ''),
-    signalRow('其中已到期', d.totals.overdue, d.totals.overdue ? 'crit' : ''),
-    signalRow('放弃 / 减免', d.totals.waived),
-    signalRow('金额待定项', `${d.totals.tbd} 项`, '', !d.totals.tbd)
+    ...(signals.length ? signals : [el('div', { class: 'section-empty' }, '暂无待收或异常')])
   );
 
   // ── 款项明细 ──
@@ -704,6 +716,14 @@ document.getElementById('fee-only-owing').addEventListener('click', () => {
   renderCasePanels();
 });
 document.getElementById('fee-collapse-all').addEventListener('click', setDefaultFolds);
+document.getElementById('fees-pending-toggle').addEventListener('click', () => {
+  const more = document.getElementById('fees-pending-more');
+  const toggle = document.getElementById('fees-pending-toggle');
+  const open = more.hasAttribute('hidden');
+  if (open) more.removeAttribute('hidden'); else more.setAttribute('hidden', '');
+  toggle.setAttribute('aria-expanded', String(open));
+  toggle.textContent = open ? '收起' : '展开';
+});
 const expandAllBtn = document.getElementById('fee-expand-all');
 if (expandAllBtn) expandAllBtn.remove();
 document.addEventListener('anjian:changed', load);

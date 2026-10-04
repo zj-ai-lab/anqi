@@ -194,6 +194,12 @@ r.get('/cases/:id', (req, res) => {
     worklog: db.prepare('SELECT * FROM worklog WHERE case_id = ? ORDER BY worked_on DESC, id DESC').all(c.id),
     attachments: db.prepare('SELECT * FROM attachments WHERE case_id = ? ORDER BY id DESC').all(c.id),
     contacts: db.prepare('SELECT * FROM contacts WHERE case_id = ? ORDER BY id').all(c.id),
+    participants: db.prepare(
+      `SELECT cp.id, cp.case_id, cp.person_id, cp.role, cp.note, cp.created_at,
+              p.name, p.phone, p.org
+         FROM case_participants cp JOIN people p ON p.id = cp.person_id
+        WHERE cp.case_id = ? ORDER BY p.name COLLATE NOCASE, cp.id`
+    ).all(c.id),
   });
 });
 

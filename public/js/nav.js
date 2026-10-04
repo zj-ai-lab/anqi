@@ -1,15 +1,16 @@
-// 顶栏（7 导航 + 皮肤三键 + counts + 退出 + 移动端汉堡）+ 底部快录条
+// 顶栏（8 导航 + 皮肤三键 + counts + 退出 + 移动端汉堡）+ 底部快录条
 // DOM 契约见 css/style.css 层 A 的 .topnav / .quickbar 段——改这里必须对着那里改。
 import { api, el, toast } from './api.js';
 import { iconEl } from './icons.js';
 import { initSkinSwitcher } from './skin.js';
 
-// 顺序按 DESIGN-TOKENS §10 A-2：今日 / 案件 / 日历 / 费用 / 修复 / 统计 / 用户中心
+// 顺序按 DESIGN-TOKENS §10 A-2：今日 / 案件 / 日历 / 费用 / 通讯录 / 修复 / 统计 / 用户中心
 const LINKS = [
   ['/', '今日', 'today'],
   ['/cases.html', '案件', 'cases'],
   ['/calendar.html', '日历', 'calendar'],
   ['/fees.html', '费用', 'wallet'],
+  ['/contacts.html', '通讯录', 'user'],
   ['/share-repairs.html', '修复', 'check'],
   ['/stats.html', '统计', 'stats'],
   ['/profile.html', '用户中心', 'user'],
