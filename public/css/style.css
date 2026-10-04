@@ -1895,9 +1895,15 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
   margin-bottom: 10px;
 }
+.settlement-add-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .settlement-plan-list, .settlement-deductions, .settlement-history {
   display: flex; flex-direction: column; gap: 8px;
 }
+.settlement-plan-group-title {
+  display: flex; align-items: center; gap: 8px; margin-top: 6px; padding: 4px 0;
+  color: var(--ink-2); font-size: 12px; font-weight: 620;
+}
+.settlement-plan-group-title:first-child { margin-top: 0; }
 .settlement-agreement-group { border-top: 1px solid var(--line); }
 .settlement-agreement-group:first-child { border-top: none; }
 .settlement-agreement-group-head {

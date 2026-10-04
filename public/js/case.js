@@ -8,7 +8,7 @@ import { mountNav } from './nav.js';
 import { stepper, feeBar } from './charts.js';
 import { datePrompt } from './dateedit.js';
 import { fileIconEl } from './icons.js';
-import { feeSettlementActions, openFormulaEditor, renderAgreementManager } from './fee-settlement.js';
+import { feeSettlementActions, openFormulaEditor, openPrimaryFeeSettlement, renderAgreementManager } from './fee-settlement.js';
 import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
 import { mountAgentDrawer } from './agent-drawer.js';
@@ -616,13 +616,13 @@ function feeRow(f) {
     : (f.status === 'unpaid' && f.due_on && f.due_on < todayStr() ? 'var(--red-dot)' : 'var(--amber-dot)');
 
   // 动作列按设计稿 §4：行内只放「主按钮 + 明细」两个按钮，完整结算操作收进明细展开区。
-  // 主按钮：paid → 记分成（打开结算编辑器）；unpaid → 标记已收；waived → 无主按钮。
+  // 主按钮：paid → 处理分成（打开结算编辑器）；unpaid → 收到钱了；waived → 无主按钮。
   const primaryBtn = f.status === 'paid'
     ? el('button', { class: 'ledger-btn primary is-paid', type: 'button',
-        onclick: () => openFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, '记分成')
+        onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, '处理分成')
     : f.status === 'unpaid'
       ? el('button', { class: 'ledger-btn primary', type: 'button',
-          onclick: () => openFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, '标记已收')
+          onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, '收到钱了')
       : null;
 
   const row = el('div', {

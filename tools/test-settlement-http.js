@@ -52,12 +52,12 @@ async function request(method, pathname, body, expected = 200) {
   return parsed;
 }
 
-function createAgreement(caseId, counterpart, rateBps, label) {
+function createAgreement(caseId, counterpart, rateBps, label, direction = 'payable') {
   const agreementId = Number(db.prepare(
     `INSERT INTO fee_share_agreements
        (case_id,direction,counterpart,rate,status,updated_at)
-     VALUES (?,'payable',?,?, 'active', datetime('now','+8 hours'))`
-  ).run(caseId, counterpart, rateBps / 100).lastInsertRowid);
+     VALUES (?,?,?,?, 'active', datetime('now','+8 hours'))`
+  ).run(caseId, direction, counterpart, rateBps / 100).lastInsertRowid);
   const revisionId = Number(db.prepare(
     `INSERT INTO fee_share_formula_revisions
        (agreement_id,case_id,revision_no,effective_on,label,change_note,
@@ -203,8 +203,15 @@ try {
   '被拒绝的暂定应付公式不得留下 assignment');
 
   const shapePlanBundle = await request('GET', `/api/fees/${shapeFee.id}/share-plans`);
-  assert(!shapePlanBundle.agreements.some((agreement) => agreement.id === receivableAgreement.id),
-    '应收约定不得进入我方收费的 payable 方案门槛');
+  assert(shapePlanBundle.agreements.some((agreement) => agreement.id === receivableAgreement.id),
+    '已确定的应收约定应进入这笔律师费的双向方案列表');
+  await request('PUT', `/api/fees/${shapeFee.id}/share-plans`, {
+    agreement_id: receivableAgreement.id,
+    status: 'not_applicable',
+    revision_choice: 'not_applicable',
+    decision_note: '这笔律师费不关联独立应收约定',
+    version: 0,
+  });
 
   const shapeRevision = await request('POST', `/api/share-agreements/${shapeAgreement.id}/revisions`, {
     effective_on: '2026-02-01',
@@ -243,6 +250,57 @@ try {
   await request('DELETE', `/api/fees/${pristineDeleteFee.id}`);
   assert.equal(db.prepare('SELECT 1 FROM fee_items WHERE id = ?').get(pristineDeleteFee.id), undefined,
     'active case agreement alone must not block deleting an unlinked fee');
+
+  // 双向收款回归：同一笔律师费可以同时形成我应付和我应收，且由同一结算 run 原子写入。
+  const bidirectionalCase = await request('POST', '/api/cases', {
+    name: '双向结算示例案（张三）', procedure: '一审', client: '张三',
+  });
+  const bidirectionalFee = await request('POST', `/api/cases/${bidirectionalCase.id}/fees`, {
+    label: '双向首期款', amount: '2000.00', due_on: '2026-02-15',
+  });
+  const bidirectionalPayable = createAgreement(bidirectionalCase.id, '李四', 2500, '应付四分之一');
+  const bidirectionalReceivable = createAgreement(
+    bidirectionalCase.id, '王五', 1000, '应收一成', 'receivable'
+  );
+  await request('PUT', `/api/fees/${bidirectionalFee.id}/share-plans`, {
+    plans: [
+      {
+        agreement_id: bidirectionalPayable.agreementId,
+        status: 'assigned',
+        formula_revision_id: bidirectionalPayable.revisionId,
+        revision_choice: 'initial',
+        decision_note: '本款形成应付',
+        version: 0,
+      },
+      {
+        agreement_id: bidirectionalReceivable.agreementId,
+        status: 'assigned',
+        formula_revision_id: bidirectionalReceivable.revisionId,
+        revision_choice: 'initial',
+        decision_note: '本款同时形成应收',
+        version: 0,
+      },
+    ],
+  });
+  const bidirectionalBundle = await request('GET', `/api/fees/${bidirectionalFee.id}/share-plans`);
+  assert.equal(bidirectionalBundle.unresolved_active_fee_agreements.length, 0);
+  const bidirectionalPreview = await request(
+    'POST', `/api/fees/${bidirectionalFee.id}/settlements/preview`,
+    { run_kind: 'receipt', paid_on: '2026-02-15' },
+  );
+  assert.equal(bidirectionalPreview.settlements.length, 2);
+  assert.deepEqual(
+    bidirectionalPreview.settlements.map((row) => [row.direction, row.desired_amount_fen]),
+    [['receivable', 20000], ['payable', 50000]],
+  );
+  const bidirectionalReceipt = await request(
+    'POST', `/api/fees/${bidirectionalFee.id}/settlements/confirm`,
+    confirmBody(bidirectionalPreview),
+  );
+  assert.deepEqual(
+    bidirectionalReceipt.shares.map((row) => [row.direction, row.amount_fen]),
+    [['receivable', 20000], ['payable', 50000]],
+  );
 
   const primaryCase = await request('POST', '/api/cases', {
     name: '结算回归示例案（张三）', procedure: '一审', client: '张三',
