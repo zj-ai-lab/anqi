@@ -16,6 +16,7 @@ import {
   formatSettlementMoneyFen,
   formatSettlementPercentBps,
 } from './settlement-view.js';
+import { isExternalCollectedFee } from './fee-accounting.js';
 
 const PLAN_STATUSES = new Set(['assigned', 'not_applicable']);
 const PLAN_CHOICES = new Set(['initial', 'keep_current', 'adopt_latest', 'not_applicable']);
@@ -1127,9 +1128,11 @@ function settlementHistory(feeId) {
 
 export function enrichFeeForRead(fee, shares = null, settlementContext = null) {
   const bundle = loadPlanBundle(fee);
+  const actual = shares || actualShares(fee.id);
   return {
     ...fee,
-    shares: shares || actualShares(fee.id),
+    shares: actual,
+    is_external_collected: isExternalCollectedFee(actual),
     share_plans: bundle.agreements,
     unresolved_active_payable_agreements: bundle.unresolved_active_payable_agreements,
     unresolved_active_fee_agreements: bundle.unresolved_active_fee_agreements,

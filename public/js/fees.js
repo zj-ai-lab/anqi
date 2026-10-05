@@ -89,7 +89,7 @@ function feeEmptyState(message = '还没有任何款项记录') {
 // 口径与 statusPill / 服务端 totals.overdue 一致：到期日「过了当日」才算已到期
 function overdueOf(c, today) {
   return c.items.reduce(
-    (s, f) => s + (f.status === 'unpaid' && f.amount != null && f.due_on && f.due_on < today ? f.amount : 0),
+    (s, f) => s + (!f.is_external_collected && f.status === 'unpaid' && f.amount != null && f.due_on && f.due_on < today ? f.amount : 0),
     0
   );
 }
@@ -159,13 +159,17 @@ function renderLedger(totals, cases, today) {
         ),
         ledgerHeadline(totals.net_retained),
         el('div', { class: 'fee-ledger-equation' },
-          ledgerInlineTerm('已收', totals.paid),
+          ledgerInlineTerm('我方已收', totals.paid),
           el('span', { class: 'fee-ledger-op', 'aria-hidden': 'true' }, '−'),
           ledgerInlineTerm('应付分成', totals.share_payable, 'payable'),
           el('span', { class: 'fee-ledger-op', 'aria-hidden': 'true' }, '+'),
           ledgerInlineTerm('应收分成', totals.share_receivable, 'receivable')
         ),
-        el('div', { class: 'fee-ledger-note' }, '仅已形成正式台账的分成参与；暂定约定与未确认方案不计入。')
+        el('div', { class: 'fee-ledger-note' },
+          '仅已形成正式台账的分成参与；暂定约定与未确认方案不计入。',
+          totals.external_paid || totals.external_unpaid
+            ? ` 他方收款基数 ${fmt((totals.external_paid || 0) + (totals.external_unpaid || 0))} 不计入我的收入。`
+            : null)
       ),
       el('a', {
         class: `fee-chase${totals.overdue ? ' is-overdue' : ''}`,
@@ -182,12 +186,13 @@ function renderLedger(totals, cases, today) {
 
 // 状态 chip（账本行专用，规格 §3：padding 2px 7px、600 11px）：比 .pill 更紧凑。
 function statusChip(f) {
-  if (f.status === 'paid') return el('span', { class: 'ledger-chip is-ok' }, f.paid_on ? `已收 · ${f.paid_on}` : '已收');
-  if (f.status === 'waived') return el('span', { class: 'ledger-chip is-muted' }, '减免');
-  if (!f.due_on) return el('span', { class: 'ledger-chip is-muted' }, '待收 · 节点未到');
+  const prefix = f.is_external_collected ? '他方' : '';
+  if (f.status === 'paid') return el('span', { class: 'ledger-chip is-ok' }, f.paid_on ? `${prefix}已收 · ${f.paid_on}` : `${prefix}已收`);
+  if (f.status === 'waived') return el('span', { class: 'ledger-chip is-muted' }, `${prefix}减免`);
+  if (!f.due_on) return el('span', { class: 'ledger-chip is-muted' }, `${prefix}待收 · 节点未到`);
   const overdue = f.due_on < todayStr();
   return el('span', { class: `ledger-chip ${overdue ? 'is-crit' : 'is-warn'}` },
-    overdue ? `逾期 · ${f.due_on}` : `待收 · ${f.due_on}`);
+    overdue ? `${prefix}逾期 · ${f.due_on}` : `${prefix}待收 · ${f.due_on}`);
 }
 
 // 金额单元：退款（负额）不靠颜色单编码——「退款」chip + 减号双编码（色盲可读）
@@ -216,13 +221,15 @@ function itemRow(f, c) {
         onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: load }) }, '处理分成')
     : f.status === 'unpaid'
       ? el('button', { class: 'ledger-btn primary', type: 'button',
-          onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: load }) }, '收到钱了')
+          onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: load }) }, f.is_external_collected ? '记录他方收款' : '收到钱了')
       : null;
   return el('div', {
     class: 'ledger-item fee-ledger-item',
     style: `grid-template-columns:${FEE_ITEM_GRID}`,
   },
-    el('span', { class: 'ledger-item-label', style: 'grid-column:1' }, f.label),
+    el('span', { class: 'ledger-item-label', style: 'grid-column:1' },
+      f.label,
+      f.is_external_collected ? el('span', { class: 'chip c-blue' }, '他方基数') : null),
     el('span', { style: 'grid-column:2;justify-self:start' }, statusChip(f)),
     el('span', { class: 'ledger-item-node', style: 'grid-column:3' }, f.node || '未填写'),
     el('span', { class: 'ledger-item-amt', style: 'grid-column:4' }, amountNodes(f)),
@@ -296,12 +303,15 @@ function itemBlock(f, c) {
 function caseFooter(c) {
   return el('div', { class: 'p-foot' },
     el('span', { class: 'fk fee-case-net' }, '本案净额', el('b', { class: 'num' }, fmt(c.net_retained))),
-    el('span', { class: 'fk' }, '律师费已收', el('b', { class: 'num' }, fmt(c.paid))),
+    el('span', { class: 'fk' }, '我方律师费已收', el('b', { class: 'num' }, fmt(c.paid))),
     el('span', { class: 'fk' }, '待收', el('b', { class: 'num' }, fmt(c.unpaid))),
     c.waived ? el('span', { class: 'fk' }, '放弃 / 减免', el('b', { class: 'num' }, fmt(c.waived))) : null,
     c.tbd ? el('span', { class: 'fk' }, '金额待定', el('b', { class: 'num' }, `${c.tbd} 项`)) : null,
     c.shares?.payable ? el('span', { class: 'fk' }, '应付分成', el('b', { class: 'num' }, fmt(c.shares.payable))) : null,
     c.shares?.receivable ? el('span', { class: 'fk' }, '应收分成', el('b', { class: 'num' }, fmt(c.shares.receivable))) : null,
+    c.external_paid || c.external_unpaid
+      ? el('span', { class: 'fk' }, '他方收款基数', el('b', { class: 'num' }, fmt((c.external_paid || 0) + (c.external_unpaid || 0))))
+      : null,
     el('span', { class: 'tail' }, `${c.items.length} 项款项`),
     el('a', { class: 'btn small', href: `/case.html?id=${c.case_id}#case-money` }, '打开本案资金区')
   );

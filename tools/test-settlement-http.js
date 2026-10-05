@@ -302,6 +302,37 @@ try {
     [['receivable', 20000], ['payable', 50000]],
   );
 
+  // 他方收款回归：纯应收分成挂在已收律师费上时，律师费基数只保留为记录，
+  // 不进入我方律师费总账；我应收的分成仍进入净额。统计口径同步排除该基数。
+  const externalCase = await request('POST', '/api/cases', {
+    name: '他方收款基数示例案（刘云海）', procedure: '一审', client: '张三',
+  });
+  const externalFee = await request('POST', `/api/cases/${externalCase.id}/fees`, {
+    label: '他方收款律师费', amount: '3000.00', due_on: '2026-02-20',
+  });
+  const statsBeforeExternal = await request('GET', '/api/stats');
+  await request('PATCH', `/api/fees/${externalFee.id}`, { status: 'paid' });
+  await request('POST', '/api/shares', {
+    case_id: externalCase.id,
+    fee_item_id: externalFee.id,
+    direction: 'receivable',
+    counterpart: '刘云海',
+    amount: 700,
+  });
+  const externalFees = await request('GET', `/api/cases/${externalCase.id}/fees`);
+  assert.equal(externalFees.total_paid, 0);
+  assert.equal(externalFees.external_paid, 3000);
+  assert.equal(externalFees.items[0].is_external_collected, true);
+  const externalOverview = await request('GET', '/api/fees/overview');
+  const externalGroup = externalOverview.cases.find((item) => item.case_id === externalCase.id);
+  assert.equal(externalGroup.paid, 0);
+  assert.equal(externalGroup.external_paid, 3000);
+  assert.equal(externalGroup.net_retained, 700);
+  assert.equal(externalOverview.totals.external_paid, 3000);
+  const statsAfterExternal = await request('GET', '/api/stats');
+  assert.equal(statsAfterExternal.paid_total, statsBeforeExternal.paid_total);
+  assert.equal(statsAfterExternal.paid_year, statsBeforeExternal.paid_year);
+
   const primaryCase = await request('POST', '/api/cases', {
     name: '结算回归示例案（张三）', procedure: '一审', client: '张三',
   });

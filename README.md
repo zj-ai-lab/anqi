@@ -101,8 +101,8 @@
 
 | 你的 Mac | 下载 |
 |---|---|
-| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.7.2-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.7.2/anqi-2.7.2-arm64.dmg)** |
-| Intel 芯片 | **[anqi-2.7.2-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.7.2/anqi-2.7.2-x64.dmg)** |
+| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.7.3-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.7.3/anqi-2.7.3-arm64.dmg)** |
+| Intel 芯片 | **[anqi-2.7.3-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.7.3/anqi-2.7.3-x64.dmg)** |
 
 > 不确定是哪种芯片：点左上角  → 「关于本机」，「芯片」一栏写 Apple M 开头的选 arm64，写 Intel 的选 x64。历史版本与校验文件在 [Releases 页面](https://github.com/zj-ai-lab/anqi/releases)。
 
@@ -281,10 +281,10 @@ flowchart LR
 
 ## 服务器 / Docker 部署
 
-推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.7.2`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.7.2 含数据库 migration，升级前备份；回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
+推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.7.3`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.7.3 修正他方收款基数进入我方律师费总账的问题；升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
 
 ```sh
-IMAGE=ghcr.io/zj-ai-lab/anqi:2.7.2
+IMAGE=ghcr.io/zj-ai-lab/anqi:2.7.3
 mkdir -p anqi/data anqi/case-files
 cd anqi
 docker pull "$IMAGE"

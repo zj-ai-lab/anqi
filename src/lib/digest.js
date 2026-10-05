@@ -1,6 +1,7 @@
 import { db } from '../db.js';
 import { todayCN, addDays, diffDays } from './dates.js';
 import { releaseDueSnoozes } from './recommendations.js';
+import { ownFeePredicate } from './fee-accounting.js';
 
 // 看板/digest 单一构建器：/api/digest 与 /internal/digest 共用（这两条路都不传
 // caseId，行为与此前完全一致），分桶口径与 litigation-brief 一致：🔴≤3日(含逾期)
@@ -15,6 +16,7 @@ import { releaseDueSnoozes } from './recommendations.js';
 // 按 caseId 重新聚合，不从全量 counts 派生（那是全所口径，对单案没有意义）。
 export function buildDigest(caseId = null) {
   const today = todayCN();
+  const ownFee = ownFeePredicate('f');
   const d3 = addDays(today, 3);
   const d7 = addDays(today, 7);
   const d30 = addDays(today, 30);
@@ -105,7 +107,7 @@ export function buildDigest(caseId = null) {
   const feesDue = db
     .prepare(
       `SELECT f.*, c.name AS case_name FROM fee_items f JOIN cases c ON c.id = f.case_id
-       WHERE f.status = 'unpaid' AND f.due_on != '' AND f.due_on <= ?
+       WHERE f.status = 'unpaid' AND f.due_on != '' AND f.due_on <= ? AND ${ownFee}
        ORDER BY f.due_on`
     )
     .all(d30)
@@ -139,7 +141,10 @@ export function buildDigest(caseId = null) {
     active_cases: db.prepare("SELECT COUNT(*) c FROM cases WHERE status = 'active'").get().c,
     inbox_pending: db.prepare("SELECT COUNT(*) c FROM inbox WHERE status = 'pending'").get().c,
     open_tasks: db.prepare("SELECT COUNT(*) c FROM tasks WHERE status = 'open'").get().c,
-    unpaid_fees: db.prepare("SELECT COALESCE(SUM(amount),0) s FROM fee_items WHERE status = 'unpaid' AND amount IS NOT NULL").get().s,
+    unpaid_fees: db.prepare(
+      `SELECT COALESCE(SUM(f.amount),0) s FROM fee_items f
+        WHERE f.status = 'unpaid' AND f.amount IS NOT NULL AND ${ownFee}`
+    ).get().s,
   };
 
   const full = {
@@ -168,7 +173,8 @@ export function buildDigest(caseId = null) {
       inbox_pending: db.prepare("SELECT COUNT(*) c FROM inbox WHERE status='pending' AND case_id=?").get(caseId).c,
       open_tasks: db.prepare("SELECT COUNT(*) c FROM tasks WHERE status='open' AND case_id=?").get(caseId).c,
       unpaid_fees: db.prepare(
-        "SELECT COALESCE(SUM(amount),0) s FROM fee_items WHERE status='unpaid' AND amount IS NOT NULL AND case_id=?"
+        `SELECT COALESCE(SUM(f.amount),0) s FROM fee_items f
+          WHERE f.status='unpaid' AND f.amount IS NOT NULL AND f.case_id=? AND ${ownFee}`
       ).get(caseId).s,
     },
     red: byCaseId(full.red),

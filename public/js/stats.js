@@ -12,7 +12,7 @@
 //     弧上留给底轨，不硬塞进任何一态。
 //   · 费用 amount=null = 金额待定，不计入任何求和，只用 tbd_count 记数。
 //   · 分成后净收（年）= 本年已收 − 应付分成 + 应收分成；分成按 due_month 归年，含 pending/settled、不含 waived。
-//   · trend.paid = 近 6 月按 paid_on 归月的**已收**金额（元）。
+//   · trend.paid = 近 6 月按 paid_on 归月的**我方已收**金额（元）；他方收款基数不计入。
 //
 // 色板（三皮肤共用，禁硬编码色值 —— 硬编码在 jade 暗皮肤下必瞎）：
 //   · 多序列（案件状态 / 案由）→ --chart-1..6；超过 6 类自动并成「其他」，永不两段同色。
@@ -317,7 +317,7 @@ function renderQuick(d) {
     kpiRow('案件总数', c.total, ['在办 ', m(c.active)]),
     kpiRow(`${d.year} 年结案`, c.closed_this_year, ['件']),
     kpiRow('已错过期限', dl.missed, ['按期率 ', m(rate)], dl.missed > 0),
-    kpiRow(`${d.year} 年已收费`, yuan(f.paid_year)),
+    kpiRow(`${d.year} 年我方已收费`, yuan(f.paid_year)),
     kpiRow('应收未收', yuan(f.unpaid_total), arNote)
   );
 }
@@ -353,7 +353,7 @@ function renderFee(t, f) {
   $('fee-range').textContent = `${months[0]} – ${months[months.length - 1]}`;
 
   const netTile = statTile({ label: '分成后净收（年）', value: yuan(f.net_year) });
-  netTile.append(el('span', { class: 'tile-l' }, '本年已收 − 应付分成 + 应收分成（含未结）'));
+  netTile.append(el('span', { class: 'tile-l' }, '我方已收 − 应付分成 + 应收分成（含未结）'));
   if (!f.net_year) netTile.classList.add('is-zero');
   $('fee-net-tiles').replaceChildren(netTile);
 

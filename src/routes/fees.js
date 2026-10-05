@@ -162,7 +162,10 @@ r.get('/fees/overview', (req, res) => {
   }
 
   const byCase = new Map();
-  const totals = { paid: 0, unpaid: 0, overdue: 0, waived: 0, tbd: 0 };
+  const totals = {
+    paid: 0, unpaid: 0, overdue: 0, waived: 0, tbd: 0,
+    external_paid: 0, external_unpaid: 0, external_waived: 0, external_tbd: 0,
+  };
   for (const rawFee of rows) {
     if (!byCase.has(rawFee.case_id)) {
       byCase.set(rawFee.case_id, {
@@ -173,6 +176,10 @@ r.get('/fees/overview', (req, res) => {
         unpaid: 0,
         waived: 0,
         tbd: 0,
+        external_paid: 0,
+        external_unpaid: 0,
+        external_waived: 0,
+        external_tbd: 0,
         items: [],
       });
     }
@@ -190,16 +197,22 @@ r.get('/fees/overview', (req, res) => {
     const fee = enrichFeeForRead(rawFee, byFee.get(rawFee.id) || [], settlementContext);
     fee.vouchers = voucherMap.get(rawFee.id) || [];
     group.items.push(fee);
-    if (fee.status === 'paid' && fee.amount != null) { group.paid += fee.amount; totals.paid += fee.amount; }
-    else if (fee.status === 'unpaid' && fee.amount != null) {
-      group.unpaid += fee.amount;
-      totals.unpaid += fee.amount;
-      if (fee.due_on && fee.due_on < today) totals.overdue += fee.amount;
+    const bucket = fee.is_external_collected ? 'external_' : '';
+    if (fee.status === 'paid' && fee.amount != null) {
+      group[`${bucket}paid`] += fee.amount;
+      totals[`${bucket}paid`] += fee.amount;
+    } else if (fee.status === 'unpaid' && fee.amount != null) {
+      group[`${bucket}unpaid`] += fee.amount;
+      totals[`${bucket}unpaid`] += fee.amount;
+      if (!fee.is_external_collected && fee.due_on && fee.due_on < today) totals.overdue += fee.amount;
     } else if (fee.status === 'waived' && fee.amount != null) {
-      group.waived += fee.amount;
-      totals.waived += fee.amount;
+      group[`${bucket}waived`] += fee.amount;
+      totals[`${bucket}waived`] += fee.amount;
     }
-    if (fee.amount == null && fee.status === 'unpaid') { group.tbd++; totals.tbd++; }
+    if (fee.amount == null && fee.status === 'unpaid') {
+      group[`${bucket}tbd`] += 1;
+      totals[`${bucket}tbd`] += 1;
+    }
   }
   for (const group of byCase.values()) {
     group.shares = byCaseShare.get(group.case_id) || { payable: 0, receivable: 0 };
@@ -223,13 +236,18 @@ r.get('/cases/:id/fees', (req, res) => {
     ...enrichFeeForRead(fee),
     vouchers: voucherMap.get(fee.id) || [],
   }));
-  const sum = (status) => rows
-    .filter((fee) => fee.status === status && fee.amount != null)
+  const sum = (status) => items
+    .filter((fee) => !fee.is_external_collected && fee.status === status && fee.amount != null)
+    .reduce((total, fee) => total + fee.amount, 0);
+  const externalSum = (status) => items
+    .filter((fee) => fee.is_external_collected && fee.status === status && fee.amount != null)
     .reduce((total, fee) => total + fee.amount, 0);
   res.json({
     items,
     total_paid: sum('paid'),
     total_unpaid: sum('unpaid'),
+    external_paid: externalSum('paid'),
+    external_unpaid: externalSum('unpaid'),
     files_enabled: Boolean(FILES_ROOT),
   });
 });

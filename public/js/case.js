@@ -648,12 +648,13 @@ const CASE_FEE_GRID = 'minmax(140px,1.1fr) 116px minmax(130px,1.15fr) 92px minma
 let feeDetailId = null;   // 当前展开明细的款项 id（单值，非 map）
 
 function feeStatusChip(f) {
-  if (f.status === 'paid') return el('span', { class: 'ledger-chip is-ok' }, f.paid_on ? `已收 · ${f.paid_on}` : '已收');
-  if (f.status === 'waived') return el('span', { class: 'ledger-chip is-muted' }, '减免');
-  if (!f.due_on) return el('span', { class: 'ledger-chip is-muted' }, '待收 · 节点未到');
+  const prefix = f.is_external_collected ? '他方' : '';
+  if (f.status === 'paid') return el('span', { class: 'ledger-chip is-ok' }, f.paid_on ? `${prefix}已收 · ${f.paid_on}` : `${prefix}已收`);
+  if (f.status === 'waived') return el('span', { class: 'ledger-chip is-muted' }, `${prefix}减免`);
+  if (!f.due_on) return el('span', { class: 'ledger-chip is-muted' }, `${prefix}待收 · 节点未到`);
   const overdue = f.due_on < todayStr();
   return el('span', { class: `ledger-chip ${overdue ? 'is-crit' : 'is-warn'}` },
-    overdue ? `逾期 · ${f.due_on}` : `待收 · ${f.due_on}`);
+    overdue ? `${prefix}逾期 · ${f.due_on}` : `${prefix}待收 · ${f.due_on}`);
 }
 
 // 分成列文案：取首条 share，或「无分成」
@@ -683,14 +684,16 @@ function feeRow(f) {
         onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, '处理分成')
     : f.status === 'unpaid'
       ? el('button', { class: 'ledger-btn primary', type: 'button',
-          onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, '收到钱了')
+          onclick: () => openPrimaryFeeSettlement({ fee: f, onChanged: refreshFinancials }) }, f.is_external_collected ? '记录他方收款' : '收到钱了')
       : null;
 
   const row = el('div', {
     class: 'ledger-item case-fee-ledger-item',
     style: `grid-template-columns:${CASE_FEE_GRID}`,
   },
-    el('span', { class: 'ledger-item-label', style: 'grid-column:1' }, f.label),
+    el('span', { class: 'ledger-item-label', style: 'grid-column:1' },
+      f.label,
+      f.is_external_collected ? el('span', { class: 'chip c-blue' }, '他方基数') : null),
     el('span', { style: 'grid-column:2;justify-self:start' }, feeStatusChip(f)),
     el('span', { class: 'ledger-item-node', style: 'grid-column:3', title: f.node || '' }, f.node || '未填写'),
     el('span', {
@@ -873,7 +876,7 @@ async function loadFees() {
 }
 
 function renderCaseArchive(items) {
-  const settled = items.filter((f) => f.status === 'paid');
+  const settled = items.filter((f) => f.status === 'paid' && !f.is_external_collected);
   const countNode = document.getElementById('case-archive-count');
   const body = document.getElementById('case-archive-body');
   const section = document.getElementById('case-archive');

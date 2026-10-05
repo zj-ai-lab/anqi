@@ -10,6 +10,7 @@ import { deriveForEvent, rulesSummary } from '../lib/engine.js';
 import { llmReady } from '../lib/llm.js';
 import { releaseDueSnoozes } from '../lib/recommendations.js';
 import { agentKeyStatus, agentReady } from '../agent/config.js';
+import { ownFeePredicate } from '../lib/fee-accounting.js';
 
 const r = Router();
 
@@ -68,6 +69,7 @@ r.get('/stats', (req, res) => {
   const year = today.slice(0, 4);
   const one = (sql, ...a) => db.prepare(sql).get(...a);
   const all = (sql, ...a) => db.prepare(sql).all(...a);
+  const ownFee = ownFeePredicate('f');
 
   // ── 期限履约：只看「本年度已到期」的期限，未到期的不参与分母（否则完成率被稀释成没意义的数） ──
   // ⚠ done_at 是 datetime（'2026-07-13 09:00:00'），due_on 是 date（'2026-07-13'）。
@@ -104,16 +106,17 @@ r.get('/stats', (req, res) => {
   const closed = monthMap(all(
     "SELECT substr(COALESCE(updated_at,created_at),1,7) AS k, COUNT(*) c FROM cases WHERE status='closed' GROUP BY k"));
   const paidByMonth = monthMap(all(
-    "SELECT substr(paid_on,1,7) AS k, SUM(amount) c FROM fee_items WHERE status='paid' AND paid_on IS NOT NULL AND paid_on != '' GROUP BY k"));
+    `SELECT substr(f.paid_on,1,7) AS k, SUM(f.amount) c FROM fee_items f
+      WHERE f.status='paid' AND f.paid_on IS NOT NULL AND f.paid_on != '' AND ${ownFee} GROUP BY k`));
 
   // ── 律师费。amount 为 null = 金额待定，不计入任何求和（fees.js 同口径） ──
   const fee = one(`
     SELECT
-      SUM(CASE WHEN status='paid'   AND amount IS NOT NULL THEN amount ELSE 0 END) AS paid_total,
-      SUM(CASE WHEN status='paid'   AND amount IS NOT NULL AND substr(paid_on,1,4)=? THEN amount ELSE 0 END) AS paid_year,
-      SUM(CASE WHEN status='unpaid' AND amount IS NOT NULL THEN amount ELSE 0 END) AS unpaid_total,
-      SUM(CASE WHEN status='unpaid' AND amount IS NULL THEN 1 ELSE 0 END) AS tbd_count
-    FROM fee_items`, year);
+      SUM(CASE WHEN f.status='paid'   AND f.amount IS NOT NULL THEN f.amount ELSE 0 END) AS paid_total,
+      SUM(CASE WHEN f.status='paid'   AND f.amount IS NOT NULL AND substr(f.paid_on,1,4)=? THEN f.amount ELSE 0 END) AS paid_year,
+      SUM(CASE WHEN f.status='unpaid' AND f.amount IS NOT NULL THEN f.amount ELSE 0 END) AS unpaid_total,
+      SUM(CASE WHEN f.status='unpaid' AND f.amount IS NULL THEN 1 ELSE 0 END) AS tbd_count
+    FROM fee_items f WHERE ${ownFee}`, year);
   // 分成口径（权责发生制）：按 due_month 归属年份，pending+settled 都算、waived 不算。
   const share = one(`
     SELECT
@@ -161,7 +164,7 @@ r.get('/stats', (req, res) => {
       SUM(CASE WHEN due_on <  ? AND julianday(?)-julianday(due_on) <= 30 THEN amount ELSE 0 END) AS d30,
       SUM(CASE WHEN julianday(?)-julianday(due_on) > 30 AND julianday(?)-julianday(due_on) <= 90 THEN amount ELSE 0 END) AS d90,
       SUM(CASE WHEN julianday(?)-julianday(due_on) > 90 THEN amount ELSE 0 END) AS d90p
-    FROM fee_items WHERE status='unpaid' AND amount IS NOT NULL`,
+    FROM fee_items f WHERE f.status='unpaid' AND f.amount IS NOT NULL AND ${ownFee}`,
   today, today, today, today, today, today);
 
   res.json({
