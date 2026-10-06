@@ -1,8 +1,8 @@
 import { Router } from 'express';
-import { db, audit, withImmediateTransaction } from '../db.js';
+import { db, audit, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
 import { isEventType } from '../lib/vocab.js';
-import { deriveForEvent, recalcPreview, applyRecalc } from '../lib/engine.js';
+import { deriveForEvent, recalcPreview, applyRecalc, recomputeForDeadline, hasManualParams } from '../lib/engine.js';
 import { parseQuick, llmReady } from '../lib/llm.js';
 
 const r = Router();
@@ -42,18 +42,22 @@ export function createEventRecord({ caseId, payload, actor = 'web', createdBy = 
   if (!isEventType(b.type)) throw recordError('type 非法（见 /api/meta 词表）');
   if (!isDate(b.occurred_on)) throw recordError('occurred_on 须为 YYYY-MM-DD');
   const normalizedCreatedBy = ['manual', 'llm', 'import'].includes(createdBy) ? createdBy : 'manual';
-  const info = db.prepare(
-    `INSERT INTO events (case_id, type, occurred_on, service_method, instrument, note, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    c.id, b.type, b.occurred_on, String(b.service_method || ''), String(b.instrument || ''),
-    String(b.note || ''), normalizedCreatedBy
-  );
-  audit(actor, 'create', 'event', info.lastInsertRowid, `${c.name} ${b.type} ${b.occurred_on}`);
-  const row = db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
-  const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id);
-  const derived = deriveForEvent(row, caseRow, actor);
-  return { row, derived };
+  // 身份上下文与业务写同事务（022）：事件、引擎派生出的期限/待办一起记到同一个 actor 名下。
+  // 本函数被 HTTP 路由与 agent 直写共用，包在这里两边都覆盖，不必各自记得包一次。
+  return withChangeContext({ actor }, () => {
+    const info = db.prepare(
+      `INSERT INTO events (case_id, type, occurred_on, service_method, instrument, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      c.id, b.type, b.occurred_on, String(b.service_method || ''), String(b.instrument || ''),
+      String(b.note || ''), normalizedCreatedBy
+    );
+    audit(actor, 'create', 'event', info.lastInsertRowid, `${c.name} ${b.type} ${b.occurred_on}`);
+    const row = db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
+    const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id);
+    const derived = deriveForEvent(row, caseRow, actor);
+    return { row, derived };
+  });
 }
 
 export function createDeadlineRecord({
@@ -76,16 +80,18 @@ export function createDeadlineRecord({
   }
   const normalizedCreatedBy = ['manual', 'ai', 'engine', 'import'].includes(createdBy) ? createdBy : 'manual';
   const normalizedReview = reviewStatus === 'pending_review' ? 'pending_review' : 'confirmed';
-  const info = db.prepare(
-    `INSERT INTO deadlines
-      (case_id, name, due_on, trigger_event_id, basis, calc_note, is_manual_override, severity, review_status, created_by)
-     VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
-  ).run(
-    c.id, String(b.name).trim(), b.due_on, triggerEventId,
-    String(b.basis || ''), String(b.calc_note || ''), severity, normalizedReview, normalizedCreatedBy
-  );
-  audit(actor, 'create', 'deadline', info.lastInsertRowid, `${c.name} ${String(b.name).trim()} ${b.due_on}`);
-  return db.prepare('SELECT * FROM deadlines WHERE id = ?').get(info.lastInsertRowid);
+  return withChangeContext({ actor }, () => {
+    const info = db.prepare(
+      `INSERT INTO deadlines
+        (case_id, name, due_on, trigger_event_id, basis, calc_note, is_manual_override, severity, review_status, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`
+    ).run(
+      c.id, String(b.name).trim(), b.due_on, triggerEventId,
+      String(b.basis || ''), String(b.calc_note || ''), severity, normalizedReview, normalizedCreatedBy
+    );
+    audit(actor, 'create', 'deadline', info.lastInsertRowid, `${c.name} ${String(b.name).trim()} ${b.due_on}`);
+    return db.prepare('SELECT * FROM deadlines WHERE id = ?').get(info.lastInsertRowid);
+  });
 }
 
 export function createTaskRecord({ caseId = null, payload, actor = 'web', origin = 'manual' }) {
@@ -109,16 +115,18 @@ export function createTaskRecord({ caseId = null, payload, actor = 'web', origin
     if (deadline.case_id !== normalizedCaseId) throw recordError('关联期限不属于该案件', 400, 'deadline_case_mismatch');
   }
   const normalizedOrigin = ['manual', 'template', 'llm'].includes(origin) ? origin : 'manual';
-  const info = db.prepare(
-    `INSERT INTO tasks (case_id, title, plan_date, due_on, due_time, deadline_id, stage, priority, origin, note)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-  ).run(
-    normalizedCaseId, String(b.title).trim(), planDate, dueOn, dueTime, deadlineId,
-    String(b.stage || ''), ['high', 'normal', 'low'].includes(b.priority) ? b.priority : 'normal',
-    normalizedOrigin, String(b.note || '')
-  );
-  audit(actor, 'create', 'task', info.lastInsertRowid, String(b.title).trim());
-  return taskView(info.lastInsertRowid);
+  return withChangeContext({ actor }, () => {
+    const info = db.prepare(
+      `INSERT INTO tasks (case_id, title, plan_date, due_on, due_time, deadline_id, stage, priority, origin, note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      normalizedCaseId, String(b.title).trim(), planDate, dueOn, dueTime, deadlineId,
+      String(b.stage || ''), ['high', 'normal', 'low'].includes(b.priority) ? b.priority : 'normal',
+      normalizedOrigin, String(b.note || '')
+    );
+    audit(actor, 'create', 'task', info.lastInsertRowid, String(b.title).trim());
+    return taskView(info.lastInsertRowid);
+  });
 }
 
 // ---------- events ----------
@@ -143,6 +151,7 @@ r.patch('/events/:id', (req, res) => {
 
   // 改触发日期 → 级联重算，先出预览、confirm 才落库（D4：人工覆盖默认排除）
   const dateChanging = 'occurred_on' in b && b.occurred_on !== row.occurred_on;
+  let recalc = null;
   if (dateChanging) {
     if (!isDate(b.occurred_on)) return res.status(400).json({ error: '日期非法' });
     const preview = recalcPreview(row, b.occurred_on);
@@ -153,7 +162,7 @@ r.patch('/events/:id', (req, res) => {
         ...preview,
       });
     }
-    if (b.confirm === true) applyRecalc(preview, req.actor);
+    if (b.confirm === true) recalc = preview;
   }
 
   const sets = [];
@@ -166,8 +175,11 @@ r.patch('/events/:id', (req, res) => {
     args.push(b[f] ?? '');
   }
   if (!sets.length) return res.status(400).json({ error: '无可更新字段' });
-  db.prepare(`UPDATE events SET ${sets.join(', ')} WHERE id = ?`).run(...args, row.id);
-  audit(req.actor, 'update', 'event', row.id, Object.keys(b).join(','));
+  withChangeContext({ actor: req.actor }, () => {
+    if (recalc) applyRecalc(recalc, req.actor);
+    db.prepare(`UPDATE events SET ${sets.join(', ')} WHERE id = ?`).run(...args, row.id);
+    audit(req.actor, 'update', 'event', row.id, Object.keys(b).join(','));
+  });
   res.json(db.prepare('SELECT * FROM events WHERE id = ?').get(row.id));
 });
 
@@ -176,8 +188,10 @@ r.delete('/events/:id', (req, res) => {
   if (!row) return res.status(404).json({ error: '事件不存在' });
   const linked = db.prepare('SELECT COUNT(*) c FROM deadlines WHERE trigger_event_id = ?').get(row.id).c;
   if (linked) return res.status(409).json({ error: `有 ${linked} 条期限挂在该事件上，先处理期限` });
-  db.prepare('DELETE FROM events WHERE id = ?').run(row.id);
-  audit(req.actor, 'delete', 'event', row.id, `${row.type} ${row.occurred_on}`);
+  withChangeContext({ actor: req.actor }, () => {
+    db.prepare('DELETE FROM events WHERE id = ?').run(row.id);
+    audit(req.actor, 'delete', 'event', row.id, `${row.type} ${row.occurred_on}`);
+  });
   res.json({ ok: true });
 });
 
@@ -194,11 +208,19 @@ r.post('/deadlines/:id/confirm-review', (req, res) => {
   const row = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '期限不存在' });
   if (row.review_status === 'pending_review') {
-    db.prepare("UPDATE deadlines SET review_status='confirmed' WHERE id=? AND review_status='pending_review'").run(row.id);
-    audit(req.actor, 'confirm-review', 'deadline', row.id, `${row.name} ${row.due_on}`);
+    withChangeContext({ actor: req.actor }, () => {
+      db.prepare("UPDATE deadlines SET review_status='confirmed' WHERE id=? AND review_status='pending_review'").run(row.id);
+      audit(req.actor, 'confirm-review', 'deadline', row.id, `${row.name} ${row.due_on}`);
+    });
   }
   res.json(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id));
 });
+
+// 手动调参（第一层）合法取值。允许空串＝清除该覆盖项，回归规则默认值。
+const MANUAL_UNITS = ['natural_days', 'months', 'years'];
+const MANUAL_COUNT_FROM = ['next_day', 'same_day'];
+const MANUAL_ROLL = ['none', 'backward', 'forward'];
+const MANUAL_FIELDS = ['manual_days', 'manual_unit', 'manual_count_from', 'manual_roll'];
 
 r.patch('/deadlines/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(req.params.id);
@@ -206,7 +228,7 @@ r.patch('/deadlines/:id', (req, res) => {
   const b = req.body || {};
   const sets = [];
   const args = [];
-  for (const f of ['name', 'due_on', 'basis', 'calc_note', 'severity', 'status']) {
+  for (const f of ['name', 'due_on', 'basis', 'calc_note', 'severity', 'status', 'override_reason']) {
     if (!(f in b)) continue;
     if (f === 'due_on' && !isDate(b.due_on)) return res.status(400).json({ error: '日期非法' });
     if (f === 'severity' && !['critical', 'high', 'normal'].includes(b.severity)) return res.status(400).json({ error: 'severity 非法' });
@@ -214,25 +236,74 @@ r.patch('/deadlines/:id', (req, res) => {
     sets.push(`${f} = ?`);
     args.push(b[f] ?? '');
   }
+  // ---- 手动调参四字段（2026-09-12 用户裁定「四项全开」）----
+  // 改参数而不是改日期：届满日随后由引擎按新参数重算，"为什么是这个日期"始终可溯。
+  const touchedManual = [];
+  for (const f of MANUAL_FIELDS) {
+    if (!(f in b)) continue;
+    const v = b[f] === null || b[f] === undefined ? '' : b[f];
+    if (f === 'manual_days') {
+      if (v !== '' && (!Number.isInteger(Number(v)) || Number(v) < 0 || Number(v) > 3650)) {
+        return res.status(400).json({ error: 'manual_days 须为 0–3650 的整数，或空串表示不覆盖' });
+      }
+      sets.push('manual_days = ?');
+      args.push(v === '' ? null : Number(v));
+    } else {
+      const allowed = f === 'manual_unit' ? MANUAL_UNITS : f === 'manual_count_from' ? MANUAL_COUNT_FROM : MANUAL_ROLL;
+      if (v !== '' && !allowed.includes(v)) {
+        return res.status(400).json({ error: `${f} 取值非法（可选：${allowed.join(' / ')}，或空串清除）` });
+      }
+      sets.push(`${f} = ?`);
+      args.push(v === '' ? '' : v);
+    }
+    touchedManual.push(f);
+  }
   if (!sets.length) return res.status(400).json({ error: '无可更新字段' });
   // 人工改动到期日 → 标记 override（D4：级联重算默认排除）
   if ('due_on' in b && b.due_on !== row.due_on) {
     sets.push('is_manual_override = 1');
+    if (!touchedManual.length) {
+      // 从参数计算转为直接指定日期：清掉参数，避免下次重算误当作参数型覆盖。
+      sets.push('manual_days = NULL', "manual_unit = ''", "manual_count_from = ''", "manual_roll = ''");
+    }
   }
   if ('status' in b && b.status === 'done' && row.status !== 'done') {
     sets.push("done_at = datetime('now','+8 hours')");
   }
-  db.prepare(`UPDATE deadlines SET ${sets.join(', ')} WHERE id = ?`).run(...args, row.id);
-  audit(req.actor, 'update', 'deadline', row.id, Object.keys(b).join(','));
-  res.json(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id));
+  let updated;
+  // 身份上下文与业务写同事务：一次 PATCH 可能连改两轮（先落手动参数，再由引擎按参数
+  // 重算届满日），两轮变更同属一个 actor，必须记在同一上下文里，故整段包起来。
+  withChangeContext({ actor: req.actor }, () => {
+    db.prepare(`UPDATE deadlines SET ${sets.join(', ')} WHERE id = ?`).run(...args, row.id);
+
+    updated = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id);
+    if (touchedManual.length) {
+      // 先落参数，再用引擎按参数重算届满日；与 due_on 同时提交时以参数重算为准
+      // （避免"改了参数又贴一个日期"的歧义：参数是唯一事实源）。
+      const next = recomputeForDeadline(updated);
+      if (next) {
+        const stillManual = hasManualParams(updated) ? 1 : 0; // 清空全部参数＝回归引擎纯算状态
+        db.prepare('UPDATE deadlines SET due_on = ?, calc_note = ?, is_manual_override = ? WHERE id = ?')
+          .run(next.due_on, next.calc_note, stillManual, row.id);
+        updated = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id);
+      }
+      audit(req.actor, 'manual-params', 'deadline', row.id,
+        `${touchedManual.join(',')} → ${updated.due_on}${updated.override_reason ? '｜理由：' + updated.override_reason : ''}`);
+    }
+    audit(req.actor, 'update', 'deadline', row.id, Object.keys(b).join(','));
+  });
+  res.json(updated);
 });
 
 r.delete('/deadlines/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '期限不存在' });
-  db.prepare('UPDATE tasks SET deadline_id = NULL WHERE deadline_id = ?').run(row.id);
-  db.prepare('DELETE FROM deadlines WHERE id = ?').run(row.id);
-  audit(req.actor, 'delete', 'deadline', row.id, `${row.name} ${row.due_on}`);
+  withChangeContext({ actor: req.actor }, () => {
+    // 解除挂靠与删除期限必须同事务：分开写会让中途失败的待办永远指着一个不存在的期限。
+    db.prepare('UPDATE tasks SET deadline_id = NULL WHERE deadline_id = ?').run(row.id);
+    db.prepare('DELETE FROM deadlines WHERE id = ?').run(row.id);
+    audit(req.actor, 'delete', 'deadline', row.id, `${row.name} ${row.due_on}`);
+  });
   res.json({ ok: true });
 });
 
@@ -306,7 +377,7 @@ r.patch('/tasks/:id', (req, res) => {
   const wantsDone = b.status === 'done';
   let updated;
   let completionWorklog = null;
-  withImmediateTransaction(() => {
+  withChangeContext({ actor: req.actor }, () => {
     const current = db.prepare('SELECT * FROM tasks WHERE id = ?').get(row.id);
     const txSets = [...sets];
     const txArgs = [...args];
@@ -330,8 +401,10 @@ r.patch('/tasks/:id', (req, res) => {
 r.delete('/tasks/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM tasks WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '待办不存在' });
-  db.prepare('DELETE FROM tasks WHERE id = ?').run(row.id);
-  audit(req.actor, 'delete', 'task', row.id, row.title);
+  withChangeContext({ actor: req.actor }, () => {
+    db.prepare('DELETE FROM tasks WHERE id = ?').run(row.id);
+    audit(req.actor, 'delete', 'task', row.id, row.title);
+  });
   res.json({ ok: true });
 });
 
@@ -344,11 +417,14 @@ r.post('/worklog', (req, res) => {
   if (b.case_id && !db.prepare('SELECT id FROM cases WHERE id = ?').get(b.case_id)) {
     return res.status(404).json({ error: '案件不存在' });
   }
-  const info = db.prepare(
-    'INSERT INTO worklog (case_id, worked_on, content, minutes, artifacts) VALUES (?, ?, ?, ?, ?)'
-  ).run(b.case_id || null, workedOn, b.content.trim(), Number.isInteger(b.minutes) ? b.minutes : null, b.artifacts || '');
-  audit(req.actor, 'create', 'worklog', info.lastInsertRowid, b.content.slice(0, 50));
-  res.json(db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid));
+  const created = withChangeContext({ actor: req.actor }, () => {
+    const info = db.prepare(
+      'INSERT INTO worklog (case_id, worked_on, content, minutes, artifacts) VALUES (?, ?, ?, ?, ?)'
+    ).run(b.case_id || null, workedOn, b.content.trim(), Number.isInteger(b.minutes) ? b.minutes : null, b.artifacts || '');
+    audit(req.actor, 'create', 'worklog', info.lastInsertRowid, b.content.slice(0, 50));
+    return db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
+  });
+  res.json(created);
 });
 
 r.patch('/worklog/:id', (req, res) => {
@@ -364,16 +440,20 @@ r.patch('/worklog/:id', (req, res) => {
     args.push(b[f] ?? '');
   }
   if (!sets.length) return res.status(400).json({ error: '无可更新字段' });
-  db.prepare(`UPDATE worklog SET ${sets.join(', ')} WHERE id = ?`).run(...args, row.id);
-  audit(req.actor, 'update', 'worklog', row.id, '');
+  withChangeContext({ actor: req.actor }, () => {
+    db.prepare(`UPDATE worklog SET ${sets.join(', ')} WHERE id = ?`).run(...args, row.id);
+    audit(req.actor, 'update', 'worklog', row.id, '');
+  });
   res.json(db.prepare('SELECT * FROM worklog WHERE id = ?').get(row.id));
 });
 
 r.delete('/worklog/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM worklog WHERE id = ?').get(req.params.id);
   if (!row) return res.status(404).json({ error: '日志不存在' });
-  db.prepare('DELETE FROM worklog WHERE id = ?').run(row.id);
-  audit(req.actor, 'delete', 'worklog', row.id, row.content.slice(0, 50));
+  withChangeContext({ actor: req.actor }, () => {
+    db.prepare('DELETE FROM worklog WHERE id = ?').run(row.id);
+    audit(req.actor, 'delete', 'worklog', row.id, row.content.slice(0, 50));
+  });
   res.json({ ok: true });
 });
 
@@ -387,15 +467,21 @@ r.post('/quick', (req, res) => {
     return res.status(404).json({ error: '案件不存在' });
   }
   if (kind === 'log') {
-    const info = db.prepare('INSERT INTO worklog (case_id, worked_on, content) VALUES (?, ?, ?)')
-      .run(b.case_id || null, b.date || todayCN(), b.text.trim());
-    audit(req.actor, 'create', 'worklog', info.lastInsertRowid, 'quick');
-    return res.json({ kind: 'log', row: db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid) });
+    const row = withChangeContext({ actor: req.actor }, () => {
+      const info = db.prepare('INSERT INTO worklog (case_id, worked_on, content) VALUES (?, ?, ?)')
+        .run(b.case_id || null, b.date || todayCN(), b.text.trim());
+      audit(req.actor, 'create', 'worklog', info.lastInsertRowid, 'quick');
+      return db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
+    });
+    return res.json({ kind: 'log', row });
   }
-  const info = db.prepare('INSERT INTO tasks (case_id, title, plan_date) VALUES (?, ?, ?)')
-    .run(b.case_id || null, b.text.trim(), b.date || '');
-  audit(req.actor, 'create', 'task', info.lastInsertRowid, 'quick');
-  res.json({ kind: 'task', row: taskView(info.lastInsertRowid) });
+  const row = withChangeContext({ actor: req.actor }, () => {
+    const info = db.prepare('INSERT INTO tasks (case_id, title, plan_date) VALUES (?, ?, ?)')
+      .run(b.case_id || null, b.text.trim(), b.date || '');
+    audit(req.actor, 'create', 'task', info.lastInsertRowid, 'quick');
+    return taskView(info.lastInsertRowid);
+  });
+  res.json({ kind: 'task', row });
 });
 
 // ---- 快录整理（1.1.0）：LLM 把一句话整理成建议，**只回给前端填表，绝不写库** ----

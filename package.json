@@ -42,7 +42,8 @@
       "ACKNOWLEDGEMENTS.md",
       "LEGAL-NOTICE.md",
       "package.json",
-      "package-lock.json"
+      "package-lock.json",
+      "!archive/**"
     ],
     "asar": false,
     "asarUnpack": [

@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, audit, withImmediateTransaction } from '../db.js';
+import { db, audit, withImmediateTransaction, withChangeContext } from '../db.js';
 import { isDate } from '../lib/dates.js';
 import { deriveForEvent } from '../lib/engine.js';
 import {
@@ -242,7 +242,9 @@ r.post('/legalrag/candidates/:id/accept', (req, res) => {
   const payload = { ...stored, ...(req.body?.payload || {}) };
 
   try {
-    const result = withImmediateTransaction(() => {
+    // 采纳候选会往 events 写行（并可能触发引擎派生 deadline/task），身份上下文与业务写
+    // 同事务：变更记录里这几条要能看出是「采纳了哪个候选」这一次操作产生的。
+    const result = withChangeContext({ actor: req.actor }, () => {
       const fresh = db.prepare(
         `SELECT c.status,f.status AS fact_status FROM legalrag_candidates c
           JOIN legalrag_candidate_facts f ON f.id=c.fact_id WHERE c.id=?`

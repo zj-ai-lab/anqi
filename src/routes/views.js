@@ -2,14 +2,15 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, audit, withImmediateTransaction } from '../db.js';
+import { db, audit, withImmediateTransaction, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
 import { buildDigest } from '../lib/digest.js';
-import { eventTypes, stageTemplates, procedures } from '../lib/vocab.js';
+import { eventTypes, stageTemplates, procedures, stageLabels, lawTexts } from '../lib/vocab.js';
 import { deriveForEvent, rulesSummary } from '../lib/engine.js';
 import { llmReady } from '../lib/llm.js';
 import { releaseDueSnoozes } from '../lib/recommendations.js';
 import { agentKeyStatus, agentReady } from '../agent/config.js';
+import { criminalFields } from '../lib/case-fields.js';
 
 const r = Router();
 
@@ -29,6 +30,9 @@ r.get('/meta', (req, res) => {
     event_types: eventTypes,
     stage_templates: stageTemplates,
     procedures,
+    criminal_fields: criminalFields,
+    stage_labels: stageLabels,   // 17 值刑事诉讼状态标签（含 17→7 procedure 映射）
+    law_texts: lawTexts,         // 本地法条原文库（浮层溯源用；缺文件时为空数组）
     severities: ['critical', 'high', 'normal'],
     deadline_rules: rulesSummary(),
   });
@@ -243,7 +247,7 @@ r.post('/inbox/:id/accept', (req, res) => {
   }
   const caseId = row.case_id || payload.case_id || null;
   try {
-    const created = withImmediateTransaction(() => {
+    const created = withChangeContext({ actor: req.actor }, () => {
       const fresh = db.prepare('SELECT status FROM inbox WHERE id=?').get(row.id);
       if (fresh?.status !== 'pending') {
         const error = new Error('该收件已裁决');

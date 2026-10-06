@@ -1,5 +1,6 @@
 // 外层修复事务组合回归：计划、legacy 事实纠正与结算确认必须参与同一 BEGIN IMMEDIATE。
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 import { audit, db, withImmediateTransaction } from '../src/db.js';
 import {
   confirmSettlement,
@@ -7,11 +8,25 @@ import {
   putFeeSharePlans,
 } from '../src/lib/settlement-service.js';
 
+// 迁移目录里的最高编号（见下方版本哨兵说明）。
+const LATEST_MIGRATION = Math.max(
+  ...readdirSync(new URL('../src/migrations/', import.meta.url))
+    .map((f) => Number.parseInt(f.slice(0, 3), 10))
+    .filter((n) => Number.isInteger(n))
+);
+
 function confirmBody(preview) {
   return { ...preview.request, fee_version: preview.fee_version, preview_hash: preview.preview_hash };
 }
 
-assert.equal(db.pragma('user_version', { simple: true }), 18, '组合事务测试必须运行在 018');
+// 版本哨兵：本测试依赖 018 之后的结算表结构，必须跑在「迁移已全部执行」的库上。
+// 从目录现取最高号而非写死数字——写死的那次（018）在 019~021 落地后腐烂，
+// 导致 check.sh 在 [23/46] 中断、其后的回归全部空转。数字会腐烂，目录不会。
+assert.equal(
+  db.pragma('user_version', { simple: true }),
+  LATEST_MIGRATION,
+  `组合事务测试必须运行在当前最高迁移（${LATEST_MIGRATION}）`
+);
 
 const caseId = Number(db.prepare(
   `INSERT INTO cases (name,procedure,stage) VALUES ('组合事务示例案（张三）','一审','待裁判')`

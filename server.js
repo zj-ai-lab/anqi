@@ -2,7 +2,7 @@ import express from 'express';
 import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import './src/db.js';
+import {db} from './src/db.js';
 import { apiAuth, pageAuth, internalAuth } from './src/middleware/auth.js';
 import { errorHandler } from './src/middleware/errors.js';
 import authRouter from './src/routes/auth.js';
@@ -13,6 +13,7 @@ import feesRouter from './src/routes/fees.js';
 import sharesRouter from './src/routes/shares.js';
 import filesRouter from './src/routes/files.js';
 import contactsRouter from './src/routes/contacts.js';
+import changesRouter from './src/routes/changes.js';
 import legalragRouter from './src/routes/legalrag.js';
 import { createSettingsRouter } from './src/routes/settings.js';
 import internalRouter from './src/routes/internal.js';
@@ -74,7 +75,7 @@ app.use('/api', authRouter); // /api/login /api/logout（自带限速，不过�
 app.use(
   '/api', apiAuth,
   casesRouter, recordsRouter, viewsRouter, feesRouter, sharesRouter,
-  filesRouter, contactsRouter, legalragRouter, settingsRouter, agentRouter
+  filesRouter, contactsRouter, legalragRouter, settingsRouter, agentRouter, changesRouter
 );
 app.use('/internal', internalAuth, internalRouter);
 app.use(pageAuth, express.static(path.join(__dirname, 'public')));

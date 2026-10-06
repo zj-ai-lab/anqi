@@ -15,6 +15,7 @@ import { mountNav } from './nav.js';
 import { strip14 } from './charts.js';
 import { datePrompt } from './dateedit.js';
 import { bindFold } from './fold.js';
+import { basisBtn } from './deadline-basis.js';
 
 await mountNav();
 // 更远的待办 = 归档门（复用 fold.js 持久化 + caret 同步）
@@ -144,7 +145,7 @@ function leadRow(d) {
       el('div', { class: 'hd-meta' },
         el('span', { class: 'case' }, `到期 ${d.due_on}（周${wd(d.due_on)}）`),
         d.basis ? el('span', { class: 'sep' }, '·') : null,
-        d.basis ? el('span', {}, `依据 ${d.basis}`) : null,
+        basisBtn(d),
         d.severity === 'critical' ? el('span', { class: 'chip c-red' }, '致命期限') : null
       )
     ),

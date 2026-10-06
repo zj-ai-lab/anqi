@@ -1,0 +1,12 @@
+const assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path'),net=require('node:net');
+const {start}=require('./desktop-start.cjs');
+(async()=>{const directory=fs.mkdtempSync(path.join(os.tmpdir(),'anqi-local-only-'));const socket=net.createServer();await new Promise(r=>socket.listen(0,'127.0.0.1',r));const port=socket.address().port;await new Promise(r=>socket.close(r));let pid;
+try{const started=await start({directory,port,source:path.join(directory,'absent.db')});pid=Number(fs.readFileSync(path.join(directory,'server.pid')));const runtime=JSON.parse(fs.readFileSync(started.runtime_file));const headers={Cookie:'anjian_token='+runtime.token,'Content-Type':'application/json'};
+assert.equal((await fetch(runtime.url+'api/counts')).status,401);
+for(const url of ['api/sync/status','sync.html','js/cloud-files.js','api/cases/1/cloud-files'])assert.equal((await fetch(runtime.url+url,{headers})).status,404,url);
+const html=await(await fetch(runtime.url+'case.html?id=1',{headers})).text();assert.ok(!html.includes('shared-cloud-panel'));assert.equal((await fetch(runtime.url+'js/deadline-basis.js',{headers})).status,200);
+const response=await fetch(runtime.url+'api/cases',{method:'POST',headers,body:JSON.stringify({name:'虚构本地独立案件',procedure:'刑事侦查',stage:'侦查阶段辩护',case_type:'刑事',crime_type:'普通',trial_mode:'普通程序',case_nature:'公诉',custody_status:'在押'})});assert.equal(response.status,200);const row=await response.json();assert.equal(row.case_type,'刑事');
+assert.ok(!fs.existsSync(path.join(directory,'sync.log')));assert.ok(!fs.existsSync(path.join(directory,'sync-config.json')));
+const configFile=path.join(directory,'launcher-config.json');const config=JSON.parse(fs.readFileSync(configFile));config.sync_config_path='/invalid/should-not-be-read';fs.writeFileSync(configFile,JSON.stringify(config),{mode:0o600});await start({directory,port});assert.equal(Number(fs.readFileSync(path.join(directory,'server.pid'))),pid);
+console.log('PASS: authenticated independent local launcher, no sync/cloud routes or worker, criminal case creation, legacy sync config ignored and repeat startup reused');
+}finally{if(pid)process.kill(pid,'SIGTERM');}})().catch(e=>{console.error(e);process.exitCode=1});

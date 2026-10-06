@@ -3,7 +3,15 @@
 //       L0 digest 待分成口径（本月出现、跨月逾期、结清即消失）。
 // 用法：DB_PATH=$(mktemp -d)/t.db node tools/test-share.js
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
 import { db } from '../src/db.js';
+
+// 迁移目录里的最高编号（见下方版本哨兵说明）。
+const LATEST_MIGRATION = Math.max(
+  ...readdirSync(new URL('../src/migrations/', import.meta.url))
+    .map((f) => Number.parseInt(f.slice(0, 3), 10))
+    .filter((n) => Number.isInteger(n))
+);
 import { computeShare, generateSharesForPaidFee } from '../src/lib/share.js';
 import { buildDigest } from '../src/lib/digest.js';
 import { todayCN } from '../src/lib/dates.js';
@@ -30,7 +38,14 @@ assert.equal(computeShare(5000, 100), 5000, '整额 100%');
 assert.equal(computeShare(1000, 12.34), 123.4, '两位小数比例');
 
 // ── B. 收讫联动 + digest 口径（临时 DB，migrations 已跑到当前版本）──
-assert.equal(db.pragma('user_version', { simple: true }), 18, 'migration 应至 018');
+// 版本哨兵：必须跑在「迁移已全部执行」的库上。这里从迁移目录现取最高号，而不是写死数字——
+// 写死过一次（018），019~021 落地后没人回来改，check.sh 在 [23/46] 就中断，
+// 它后面那 20 多步（含全部 agent/Phase 回归）从此空转。数字会腐烂，目录不会。
+assert.equal(
+  db.pragma('user_version', { simple: true }),
+  LATEST_MIGRATION,
+  `迁移应跑到目录里最高的 ${LATEST_MIGRATION}`
+);
 
 const caseId = db
   .prepare("INSERT INTO cases (name, procedure, stage) VALUES ('张三诉李四民间借贷（测试）', '一审', '待裁判')")

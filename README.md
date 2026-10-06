@@ -1,3 +1,13 @@
+# 案齐本地增强版（local-only）
+
+本分支保留刑事/控告流程、期限依据与手动参数、类型分组、修改记录，以及原版案件、日历、文件、财务和可选 AI 助理。没有 WorkBuddy 同步接口、云附件面板、云提醒连接或协作者云副本服务。
+
+使用 Node.js 22 安装依赖后运行 `python3 tools/build-desktop-launcher.py`，或双击 `案齐启动.command` 构建并打开本工作树 build-local/案齐本地版.app。构建脚本从 PATH 或 ANQI_NODE 获取 Node.js 22。独立目录为 ~/Library/Application Support/cn.csslaw.anqi.local-only，独立端口默认3017。第一次运行会通过 SQLite 在线备份复制旧 cn.csslaw.anqi/anjian.db（若存在）及 secret.key；此后两库独立，不修改原数据、不与旧同步后台共享数据库。未复制的外部案件目录仍以原目录路径访问。
+
+本地模式不等于所有网络功能关闭：原版可选 AI/LegalRAG 等需自行配置；这里移除的是 WorkBuddy 和其云提醒链路。原版本后台和云提醒没有被此分支停止。
+
+保留019—027迁移以兼容现有数据，不回滚已有表。发布分支不包含旧云集成源码、个人部署记录、运行数据库或凭据。
+
 <p align="center">
   <img src="public/assets/anjian-icon.png" alt="案齐图标" width="128">
 </p>

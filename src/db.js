@@ -75,6 +75,50 @@ export function withImmediateTransaction(work) {
   }
 }
 
+// 变更记录（R7 · migration 022）的身份上下文。
+//
+// migration 022 用触发器把 cases/events/deadlines/tasks/worklog 的每一次增删改写进
+// change_log；触发器读不到应用层变量，只能读一张单行表 change_context。这里就是
+// 往那张表写身份的三个函数。
+//
+// 三条纪律：
+//   ① 上下文写、业务写、上下文清空必须同事务 —— 事务提交后上下文必然归零，所以
+//      不存在「上一个请求的 actor 泄漏给下一条写入路径」的可能（这也是它不做成
+//      Express 中间件的原因：中间件无法与业务写同事务，异步路由一让出就是错配）；
+//   ② 没被包过的写入（后台 bridge tick、migration 回填、临时脚本）落到触发器的
+//      system 回落值，记为 actor='system' —— 是「如实记成不知道谁改的」，不是漏记；
+//   ③ 本函数是 withImmediateTransaction 的「带身份」变体，不另立事务模型，
+//      嵌套调用照旧走 SAVEPOINT。
+export function setChangeContext({ actor = 'system', origin = 'local', rule_id = null } = {}) {
+  db.prepare(
+    `INSERT INTO change_context (id, actor, origin, rule_id) VALUES (1, ?, ?, ?)
+     ON CONFLICT(id) DO UPDATE SET actor = excluded.actor, origin = excluded.origin, rule_id = excluded.rule_id`
+  ).run(actor, origin, rule_id);
+}
+
+export function clearChangeContext() {
+  db.prepare("UPDATE change_context SET actor = NULL, origin = 'local', rule_id = NULL WHERE id = 1").run();
+}
+
+// 只补 rule_id、不动 actor。给「一次调用按多条规则派生」的地方用（engine.js 的
+// deriveForEvent / applyRecalc）：那些函数在调用方的事务里跑，逐条规则换个 rule_id
+// 就够了，actor 属于调用方的事务边界，不该在这里被重设——重设会在调用方没包上下文时
+// 把 actor 遗留在表里，害到下一条不相干的写入。
+export function setChangeRuleId(ruleId) {
+  db.prepare('UPDATE change_context SET rule_id = ? WHERE id = 1').run(ruleId ?? null);
+}
+
+export function withChangeContext(options, work) {
+  return withImmediateTransaction(() => {
+    setChangeContext(options);
+    try {
+      return work();
+    } finally {
+      clearChangeContext();
+    }
+  });
+}
+
 export function audit(actor, action, entity, entityId, detail = '') {
   db.prepare(
     'INSERT INTO audit_log (actor, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)'

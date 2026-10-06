@@ -58,7 +58,7 @@ export function datePrompt({ title, fields, hint = '' }) {
           if (f.value != null) inputs[f.key].value = f.value;
         } else {
           inputs[f.key] = el('input', {
-            type: f.type || 'date', value: f.value || '',
+            type: f.type || 'date', value: f.value ?? '',
             ...(f.placeholder ? { placeholder: f.placeholder } : {}),
             ...(f.required ? { required: '' } : {}),
             ...(f.inputmode ? { inputmode: f.inputmode } : {}),

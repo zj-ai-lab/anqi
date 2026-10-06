@@ -7,7 +7,9 @@ import { api, el, toast, fmtDaysLeft, todayStr } from './api.js';
 import { mountNav } from './nav.js';
 import { miniStepper } from './charts.js';
 import { bindFold } from './fold.js';
+import { mountCriminalFields } from './criminal-fields.js';
 
+import {caseType,typeClass,typeOrder,procedureLabel} from './case-types.js';
 await mountNav();
 
 const meta = await api('/meta');
@@ -31,13 +33,14 @@ try {
 // 新建案件表单：程序 → 阶段联动
 const procSel = document.getElementById('nc-procedure');
 const stageSel = document.getElementById('nc-stage');
-for (const p of meta.procedures) procSel.append(el('option', { value: p }, p));
+for (const p of meta.procedures) procSel.append(el('option', { value: p }, procedureLabel(p)));
 function syncStages() {
   stageSel.replaceChildren();
   for (const s of meta.stage_templates[procSel.value] || []) stageSel.append(el('option', { value: s }, s));
 }
 procSel.addEventListener('change', syncStages);
 syncStages();
+mountCriminalFields(document.getElementById('nc-criminal-fields'), meta, procSel, stageSel);
 
 document.getElementById('new-case-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -68,16 +71,18 @@ function caseCard(c) {
   const sp = STATUS_PILL[c.status];
   const stale = c.status === 'active' && c.stage_days > 30;
   return el('a', { class: 'case-card', href: `/case.html?id=${c.id}` },
-    el('span', { class: 'cname' }, c.name),
+    el('span', { class: 'cname' }, c.name),el('span',{class:'pill case-type '+typeClass(c)},caseType(c)),
     el('span', { class: 'cmeta' },
-      c.case_no ? el('span', { class: 'case' }, c.case_no) : el('span', {}, '未立案 · 案号待补'),
+      c.case_no ? el('span', { class: 'case' }, c.case_no) : el('span', {}, '案号待补'),
       c.court ? el('span', {}, c.court) : null,
       c.cause ? el('span', {}, c.cause) : null
     ),
     el('span', { class: 'cfoot' },
       miniStepper(meta.stage_templates[c.procedure] || [], c.stage),
-      el('span', { class: 'pill acc' }, `${c.procedure} · ${c.stage}`),
-      stale
+      el('span', { class: 'pill acc' }, `${procedureLabel(c.procedure)} · ${c.stage || '阶段待补'}`),
+      c.stage_days == null
+        ? el('span', { class: 'meta' }, '阶段起算日待补')
+        : stale
         ? el('span', { class: 'pill warn' }, `停留 ${c.stage_days} 天`)
         : el('span', { class: 'meta' }, `停留 ${c.stage_days} 天`)
     ),
@@ -97,7 +102,8 @@ async function load() {
   const params = new URLSearchParams();
   if (fetchStatus) params.set('status', fetchStatus);
   if (q) params.set('q', q);
-  const cases = await api('/cases?' + params.toString());
+  const cases = (await api('/cases?' + params.toString())).filter(c=>!document.getElementById('f-type').value||caseType(c)===document.getElementById('f-type').value);
+  const grouping=document.getElementById('f-group').value;if(grouping==='type')cases.sort(typeOrder);
 
   // 副题 = 当前视图的期限体检；0 值一律不出现（CRITIQUE 修复项 4「0 值降权」）
   let over = 0, soon = 0, gap = 0;
@@ -135,12 +141,13 @@ async function load() {
   const mainCases = showArchive ? active : cases;
   const groups = new Map();
   for (const c of mainCases) {
-    if (!groups.has(c.procedure)) groups.set(c.procedure, []);
-    groups.get(c.procedure).push(c);
+    const key=grouping==='type'?caseType(c):grouping==='procedure'?c.procedure:'全部案件';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
   }
   for (const [proc, list] of groups) {
     box.append(el('div', { class: 'group-title case-procedure-title' },
-      el('span', {}, proc),
+      el('span', {}, procedureLabel(proc)),
       el('span', { class: 'count' }, `${list.length} 件`)
     ));
     box.append(el('div', { class: 'case-grid' }, list.map(caseCard)));
@@ -171,7 +178,7 @@ async function load() {
   }
 }
 
-document.getElementById('f-status').addEventListener('change', load);
+for(const id of ['f-type','f-group','f-status'])document.getElementById(id).addEventListener('change',load);
 let timer;
 document.getElementById('f-q').addEventListener('input', () => {
   clearTimeout(timer);

@@ -16,7 +16,7 @@ const R_RULING = {
 };
 const R_RETRIAL = {
   id: 'retrial', name: '申请再审期', days: 6, unit: 'months',
-  count_from: 'same_day', roll: 'forward', basis: '民诉法 §216',
+  count_from: 'next_day', roll: 'forward', basis: '民诉法 §216',
 };
 const R_EXEC = {
   id: 'exec', name: '申请执行期', days: 2, unit: 'years',
@@ -44,9 +44,20 @@ assert.equal(r.due_on, '2026-02-28', `补班日应视为工作日: ${r.due_on}`)
 r = computeDue(R_APPEAL, { occurred_on: '2026-02-10', service_method: '' });
 assert.equal(r.due_on, '2026-02-25', `工作日: ${r.due_on}`);
 
-// 5) 月单位 + 月末钳制：2026-03-31 + 6 个月 → 2026-09-30（工作日）
-r = computeDue(R_RETRIAL, { occurred_on: '2026-03-31', service_method: '' });
-assert.equal(r.due_on, '2026-09-30', `月加法: ${r.due_on}`);
+// 5) 月单位 + 法定次日起算（与 rules/deadline_rules.json 的 retrial_application 对齐）：
+//    2026-03-15 生效 → 次日起算 03-16 → +6 个月 = 2026-09-16（周三）
+r = computeDue(R_RETRIAL, { occurred_on: '2026-03-15', service_method: '' });
+assert.equal(r.due_on, '2026-09-16', `月加法: ${r.due_on}`);
+assert.ok(r.calc_note.includes('次日起算'), 'calc_note 应记录次日起算');
+
+// 5b) 月末钳制：起算日落在 31 日而目标月无 31 日 → 钳到该月最后一日
+//     2026-01-30 生效 → 次日起算 01-31 → +1 月 = 02-28（该日为调休补班日，不顺延）
+const R_MONTH_END = {
+  id: 'month_end', name: '月末钳制', days: 1, unit: 'months',
+  count_from: 'next_day', roll: 'forward',
+};
+r = computeDue(R_MONTH_END, { occurred_on: '2026-01-30', service_method: '' });
+assert.equal(r.due_on, '2026-02-28', `月末钳制: ${r.due_on}`);
 
 // 6) 年单位 + 未覆盖年份告警：2026-06-30 + 2 年 → 2028-06-30，coverage_warning=true
 r = computeDue(R_EXEC, { occurred_on: '2026-06-30', service_method: '' });
