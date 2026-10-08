@@ -75,6 +75,33 @@ export function withImmediateTransaction(work) {
   }
 }
 
+// 变更记录上下文：触发器在同一事务内读取 actor/origin/rule_id。
+export function setChangeContext({ actor = 'system', origin = 'local', rule_id = null } = {}) {
+  db.prepare(`INSERT INTO change_context (id, actor, origin, rule_id) VALUES (1, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET actor = excluded.actor, origin = excluded.origin, rule_id = excluded.rule_id`)
+    .run(actor, origin, rule_id);
+}
+
+export function clearChangeContext() {
+  db.prepare("UPDATE change_context SET actor = NULL, origin = 'local', rule_id = NULL WHERE id = 1").run();
+}
+
+export function setChangeRuleId(ruleId) {
+  db.prepare('UPDATE change_context SET rule_id = ? WHERE id = 1').run(ruleId ?? null);
+}
+
+export function withChangeContext(options, work) {
+  return withImmediateTransaction(() => {
+    const previous = db.prepare('SELECT actor, origin, rule_id FROM change_context WHERE id=1').get();
+    setChangeContext(options);
+    try { return work(); }
+    finally {
+      if (previous) setChangeContext(previous);
+      else clearChangeContext();
+    }
+  });
+}
+
 export function audit(actor, action, entity, entityId, detail = '') {
   db.prepare(
     'INSERT INTO audit_log (actor, action, entity, entity_id, detail) VALUES (?, ?, ?, ?, ?)'
