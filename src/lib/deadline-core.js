@@ -10,6 +10,15 @@ const CRIMINAL_PROCEDURES = new Set([
   '刑事侦查', '刑事审查起诉', '刑事一审', '刑事二审', '刑事死刑复核', '刑事再审', '刑事执行',
 ]);
 
+// 行政程序段：与民诉/刑事严格隔离。scope=admin 的规则只在这些程序下匹配；
+// 进入行政程序后，无 scope=admin 的民诉兜底规则（如无 applies_procedure 的缴费/举证录入）一律不触发。
+export const ADMIN_PROCEDURES = new Set([
+  '行政复议', '行政一审', '行政二审', '行政再审', '行政执行',
+]);
+export function isAdminProcedure(procedure) {
+  return ADMIN_PROCEDURES.has(procedure);
+}
+
 // applies 的中文维度名 → cases 表列名
 export const APPLIES_FIELD = {
   作案类型: 'crime_type',
@@ -20,6 +29,10 @@ export const APPLIES_FIELD = {
 
 export function ruleMatches(rule, caseRow) {
   const isCriminal = CRIMINAL_PROCEDURES.has(caseRow.procedure);
+  const isAdmin = ADMIN_PROCEDURES.has(caseRow.procedure);
+  // 行政闸门：行政案件只匹配 scope=admin 规则；admin 规则也不落到民诉/刑事案件。
+  if (rule.scope === 'admin' && !isAdmin) return false;
+  if (isAdmin && rule.scope !== 'admin') return false;
   if (rule.scope === 'criminal' && !isCriminal) return false;
   if (rule.scope === 'civil' && isCriminal) return false;
   // 程序段闸门：「刑事控告立案前」是控告线独占的独立程序段，与侦查及以后是前后衔接关系

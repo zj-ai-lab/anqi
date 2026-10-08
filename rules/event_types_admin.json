@@ -1,0 +1,37 @@
+{
+  "_comment": "行政诉讼 / 行政复议专用事件类型。id 不与民诉/刑事冲突；通用事件（filed/served/judgment_served 等）复用既有词表。",
+  "types": [
+    {
+      "id": "admin_act_made",
+      "label": "行政行为作出"
+    },
+    {
+      "id": "admin_act_known",
+      "label": "知道/应当知道行政行为"
+    },
+    {
+      "id": "admin_duty_applied",
+      "label": "申请行政机关履行法定职责"
+    },
+    {
+      "id": "reconsideration_accepted",
+      "label": "行政复议申请受理"
+    },
+    {
+      "id": "reconsideration_copy_served",
+      "label": "被申请人收到复议申请书副本"
+    },
+    {
+      "id": "reconsideration_decision_served",
+      "label": "收到行政复议决定书"
+    },
+    {
+      "id": "admin_appeal_received",
+      "label": "法院收到上诉状（行政二审）"
+    },
+    {
+      "id": "admin_filing_deadline_expired",
+      "label": "相对人法定起诉期限届满（非诉执行）"
+    }
+  ]
+}

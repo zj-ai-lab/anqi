@@ -13,24 +13,39 @@ function loadOptional(name) {
   return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : null;
 }
 
-// 词表分文件维护：民诉（event_types / stage_templates）+ 刑事（*_criminal）。
-// 合并后对上层完全透明；刑事文件的程序名带「刑事」前缀，与民诉 key 不冲突。
+// 词表分文件维护：民诉（event_types / stage_templates）+ 刑事（*_criminal）+ 行政（*_admin）。
+// 合并后对上层完全透明；刑事/行政程序名带前缀，与民诉 key 不冲突。
 const et = load('event_types.json');
 const etCr = loadOptional('event_types_criminal.json');
+const etAd = loadOptional('event_types_admin.json');
 const st = load('stage_templates.json');
 const stCr = loadOptional('stage_templates_criminal.json');
+const stAd = loadOptional('stage_templates_admin.json');
 const slCr = loadOptional('stage_labels_criminal.json');   // 17 值诉讼状态标签层（刑事）
 const lt = loadOptional('law_texts.json');                 // 本地法条原文库（民诉线）
 const ltCr = loadOptional('law_texts_criminal.json');      // 本地法条原文库（刑事）
 
-const allEventTypes = [...et.types, ...((etCr && etCr.types) || [])];
+// 词表分文件：民诉 + 刑事 + 行政。行政程序名带「行政」前缀，与民诉/刑事 key 不冲突。
+const allEventTypes = [
+  ...et.types,
+  ...((etCr && etCr.types) || []),
+  ...((etAd && etAd.types) || []),
+];
 
 export const eventTypes = allEventTypes; // [{id,label}]
 export const eventLabel = Object.fromEntries(allEventTypes.map((t) => [t.id, t.label]));
-export const stageTemplates = { ...st.procedures, ...((stCr && stCr.procedures) || {}) }; // {一审:[...], 刑事一审:[...], ...}
+export const stageTemplates = {
+  ...st.procedures,
+  ...((stCr && stCr.procedures) || {}),
+  ...((stAd && stAd.procedures) || {}),
+}; // {一审:[...], 刑事一审:[...], 行政一审:[...], ...}
 export const procedures = Object.keys(stageTemplates);
 export const staleDaysDefault = st.stale_days_default || 30;
-export const stageTasks = { ...(st.stage_tasks || {}), ...((stCr && stCr.stage_tasks) || {}) }; // When/Then 模板（D7）
+export const stageTasks = {
+  ...(st.stage_tasks || {}),
+  ...((stCr && stCr.stage_tasks) || {}),
+  ...((stAd && stAd.stage_tasks) || {}),
+}; // When/Then 模板（D7）
 
 // 17 值诉讼状态标签（刑事）：仅作展示/筛选层与 procedure 同步写入的依据，不参与规则匹配。
 // 规则匹配只看 cases.procedure（见 engine.js ruleMatches），故本层加错不会误派生期限。

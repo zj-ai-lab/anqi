@@ -13,7 +13,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const RULES_DIR = path.join(__dirname, '..', '..', 'rules');
 
 // 规则分文件维护：民诉（deadline_rules.json）+ 刑事（deadline_rules_criminal.json）
-// + 控告线立案前（deadline_rules_complaint.json）。
+// + 控告线立案前（deadline_rules_complaint.json）+ 行政（deadline_rules_admin.json）。
 // 合并加载；文件缺失不报错（便于单测与增量部署）。
 function loadRules(name) {
   const file = path.join(RULES_DIR, name);
@@ -24,6 +24,7 @@ const RULES = [
   ...loadRules('deadline_rules.json'),
   ...loadRules('deadline_rules_criminal.json'),
   ...loadRules('deadline_rules_complaint.json'),
+  ...loadRules('deadline_rules_admin.json'),
 ];
 
 // ── 规则适用判定（多维）────────────────────────────────────────────
