@@ -1,0 +1,227 @@
+{
+  "_comment": "控告线立案前阶段期限规则表。由 engine.js 与刑事规则合并加载；侦查及以后的期限复用刑事规则。",
+  "_design": {
+    "scope": "全部规则 scope=criminal，另加 applies_procedure=[\"刑事控告立案前\"] 二级限定，只在控告线立案前程序派生。控告案进入侦查阶段后 procedure 变为「刑事侦查」，自动转由 40 条主表接管，两表不叠加、不双触发。",
+    "count_from": "全部 count_from=next_day。依据 2026-09-12 用户裁定：控告线权利期限一律采法定算法（期间开始之日不计入、次日起算）。例：9-11 收到不予立案通知书 → 申请复议 7 日 → 截止 9-18（刑诉法 §105）。",
+    "direction_risk": "⚠️ 方向性张力（用户已知悉）：控告线我方代理被害人/控告人，下列期限多为「我方可以做什么」的救济窗口，算早了有害（误判窗口已过而放弃救济），与辩护线义务期限「宜早不宜迟」的取向相反。故一律严格依法起算，宁可晚 1 天不可早 1 天。",
+    "roll": "全部 roll=none。控告线我方为主动方，救济窗口落在节假日不因顺延而延长，按不延计算不会漏期（方向安全）。",
+    "court_specified": "情形依赖型期限（需查证 7 日 / 重大疑难复杂 30 日 / 经济犯罪 7-30-60 日 / 延长不超过 30 日 / 10 个工作日送达）无法由引擎判定适用情形，一律走 court_specified：引擎只铺「录入截止日」任务，实际日期由人工按《批准延长决定书》等文书填入，不自动推算。理由同主表：批准与否、何时批准，系统无从得知。",
+    "working_days": "立案监督审查通知书「10 个工作日」为工作日单位，引擎无工作日单位（现有 unit 仅 natural_days / months / years），故走 court_specified 人工录入，不擅自按自然日折算。"
+  },
+  "review": "approved",
+  "reviewed_by": "reviewer",
+  "reviewed_at": "2026-09-12",
+  "review_note": "经 practitioner review 纳入规则库；上线前仍需复核规则适用条件与现行条文。",
+  "verification": "来源核验记录沿用 PR；本次集成未重新核验法律效力。",
+  "rules": [
+    {
+      "id": "cp_file_review_general_3d",
+      "name": "立案审查期限届满（一般，3 日）",
+      "scope": "criminal",
+      "trigger": "accepted",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《公安部关于改革完善受案立案制度的意见》（公通字〔2015〕32号）：对接受的案件应当立即进行受案立案审查，一般案件 3 日以内决定是否立案；涉嫌犯罪线索需要查证的 7 日以内；重大疑难复杂案件经县级以上公安机关负责人批准可延长至 30 日。刑诉法 §110（对报案、控告、举报都应当接受）、§112（应当按照管辖范围迅速进行审查，决定立案或者不立案并通知控告人）",
+      "severity": "high",
+      "note": "本条仅覆盖「一般 3 日」这一默认情形；7 日 / 30 日两种情形见 cp_file_review_extended_entry 录入任务。"
+    },
+    {
+      "id": "cp_file_review_extended_entry",
+      "name": "立案审查期限（需查证 / 重大疑难复杂）录入",
+      "scope": "criminal",
+      "trigger": "accepted",
+      "kind": "court_specified",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "task_title": "录入立案审查期限实际截止日（需查证 7 日 / 重大疑难复杂 30 日）",
+      "basis": "《公安部关于改革完善受案立案制度的意见》（公通字〔2015〕32号）：涉嫌犯罪线索需要查证的 7 日以内；重大疑难复杂案件经县级以上公安机关负责人批准可延长至 30 日",
+      "severity": "high"
+    },
+    {
+      "id": "cp_econ_file_review_entry",
+      "name": "经济犯罪立案审查期限录入",
+      "scope": "criminal",
+      "trigger": "accepted",
+      "kind": "court_specified",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "task_title": "录入经济犯罪立案审查实际截止日（7 日 / 延长至 30 日 / 再延 30 日，累计最长 60 日）",
+      "basis": "《最高人民检察院、公安部关于公安机关办理经济犯罪案件的若干规定》（2017 修订·公通字〔2017〕25号）第十五条：接受涉嫌经济犯罪线索后应当立即审查，7 日以内决定是否立案；重大、疑难、复杂线索经县级以上公安机关负责人批准可延长至 30 日；特别重大、疑难、复杂或者跨区域性线索经上一级公安机关负责人批准可再延长 30 日",
+      "severity": "high",
+      "note": "⚠️ 原文为「延长至三十日 / 再延长三十日」，系覆盖关系而非叠加，累计上限 60 日（非 7+30+30）。原出处公通字〔2005〕101号已失效，此处引 2017 修订版。"
+    },
+    {
+      "id": "cp_refuse_notice_served_3d",
+      "name": "不予立案通知书送达（公安机关，3 日）",
+      "scope": "criminal",
+      "trigger": "file_refused",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《公安机关办理刑事案件程序规定》（2020 修正·公安部令第159号）§178 第二款：对有控告人的案件，决定不予立案的，公安机关应当制作不予立案通知书，并在三日以内送达控告人",
+      "severity": "high",
+      "note": "口径分流：公安 3 日；检察院自侦 15 日（《人民检察院刑事诉讼规则（2019）》§173）；海警机构 3 日（海警机构办理刑事案件程序规定 §172）；经济犯罪 3 日（公通字〔2017〕25号 §19）。1998 旧版公安程序规定曾为 7 日，2012 年修正起改 3 日。本条按公安口径，其余主体需人工核。本条是「复议 7 日」的起算点。"
+    },
+    {
+      "id": "cp_reconsideration_apply_7d",
+      "name": "申请复议期限届满（控告人，7 日）",
+      "scope": "criminal",
+      "trigger": "file_refused",
+      "kind": "statutory",
+      "days": 7,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《公安机关办理刑事案件程序规定》（2020 修正·公安部令第159号）§179：控告人对不予立案决定不服的，可以在收到不予立案通知书后七日以内向作出决定的公安机关申请复议",
+      "severity": "critical",
+      "note": "★ 权利期限，算早了有害。9-11 收到 → 次日起算 7 日 → 9-18 截止（法定算法示例，用户 2026-09-12 裁定）。起算点亦可依 §178 送达日推算，两者取实际收到日。"
+    },
+    {
+      "id": "cp_reconsideration_decide_30d",
+      "name": "复议决定期限（公安机关，30 日）",
+      "scope": "criminal",
+      "trigger": "reconsideration_applied",
+      "kind": "statutory",
+      "days": 30,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《公安机关办理刑事案件程序规定》（2020 修正·公安部令第159号）§179：公安机关应当在收到复议申请后三十日以内作出复议决定。重大、复杂案件可延长不超过三十日，并书面告知申请人",
+      "severity": "normal",
+      "note": "⚠️ 2020 年修正后由 2012 版的 7 日改为 30 日（127 号令 §176 曾为 7 日）。网上旧资料多写 7 日，属过时。延长情形见 cp_reconsideration_extend_30d_entry。"
+    },
+    {
+      "id": "cp_review_apply_7d",
+      "name": "申请复核期限届满（7 日）",
+      "scope": "criminal",
+      "trigger": "reconsideration_decided",
+      "kind": "statutory",
+      "days": 7,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《公安机关办理刑事案件程序规定》（2020 修正·公安部令第159号）§179：对复议决定不服的，可以在收到复议决定书后七日以内向上一级公安机关申请复核",
+      "severity": "critical",
+      "note": "★ 权利期限，算早了有害。"
+    },
+    {
+      "id": "cp_review_decide_30d",
+      "name": "复核决定期限（上一级公安机关，30 日）",
+      "scope": "criminal",
+      "trigger": "review_applied",
+      "kind": "statutory",
+      "days": 30,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《公安机关办理刑事案件程序规定》（2020 修正·公安部令第159号）§179：上一级公安机关应当在收到复核申请后三十日以内作出复核决定。可延长不超过三十日。互证：《公安机关办理刑事复议复核案件程序规定》（公安部令第133号）§30（30 日内作出，可延 30 日）",
+      "severity": "normal"
+    },
+    {
+      "id": "cp_reconsideration_extend_30d_entry",
+      "name": "复议（复核）延长后截止日录入",
+      "scope": "criminal",
+      "trigger": "reconsideration_applied",
+      "kind": "court_specified",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "task_title": "录入复议（复核）延长后实际截止日（重大、复杂案件可延长不超过 30 日）",
+      "basis": "《公安机关办理刑事案件程序规定》（2020 修正）§179：重大、复杂案件，经批准可以延长，延长不超过三十日，并书面告知申请人",
+      "severity": "normal"
+    },
+    {
+      "id": "cp_supervision_accept_notice_7d",
+      "name": "立案监督受理告知（检察院，7 日）",
+      "scope": "criminal",
+      "trigger": "supervision_applied",
+      "kind": "statutory",
+      "days": 7,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《立案监督工作指引（试行）》§10：人民检察院控告申诉检察部门收到立案监督申请材料后，应当在七日以内告知申请人是否受理",
+      "severity": "high"
+    },
+    {
+      "id": "cp_supervision_conclude_3m",
+      "name": "立案监督审查结论期限（至迟 3 个月）",
+      "scope": "criminal",
+      "trigger": "supervision_applied",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "basis": "《立案监督工作指引（试行）》§11：人民检察院审查后应当作出处理结论，至迟不超过三个月",
+      "severity": "normal"
+    },
+    {
+      "id": "cp_supervision_notice_10wd_entry",
+      "name": "立案监督审查通知书送达（10 个工作日）录入",
+      "scope": "criminal",
+      "trigger": "supervision_applied",
+      "kind": "court_specified",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "task_title": "录入《立案监督审查通知书》实际送达日（10 个工作日）",
+      "basis": "《立案监督工作指引（试行）》§13：立案监督审查通知书应当在十个工作日以内送达",
+      "severity": "normal",
+      "note": "「工作日」为单位，引擎无工作日单位，故走人工录入，不按自然日折算。"
+    },
+    {
+      "id": "cp_supervision_order_filed_15d_entry",
+      "name": "公安收到通知后立案（15 日）录入",
+      "scope": "criminal",
+      "trigger": "supervision_applied",
+      "kind": "court_specified",
+      "applies_procedure": [
+        "刑事控告立案前"
+      ],
+      "task_title": "录入公安机关收到《要求说明不立案理由通知书》后书面说明（7 日）与收到立案通知后决定立案（15 日）的实际日期",
+      "basis": "刑诉法 §113；《人民检察院刑事诉讼规则（2019）》§560（公安机关应当在收到通知书后七日以内书面说明不立案理由）、§563（认为不立案理由不成立，通知公安机关立案）；《公安机关办理刑事案件程序规定》§182（收到通知后十五日以内决定立案）",
+      "severity": "normal",
+      "note": "此两环的起算点是「检察院发出通知书」与「公安收到立案通知」，非控告人可控事件，故走人工录入。"
+    }
+  ]
+}

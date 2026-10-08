@@ -88,7 +88,7 @@
       "direction": "after", "count_from": "next_day", "roll": "forward",
       "extendable": false,
       "applies_procedure": ["一审", "二审", "仲裁"],
-      "basis": "民诉法（申请执行时效二年，自法律文书规定履行期间最后一日起算——若文书定有履行期，请以履行期届满日为触发日期录入）",
+      "basis": "民诉法（2023修正）§250：申请执行的期间为二年；自法律文书规定履行期间的最后一日起计算，分期履行的从最后一期履行期限届满之日起计算，未规定履行期间的从法律文书生效之日起计算——若文书定有履行期，请以履行期届满日为触发日期录入",
       "severity": "critical"
     },
     {
@@ -97,7 +97,7 @@
       "trigger": "judgment_effective",
       "kind": "statutory",
       "days": 6, "unit": "months",
-      "direction": "after", "count_from": "same_day", "roll": "forward",
+      "direction": "after", "count_from": "next_day", "roll": "forward",
       "extendable": false,
       "applies_procedure": ["一审", "二审"],
       "basis": "民诉法 §216（裁判发生法律效力后 6 个月内申请；特殊情形自知道或应当知道之日起算）",
@@ -108,8 +108,8 @@
       "name": "保全续封期限",
       "trigger": "preservation_order",
       "kind": "court_specified",
-      "task_title": "录入保全到期日并倒排续封（不动产3年/动产2年/冻结1年，到期前办续）",
-      "basis": "最高法关于财产保全若干问题的规定（不同财产类型期限不同，以保全裁定与查控回执为准）",
+      "task_title": "录入保全到期日并倒排续封（不动产3年/动产2年/冻结1年；续行申请须在保全期限届满 7 日前提出）",
+      "basis": "《最高人民法院关于人民法院办理财产保全案件若干问题的规定》（法释〔2020〕21号）§18：申请保全人申请续行财产保全的，应当在保全期限届满七日前向人民法院提出；人民法院应当书面告知申请保全人保全期限届满日。保全期限因财产类型而异（不动产3年/动产2年/冻结1年），以保全裁定与查控回执为准",
       "severity": "critical"
     }
   ]
