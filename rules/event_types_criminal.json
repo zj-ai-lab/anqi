@@ -1,0 +1,37 @@
+{
+  "_comment": "刑事程序事件词表。与民诉词表分文件，由 vocab.js 合并加载。id 稳定勿改（deadline_rules_criminal.json / deadline_rules_complaint.json 按 trigger 引用）。复用民诉词表中的 hearing(开庭) / judgment_served(收到判决) / ruling_served(收到裁定) / judgment_effective(裁判生效) 四个语义通用 id，不重复定义。末段 8 个为控告线·立案前阶段专用事件（2026-09-12 新增），id 已与民诉词表核对无冲突。",
+  "types": [
+    { "id": "detained",                   "label": "刑事拘留" },
+    { "id": "approval_requested",         "label": "提请批准逮捕" },
+    { "id": "arrested",                   "label": "逮捕" },
+    { "id": "bail_granted",               "label": "取保候审决定" },
+    { "id": "surveillance_granted",       "label": "监视居住决定" },
+    { "id": "custody_released",           "label": "解除羁押/释放" },
+    { "id": "lien_transferred",           "label": "留置转拘留" },
+    { "id": "transferred_prosecution",    "label": "移送审查起诉" },
+    { "id": "returned_investigation",     "label": "退回补充侦查" },
+    { "id": "supplementary_completed",    "label": "补侦完毕重新移送" },
+    { "id": "indictment_served",          "label": "收到起诉书" },
+    { "id": "court_accepted",             "label": "法院受理" },
+    { "id": "hearing_scheduled",          "label": "确定开庭日期" },
+    { "id": "judgment_announced",         "label": "当庭宣判" },
+    { "id": "plea_leniency_signed",       "label": "签署认罪认罚具结书" },
+    { "id": "second_instance_accepted",   "label": "二审受理" },
+    { "id": "retrial_decided",            "label": "再审决定" },
+    { "id": "appeal_accepted",            "label": "接受抗诉" },
+    { "id": "conditional_nonprosecution", "label": "附条件不起诉决定" },
+    { "id": "confiscation_accepted",      "label": "受理没收违法所得申请" },
+    { "id": "custody_review_suggested",   "label": "羁押必要性审查建议" },
+    { "id": "psych_eval_started",         "label": "精神病鉴定开始" },
+    { "id": "meeting_requested",          "label": "申请会见" },
+
+    { "id": "reported",                   "label": "报案/控告" },
+    { "id": "accepted",                   "label": "受案" },
+    { "id": "case_filed",                 "label": "立案" },
+    { "id": "file_refused",               "label": "不予立案" },
+    { "id": "reconsideration_applied",    "label": "申请复议" },
+    { "id": "reconsideration_decided",    "label": "复议决定" },
+    { "id": "review_applied",             "label": "申请复核" },
+    { "id": "supervision_applied",        "label": "申请立案监督" }
+  ]
+}
