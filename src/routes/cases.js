@@ -15,7 +15,7 @@ import { missingConditions, conditionChangePreview, reconcileConditions } from '
 
 const FILES_ROOT = process.env.ANJIAN_FILES_ROOT || '';
 
-import {CASE_TYPES} from '../../public/js/case-types.js';
+import {CASE_TYPES, inferCaseType} from '../../public/js/case-types.js';
 const EDITABLE = [ 'case_type',
   'name', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent',
   'procedure', 'stage', 'status', 'accepted_at', 'sol_starts_on', 'note', 'legalrag_url',
@@ -100,7 +100,7 @@ r.post('/cases', (req, res) => {
     return res.status(400).json({ error: 'name 必填' });
   }
   const procedure = b.procedure || '一审';
-  const caseType=b.case_type??(procedure.startsWith('刑事')?'刑事':'未分类');
+  const caseType=b.case_type??inferCaseType(procedure);
   if(!CASE_TYPES.includes(caseType))return res.status(400).json({error:'案件类型非法'});
   if (!procedures.includes(procedure)) return res.status(400).json({ error: `procedure 须为：${procedures.join('/')}` });
   const stages = stagesOf(procedure);
@@ -194,6 +194,39 @@ r.put('/cases/:id/workspace', async (req, res) => {
     case: db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id),
     workspace: { name: folderPath, exists: true, created: !!createdDirectory },
   });
+});
+
+
+r.post('/cases/batch-type', (req, res) => {
+  const b = req.body || {};
+  const caseType = b.case_type;
+  if (!CASE_TYPES.includes(caseType)) return res.status(400).json({ error: '案件类型非法' });
+  const raw = b.ids;
+  if (!Array.isArray(raw) || raw.length === 0) return res.status(400).json({ error: 'ids 须为非空数组' });
+  if (raw.length > 500) return res.status(400).json({ error: '单次最多 500 件' });
+  const nums = raw.map((x) => Number(x));
+  if (nums.some((n) => !Number.isInteger(n) || n <= 0)) return res.status(400).json({ error: 'ids 须为正整数' });
+  const ids = [...new Set(nums)];
+  const placeholders = ids.map(() => '?').join(',');
+  const existing = db.prepare(`SELECT id, case_type FROM cases WHERE id IN (${placeholders})`).all(...ids);
+  const found = new Set(existing.map((row) => row.id));
+  const missing = ids.filter((id) => !found.has(id));
+  if (missing.length) return res.status(404).json({ error: '部分案件不存在', missing });
+
+  const updated = [];
+  const unchanged = [];
+  withChangeContext({ actor: req.actor }, () => {
+    for (const row of existing) {
+      if (row.case_type === caseType) {
+        unchanged.push(row.id);
+        continue;
+      }
+      db.prepare("UPDATE cases SET case_type = ?, updated_at = datetime('now','+8 hours') WHERE id = ?").run(caseType, row.id);
+      audit(req.actor, 'batch-case-type', 'case', row.id, `${row.case_type || '未分类'}→${caseType}`);
+      updated.push(row.id);
+    }
+  });
+  res.json({ updated, unchanged, case_type: caseType });
 });
 
 r.get('/cases/:id', (req, res) => {

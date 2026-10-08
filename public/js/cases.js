@@ -9,8 +9,10 @@ import { miniStepper } from './charts.js';
 import { bindFold } from './fold.js';
 import { mountCriminalFields } from './criminal-fields.js';
 
-import {caseType,typeClass,typeOrder,procedureLabel} from './case-types.js';
+import {CASE_TYPES,caseType,typeClass,typeOrder,procedureLabel} from './case-types.js';
 await mountNav();
+
+const selectedIds = new Set();
 
 const meta = await api('/meta');
 
@@ -70,8 +72,29 @@ function deadlineEls(c) {
 function caseCard(c) {
   const sp = STATUS_PILL[c.status];
   const stale = c.status === 'active' && c.stage_days > 30;
+  const check = el('input', { type: 'checkbox', class: 'case-select', 'data-id': String(c.id) });
+  check.checked = selectedIds.has(c.id);
+  check.addEventListener('click', (ev) => {
+    const next = !selectedIds.has(c.id);
+    ev.preventDefault();
+    ev.stopPropagation();
+    queueMicrotask(() => {
+      check.checked = next;
+      if (next) selectedIds.add(c.id);
+      else selectedIds.delete(c.id);
+      syncBatchBar();
+    });
+  });
+  check.addEventListener('change', (ev) => {
+    ev.stopPropagation();
+    if (check.checked) selectedIds.add(c.id);
+    else selectedIds.delete(c.id);
+    syncBatchBar();
+  });
+  const typePill = el('span', { class: 'pill case-type ' + typeClass(c) + (caseType(c) === '未分类' ? ' case-type-untyped' : '') }, caseType(c));
   return el('a', { class: 'case-card', href: `/case.html?id=${c.id}` },
-    el('span', { class: 'cname' }, c.name),el('span',{class:'pill case-type '+typeClass(c)},caseType(c)),
+    check,
+    el('span', { class: 'cname' }, c.name), typePill,
     el('span', { class: 'cmeta' },
       c.case_no ? el('span', { class: 'case' }, c.case_no) : el('span', {}, '案号待补'),
       c.court ? el('span', {}, c.court) : null,
@@ -121,6 +144,17 @@ async function load() {
   if (soon) parts.push(`${soon} 件 7 日内到期`);
   if (gap) parts.push(`${gap} 件无在追期限`);
   document.getElementById('subtitle').textContent = parts.join(' · ');
+
+  const untypedN = cases.filter((c) => caseType(c) === '未分类').length;
+  const chip = document.getElementById('chip-untyped');
+  if (chip) {
+    if (untypedN) {
+      chip.hidden = false;
+      chip.textContent = `未分类 ${untypedN} 件`;
+    } else {
+      chip.hidden = true;
+    }
+  }
 
   const box = document.getElementById('case-list');
   box.replaceChildren();
@@ -176,6 +210,32 @@ async function load() {
     });
     box.append(archive);
   }
+  syncBatchBar();
+}
+
+
+function visibleCaseIds() {
+  return [...document.querySelectorAll('#case-list .case-select')].map((n) => Number(n.dataset.id));
+}
+function syncBatchBar() {
+  const bar = document.getElementById('batch-type-bar');
+  const count = document.getElementById('batch-type-count');
+  const all = document.getElementById('batch-select-all');
+  const ids = visibleCaseIds();
+  // drop selections that left the current view
+  for (const id of [...selectedIds]) {
+    if (!ids.includes(id) && !document.querySelector(`.case-select[data-id="${id}"]`)) {
+      /* keep selections across filter changes until explicitly cleared on apply */
+    }
+  }
+  const n = selectedIds.size;
+  if (bar) bar.hidden = n === 0;
+  if (count) count.textContent = n ? `已选 ${n} 件` : '';
+  if (all) {
+    const visSel = ids.filter((id) => selectedIds.has(id));
+    all.checked = ids.length > 0 && visSel.length === ids.length;
+    all.indeterminate = visSel.length > 0 && visSel.length < ids.length;
+  }
 }
 
 for(const id of ['f-type','f-group','f-status'])document.getElementById(id).addEventListener('change',load);
@@ -193,4 +253,30 @@ document.addEventListener('keydown', (e) => {
   document.getElementById('f-q').focus();
 });
 document.addEventListener('anjian:changed', load);
+
+document.getElementById('chip-untyped')?.addEventListener('click', () => {
+  document.getElementById('f-type').value = '未分类';
+  load();
+});
+document.getElementById('batch-select-all')?.addEventListener('change', (e) => {
+  const on = e.target.checked;
+  for (const id of visibleCaseIds()) {
+    if (on) selectedIds.add(id);
+    else selectedIds.delete(id);
+  }
+  for (const node of document.querySelectorAll('#case-list .case-select')) node.checked = on;
+  syncBatchBar();
+});
+document.getElementById('batch-type-apply')?.addEventListener('click', async () => {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  const case_type = document.getElementById('batch-type-select').value;
+  const result = await api('/cases/batch-type', { body: { ids, case_type } });
+  toast(`已更新 ${result.updated.length} 件` + (result.unchanged.length ? `，${result.unchanged.length} 件本已是「${case_type}」` : ''));
+  selectedIds.clear();
+  await load();
+  syncBatchBar();
+});
+
 await load();
+syncBatchBar();

@@ -3,3 +3,4 @@ export const caseType=row=>CASE_TYPES.includes(row.case_type)?row.case_type:'未
 export const typeClass=row=>'case-type-'+CASE_TYPES.indexOf(caseType(row));
 export const typeOrder=(a,b)=>CASE_TYPES.indexOf(caseType(a))-CASE_TYPES.indexOf(caseType(b));
 export const procedureLabel=value=>({'一审':'民事一审','二审':'民事二审'}[value]||value||'程序待补');
+export const inferCaseType = (procedure = '') => procedure.startsWith('刑事') ? '刑事' : procedure.startsWith('行政') ? '行政' : '未分类';

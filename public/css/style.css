@@ -3829,3 +3829,11 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 
 /* Shared case type badges: text remains the primary identifier. */
 .case-type{width:fit-content;font-weight:600;border:1px solid currentColor}.case-type-0{color:#174c96;background:#e8f0ff}.case-type-1{color:#92342e;background:#fcebea}.case-type-2{color:#67429a;background:#f1eafa}.case-type-3{color:#176753;background:#e4f4ec}.case-type-4{color:#825516;background:#fff1d9}.case-type-5{color:#535963;background:#edf0f3}
+
+/* 未分类：虚线描边，方便在列表里挑出来手工归类 */
+.case-type-5,.case-type-untyped{border-style:dashed!important;opacity:.92}
+.case-card{position:relative}
+.case-card .case-select{position:absolute;top:.55rem;left:.55rem;z-index:2}
+.batch-type-bar{margin-top:.6rem;align-items:center;gap:.75rem}
+.batch-type-bar[hidden]{display:none!important}
+#chip-untyped{border-style:dashed}
