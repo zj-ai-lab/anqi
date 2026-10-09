@@ -1,5 +1,5 @@
 {
-  "_comment": "行政诉讼 / 行政复议期限规则表 v2（2026-10-09 第三轮）。每条 scope=admin，仅匹配行政* 程序。每条 basis 引法条原文并附 source_urls（实际核对过的官方页面）。起算：一律次日起算（行诉法解释§48②；复议法§88①→民诉法§85②）。单位：行政复议法§88②所列三/五/七/十日为 workdays（工作日，依 rules/holidays-YYYY.json 国务院办公厅放假与调休安排逐日计数），其余为自然日/月/年并于届满日遇节假日顺延（含调休上班日视为工作日）。",
+  "_comment": "行政诉讼 / 行政复议期限规则表 v2（2026-10-09 第三轮）。每条 scope=admin，仅匹配行政* 程序。每条 basis 引法条原文并附 source_urls（实际核对过的官方页面）。起算：日/工作日单位次日起算（行诉法解释§48②；复议法§88①→民诉法§85②）；月/年单位自 2026-10-09 起按「到期月的对应日」计算——事件日 03-01 起 6 个月届满 09-01，无对应日取月末（民法典§202，Dong 决定，全规则集统一）。单位：行政复议法§88②所列三/五/七/十日为 workdays（工作日，依 rules/holidays-YYYY.json 国务院办公厅放假与调休安排逐日计数），其余为自然日/月/年并于届满日遇节假日顺延（含调休上班日视为工作日）。 规则 kind：statutory（法定）/ court_specified（录入任务）/ suggested（机关内部办理期限，仅参考，可忽略）/ elapsed_reminder（经过时间提醒，非期限）。direct_litigation=true 的规则在案件「复议前置=是」时不派生。",
   "review": "draft",
   "reviewed_by": "Grok Bot（条文已逐条对照官方原文；待执业律师复核）",
   "reviewed_at": "2026-10-09",
@@ -10,7 +10,8 @@
     "法释〔2026〕3号 关于适用行政诉讼起诉期限若干问题的解释（2026-05-01施行）": "https://www.court.gov.cn/zixun/xiangqing/498801.html",
     "最高法 行政诉讼起诉期限审查规则适用典型案例（2026-04-30）": "https://www.court.gov.cn/zixun/xiangqing/498791.html",
     "行政复议法实施条例（国令第836号，2026-07-01施行）": "https://www.gov.cn/zhengce/zhengceku/202605/content_7068116.htm",
-    "行政强制法": "https://www.court.gov.cn/shenpan/xiangqing/3109.html"
+    "行政强制法": "https://www.court.gov.cn/shenpan/xiangqing/3109.html",
+    "法释〔2018〕1号 §56/§69①(五)（复议前置后果）": "https://www.court.gov.cn/fabu/xiangqing/80342.html"
   },
   "rules": [
     {
@@ -34,7 +35,8 @@
         "https://www.court.gov.cn/zixun/xiangqing/498801.html",
         "https://www.court.gov.cn/fabu/xiangqing/80342.html"
       ],
-      "severity": "critical"
+      "severity": "critical",
+      "direct_litigation": true
     },
     {
       "id": "ad_sue_uninformed_1y",
@@ -57,7 +59,8 @@
         "https://www.court.gov.cn/zixun/xiangqing/498801.html"
       ],
       "severity": "critical",
-      "manual_only": true
+      "manual_only": true,
+      "direct_litigation": true
     },
     {
       "id": "ad_sue_after_reconsideration_15d",
@@ -169,7 +172,8 @@
         "http://www.npc.gov.cn/npc/c2/c30834/202309/t20230901_431409.html",
         "https://www.gov.cn/zhengce/zhengceku/202605/content_7068116.htm"
       ],
-      "severity": "normal"
+      "severity": "normal",
+      "direct_litigation": true
     },
     {
       "id": "ad_duty_period_entry",
@@ -212,7 +216,8 @@
         "https://www.court.gov.cn/zixun/xiangqing/498791.html",
         "http://www.npc.gov.cn/zgrdw/npc/xinwen/2017-06/29/content_2024894.htm"
       ],
-      "severity": "critical"
+      "severity": "critical",
+      "direct_litigation": true
     },
     {
       "id": "ad_defense_15d",
@@ -835,6 +840,189 @@
       ],
       "severity": "critical",
       "manual_only": true
+    },
+    {
+      "id": "ad_sg_supplement_notice_5wd",
+      "name": "【参考】复议机关书面通知补正期限（5 个工作日）",
+      "scope": "admin",
+      "trigger": "admin_reconsideration_received",
+      "kind": "suggested",
+      "days": 5,
+      "unit": "workdays",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法§31①「……行政复议机关应当自收到申请之日起五日内书面通知申请人补正。补正通知应当一次性载明需要补正的事项。」；行政复议法§88②：「三日」「五日」「七日」「十日」指工作日",
+      "source_urls": [
+        "http://www.npc.gov.cn/npc/c2/c30834/202309/t20230901_431409.html"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_sg_transfer_via_agency_5wd",
+      "name": "【参考】原处罚机关转送复议申请期限（5 个工作日）",
+      "scope": "admin",
+      "trigger": "reconsideration_filed_via_agency",
+      "kind": "suggested",
+      "days": 5,
+      "unit": "workdays",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法§32②「行政机关收到行政复议申请后，应当及时处理；认为需要维持行政处罚决定的，应当自收到行政复议申请之日起五日内转送行政复议机关。」；行政复议法§88②：「三日」「五日」「七日」「十日」指工作日",
+      "source_urls": [
+        "http://www.npc.gov.cn/npc/c2/c30834/202309/t20230901_431409.html"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_sg_self_correction_5wd",
+      "name": "【参考】原处罚机关自行纠正期限（5 个工作日）",
+      "scope": "admin",
+      "trigger": "reconsideration_filed_via_agency",
+      "kind": "suggested",
+      "days": 5,
+      "unit": "workdays",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法实施条例（国令第836号）§38①「……认为行政处罚决定违法或者不当，需要自行纠正的，应当自收到行政复议申请之日起5个工作日内按照法定程序，采取撤销、变更行政处罚决定等方式予以纠正，并将有关情况告知申请人和行政复议机关。」§38②：自提交申请至告知之日的期间不计入复议申请期限",
+      "source_urls": [
+        "https://www.gov.cn/zhengce/zhengceku/202605/content_7068116.htm"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_sg_escalation_transfer_5wd",
+      "name": "【参考】提级审理移送案件材料期限（5 个工作日）",
+      "scope": "admin",
+      "trigger": "reconsideration_escalation_decided",
+      "kind": "suggested",
+      "days": 5,
+      "unit": "workdays",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法实施条例（国令第836号）§40③「上级行政复议机关决定提级审理的，应当通知下级行政复议机关于5个工作日内移送案件材料，并书面告知当事人。行政复议审理期限自上级行政复议机关收到案件材料之日起重新计算。」",
+      "source_urls": [
+        "https://www.gov.cn/zhengce/zhengceku/202605/content_7068116.htm"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_sg_hearing_notice_5wd",
+      "name": "【参考】听证通知最迟发出日（听证日前 5 个工作日）",
+      "scope": "admin",
+      "trigger": "reconsideration_hearing_date",
+      "kind": "suggested",
+      "days": 5,
+      "unit": "workdays",
+      "direction": "before",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法§51①「行政复议机构组织听证的，应当于举行听证的五日前将听证的时间、地点和拟听证事项书面通知当事人。」；行政复议法§88②：「三日」「五日」「七日」「十日」指工作日。事件日期录入听证举行日，向前推算",
+      "source_urls": [
+        "http://www.npc.gov.cn/npc/c2/c30834/202309/t20230901_431409.html"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_sg_norm_review_transfer_7wd",
+      "name": "【参考】附带审查无权处理时转送期限（7 个工作日）",
+      "scope": "admin",
+      "trigger": "reconsideration_suspended_for_norm_review",
+      "kind": "suggested",
+      "days": 7,
+      "unit": "workdays",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法§56「……无权处理的，应当在七日内转送有权处理的行政机关依法处理。」§57「……无权处理的，应当在七日内转送有权处理的国家机关依法处理。」实施条例§53②：期限自行政复议中止之日起计算；行政复议法§88②：「三日」「五日」「七日」「十日」指工作日",
+      "source_urls": [
+        "http://www.npc.gov.cn/npc/c2/c30834/202309/t20230901_431409.html",
+        "https://www.gov.cn/zhengce/zhengceku/202605/content_7068116.htm"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_sg_norm_review_notice_3wd",
+      "name": "【参考】通知制定机关书面答复期限（3 个工作日）",
+      "scope": "admin",
+      "trigger": "reconsideration_suspended_for_norm_review",
+      "kind": "suggested",
+      "days": 3,
+      "unit": "workdays",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": false,
+      "applies_procedure": [
+        "行政复议"
+      ],
+      "basis": "行政复议法§58①「……行政复议机构应当自行政复议中止之日起三日内，书面通知规范性文件或者依据的制定机关就相关条款的合法性提出书面答复。制定机关应当自收到书面通知之日起十日内提交书面答复及相关材料。」；行政复议法§88②：「三日」「五日」「七日」「十日」指工作日",
+      "source_urls": [
+        "http://www.npc.gov.cn/npc/c2/c30834/202309/t20230901_431409.html"
+      ],
+      "severity": "normal",
+      "advisory_note": "复议机关/行政机关内部办理期限，仅供参考与督促，不约束我方；可忽略"
+    },
+    {
+      "id": "ad_duty_inaction_elapsed_reminder",
+      "name": "不履行法定职责：申请后经过时间提醒",
+      "scope": "admin",
+      "trigger": "admin_duty_applied",
+      "kind": "elapsed_reminder",
+      "applies_procedure": [
+        "行政一审",
+        "行政复议"
+      ],
+      "intervals": [
+        {
+          "months": 6,
+          "label": "申请已满 6 个月：核对履职期限、复议/起诉进度"
+        },
+        {
+          "years": 1,
+          "label": "申请已满 1 年：不作为无法定最长起诉期限，但请尽快决定救济（内部提醒）"
+        }
+      ],
+      "basis": "不履行法定职责无法定最长起诉期限：行政诉讼法§46②的二十年/五年自「行政行为作出之日」起算，不作为无此日；行诉法解释§64仅适用于未告知起诉期限的作为行为；最高法2026起诉期限典型案例二：依职权履职「不存在法定履行职责期限届满之日」。本提醒为律所内部提醒（Dong 2026-10-09 决定：申请后 1 年提醒），非法定期限",
+      "source_urls": [
+        "http://www.npc.gov.cn/zgrdw/npc/xinwen/2017-06/29/content_2024894.htm",
+        "https://www.court.gov.cn/fabu/xiangqing/80342.html",
+        "https://www.court.gov.cn/zixun/xiangqing/498791.html"
+      ],
+      "severity": "normal"
     }
   ]
 }

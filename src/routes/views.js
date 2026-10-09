@@ -86,7 +86,7 @@ r.get('/stats', (req, res) => {
       SUM(CASE WHEN status='done' AND (done_at IS NULL OR substr(done_at,1,10) >  due_on) THEN 1 ELSE 0 END) AS late_done,
       SUM(CASE WHEN status='missed' OR (status='pending' AND due_on < ?)     THEN 1 ELSE 0 END) AS missed,
       SUM(CASE WHEN status='waived' THEN 1 ELSE 0 END) AS waived
-    FROM deadlines WHERE due_on <= ? AND substr(due_on,1,4) = ?`, today, today, year);
+    FROM deadlines WHERE due_on <= ? AND substr(due_on,1,4) = ? AND advisory = 0`, today, today, year);
   const dueTotal = dl.due_total || 0;
   const compliance = dueTotal ? Math.round(((dl.on_time || 0) / dueTotal) * 100) : null; // 无已到期期限时为 null，页面显示「—」而不是假的 100%
 
@@ -232,7 +232,7 @@ r.get('/calendar', (req, res) => {
 
     deadlines: db.prepare(
       `SELECT d.id, d.name, d.due_on, d.severity, d.status, d.case_id, c.name AS case_name
-       FROM deadlines d JOIN cases c ON c.id = d.case_id WHERE d.due_on LIKE ? ORDER BY d.due_on`
+       FROM deadlines d JOIN cases c ON c.id = d.case_id WHERE d.due_on LIKE ? AND d.advisory = 0 ORDER BY d.due_on`
     ).all(like),
     hearings: db.prepare(
       `SELECT e.id, e.occurred_on, e.note, e.case_id, c.name AS case_name

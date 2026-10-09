@@ -7,6 +7,8 @@ import { parseQuick, llmReady } from '../lib/llm.js';
 
 const r = Router();
 
+const PRECONDITION_SUGGESTION_REASON = '申请履职后行政机关在法定期限内未受理、受理后不予答复或者不履行的，属行政复议法§23①(三)复议前置（实施条例§30①）；明确答复不予受理、明示拒绝履行、不完全履行的不属于（实施条例§30②）。请确认。';
+
 function isTime(value) {
   return typeof value === 'string' && /^(?:[01]\d|2[0-3]):[0-5]\d$/.test(value);
 }
@@ -56,7 +58,11 @@ export function createEventRecord({ caseId, payload, actor = 'web', createdBy = 
     const row = db.prepare('SELECT * FROM events WHERE id = ?').get(info.lastInsertRowid);
     const caseRow = db.prepare('SELECT * FROM cases WHERE id = ?').get(c.id);
     const derived = deriveForEvent(row, caseRow, actor);
-    return { row, derived };
+    const isAdminCase = String(caseRow.procedure || '').startsWith('行政') || caseRow.case_type === '行政';
+    const precondition_suggestion = isAdminCase && b.type === 'admin_duty_applied' && caseRow.reconsideration_precondition === 'unknown'
+      ? { suggest: 'yes', reason: PRECONDITION_SUGGESTION_REASON }
+      : null;
+    return { row, derived, precondition_suggestion };
   });
 }
 
@@ -132,7 +138,7 @@ export function createTaskRecord({ caseId = null, payload, actor = 'web', origin
 // ---------- events ----------
 r.post('/cases/:id/events', (req, res) => {
   try {
-    const { row, derived } = createEventRecord({
+    const { row, derived, precondition_suggestion } = createEventRecord({
       caseId: Number(req.params.id),
       payload: req.body,
       actor: req.actor,
@@ -145,7 +151,7 @@ r.post('/cases/:id/events', (req, res) => {
         due_on: deadline.due_on,
         missing_years: deadline.coverage_missing_years || [],
       }));
-    res.json({ ...row, derived, ...(coverage_warnings.length ? { coverage_warnings } : {}) });
+    res.json({ ...row, derived, ...(coverage_warnings.length ? { coverage_warnings } : {}), ...(precondition_suggestion ? { precondition_suggestion } : {}) });
   } catch (error) {
     responseError(res, error);
   }

@@ -49,6 +49,8 @@
 </header>
 <main class="page case-page">
   <p id="condition-warnings" class="pill warn" role="status" hidden></p>
+  <div id="precondition-warning" class="precondition-warning" role="alert" hidden></div>
+  <div id="precondition-hint" class="precondition-hint" role="status" hidden></div>
   <div class="case-layout" id="case-layout">
 
     <!-- ═══════ 案件进程：阶段步进 · 状态 · 案件信息 ═══════ -->
@@ -73,6 +75,7 @@
               <label class="f">收案日<input type="date" name="accepted_at"></label>
               <label class="f">案件类型<select name="case_type"><option>未分类</option><option>民事</option><option>刑事</option><option>行政</option><option>非诉</option><option>其他</option></select></label><label class="f">程序<select name="procedure"></select></label>
               <label class="f">阶段<select name="stage"></select></label>
+              <label class="f" id="reconsideration-precondition-field" hidden>复议前置<select name="reconsideration_precondition"><option value="yes">是</option><option value="no">否</option><option value="unknown">未确定</option></select></label>
             </div>
             <div class="formrow workspace-picker" id="case-workspace-picker">
               <label class="f grow">Agent 项目 / 案件工作区<select id="case-workspace-select"></select></label>
@@ -96,6 +99,11 @@
         <span id="c-stagedays"></span>
         <span class="tail">点步进节点可切换阶段</span>
       </div>
+    </section>
+
+    <section class="panel case-main" id="case-elapsed" data-case-order="1" hidden>
+      <div class="p-head"><h2 class="p-title">经过时间</h2><span class="p-meta">按事件计算的提醒</span></div>
+      <div class="panel-body" id="elapsed-list"></div>
     </section>
 
     <!-- ═══════ 期限跑道（母题：今日 → 死线）═══════ -->

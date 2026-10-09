@@ -2282,6 +2282,30 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
 .case-head-deadline-card.is-overdue > a > strong { color: var(--red); }
 .case-head-deadline .is-clear { color: var(--meta); font-size: 12px; }
 
+.precondition-warning {
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--red);
+  border-left: 4px solid var(--red);
+  background: var(--red-bg);
+  color: var(--red);
+  font-weight: 650;
+}
+.precondition-hint {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--amber);
+  border-left: 4px solid var(--amber);
+  background: var(--amber-bg);
+  color: var(--ink);
+}
+.elapsed-item { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.elapsed-item:last-child { border-bottom: 0; }
+.elapsed-reminders { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.elapsed-reminder { font-size: 12px; }
+.elapsed-reminder.is-reached { background: var(--amber-bg); color: var(--amber); }
+.deadline-advisory { border: 1px dashed var(--line); color: var(--meta); }
+
 .case-page { padding-top: 24px; }
 .case-layout {
   display: grid; grid-template-columns: minmax(0, 1fr) 380px;

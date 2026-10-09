@@ -60,6 +60,22 @@
     {
       "id": "no_term_document_served",
       "label": "未定履行期限的生效文书送达"
+    },
+    {
+      "id": "reconsideration_filed_via_agency",
+      "label": "通过原处罚机关提交复议申请（原机关收到）"
+    },
+    {
+      "id": "reconsideration_escalation_decided",
+      "label": "上级复议机关决定提级审理（通知下级）"
+    },
+    {
+      "id": "reconsideration_hearing_date",
+      "label": "复议听证举行日"
+    },
+    {
+      "id": "reconsideration_suspended_for_norm_review",
+      "label": "复议因附带审查中止"
     }
   ]
 }

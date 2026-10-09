@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { db, audit, withChangeContext } from '../db.js';
+import { db, audit, setChangeRuleId, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
 import {
   caseDirectoryName,
@@ -11,14 +11,15 @@ import {
 } from '../lib/secure-files.js';
 import { procedures, stagesOf, tasksForStage } from '../lib/vocab.js';
 import { criminalFieldKeys, validateCriminalFields } from '../lib/case-fields.js';
-import { missingConditions, conditionChangePreview, reconcileConditions } from '../lib/engine.js';
+import { missingConditions, conditionChangePreview, reconcileConditions, RULES, recomputeForDeadline } from '../lib/engine.js';
+import { computeElapsed } from '../lib/elapsed.js';
 
 const FILES_ROOT = process.env.ANJIAN_FILES_ROOT || '';
 
 import {CASE_TYPES, inferCaseType} from '../../public/js/case-types.js';
 const EDITABLE = [ 'case_type',
   'name', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent',
-  'procedure', 'stage', 'status', 'accepted_at', 'sol_starts_on', 'note', 'legalrag_url',
+  'procedure', 'stage', 'status', 'accepted_at', 'sol_starts_on', 'note', 'legalrag_url', 'reconsideration_precondition',
   ...criminalFieldKeys,
 ];
 
@@ -31,8 +32,8 @@ function normalizeCaseTitle(value) {
 
 const LIST_SQL = `
   SELECT c.*,
-    (SELECT MIN(due_on) FROM deadlines d WHERE d.case_id = c.id AND d.status = 'pending') AS next_due,
-    (SELECT COUNT(*) FROM deadlines d WHERE d.case_id = c.id AND d.status = 'pending') AS pending_deadlines,
+    (SELECT MIN(due_on) FROM deadlines d WHERE d.case_id = c.id AND d.status = 'pending' AND d.advisory = 0) AS next_due,
+    (SELECT COUNT(*) FROM deadlines d WHERE d.case_id = c.id AND d.status = 'pending' AND d.advisory = 0) AS pending_deadlines,
     (SELECT COUNT(*) FROM tasks t WHERE t.case_id = c.id AND t.status = 'open') AS open_tasks,
     CAST(julianday(date('now','+8 hours')) - julianday(c.stage_entered_at) AS INTEGER) AS stage_days
   FROM cases c`;
@@ -40,6 +41,45 @@ const LIST_SQL = `
 function workspaceOwner(directoryName, exceptCaseId = null) {
   const rows = db.prepare('SELECT id,name,folder_path FROM cases').all();
   return rows.find((row) => row.id !== exceptCaseId && caseDirectoryName(row) === directoryName) || null;
+}
+
+const DIRECT_LITIGATION_REASON = '复议前置：须先复议，直接起诉期限不适用';
+const DIRECT_LITIGATION_RULES = new Set(RULES.filter((rule) => rule.direct_litigation).map((rule) => rule.id));
+
+export function validatePrecondition(value) {
+  return ['yes', 'no', 'unknown'].includes(value);
+}
+
+export function reconcilePrecondition(caseId, value, actor) {
+  const direct = [...DIRECT_LITIGATION_RULES];
+  if (!direct.length) return;
+  const marks = direct.map(() => '?').join(',');
+  if (value === 'yes') {
+    const rows = db.prepare(`SELECT id, rule_id, name FROM deadlines
+      WHERE case_id=? AND rule_id IN (${marks}) AND status='pending'`).all(caseId, ...direct);
+    for (const row of rows) {
+      setChangeRuleId(row.rule_id);
+      db.prepare("UPDATE deadlines SET status='waived', suppressed_reason=? WHERE id=? AND status='pending'")
+        .run(DIRECT_LITIGATION_REASON, row.id);
+      audit(actor, 'suppress-precondition', 'deadline', row.id, DIRECT_LITIGATION_REASON);
+    }
+  } else {
+    const rows = db.prepare(`SELECT * FROM deadlines
+      WHERE case_id=? AND rule_id IN (${marks}) AND status='waived' AND suppressed_reason=?`)
+      .all(caseId, ...direct, DIRECT_LITIGATION_REASON);
+    for (const row of rows) {
+      const next = recomputeForDeadline(row);
+      setChangeRuleId(row.rule_id);
+      if (next) {
+        db.prepare("UPDATE deadlines SET status='pending', suppressed_reason=NULL, due_on=?, calc_note=? WHERE id=?")
+          .run(next.due_on, next.calc_note, row.id);
+      } else {
+        db.prepare("UPDATE deadlines SET status='pending', suppressed_reason=NULL WHERE id=?").run(row.id);
+      }
+      audit(actor, 'restore-precondition', 'deadline', row.id, '复议前置标记解除，恢复直接起诉期限');
+    }
+  }
+  setChangeRuleId(null);
 }
 
 function workspacePayload() {
@@ -106,6 +146,9 @@ r.post('/cases', (req, res) => {
   const stages = stagesOf(procedure);
   const stage = b.stage && stages.includes(b.stage) ? b.stage : stages[0];
   if (b.accepted_at && !isDate(b.accepted_at)) return res.status(400).json({ error: 'accepted_at 须为 YYYY-MM-DD' });
+  const reconsiderationPrecondition = Object.hasOwn(b, 'reconsideration_precondition')
+    ? b.reconsideration_precondition : 'unknown';
+  if (!validatePrecondition(reconsiderationPrecondition)) return res.status(400).json({ error: 'reconsideration_precondition 须为 yes/no/unknown' });
   const folderPath = normalizeCaseDirectoryName(b.folder_path || caseName);
   if (!folderPath) return res.status(400).json({ error: 'folder_path 须为文件根下的单层、非隐藏目录名' });
   const owner = workspaceOwner(folderPath);
@@ -119,11 +162,12 @@ r.post('/cases', (req, res) => {
     }
     const info = withChangeContext({ actor: req.actor }, () => {
       const inserted = db.prepare(
-        `INSERT INTO cases (case_type, name, case_no, cause, court, client, client_role, opponent, procedure, stage, accepted_at, folder_path, note, ${criminalFieldKeys.join(',')})
-         VALUES (${Array(13 + criminalFieldKeys.length).fill('?').join(',')})`
+        `INSERT INTO cases (case_type, name, case_no, cause, court, client, client_role, opponent, procedure, stage, accepted_at, folder_path, note, reconsideration_precondition, ${criminalFieldKeys.join(',')})
+         VALUES (${Array(14 + criminalFieldKeys.length).fill('?').join(',')})`
       ).run(
         caseType, caseName, b.case_no || '', b.cause || '', b.court || '', b.client || '', b.client_role || '',
-        b.opponent || '', procedure, stage, b.accepted_at || '', folderPath, b.note || '', ...criminalFieldKeys.map(f => b[f] || '')
+        b.opponent || '', procedure, stage, b.accepted_at || '', folderPath, b.note || '', reconsiderationPrecondition,
+        ...criminalFieldKeys.map(f => b[f] || '')
       );
       audit(req.actor, 'create', 'case', inserted.lastInsertRowid, `${caseName} workspace=${folderPath}`);
       return inserted;
@@ -238,6 +282,7 @@ r.get('/cases/:id', (req, res) => {
     condition_warnings: missingConditions(c, events),
     stages: stagesOf(c.procedure),
     events,
+    elapsed: computeElapsed(c, process.env.NODE_ENV === 'test' && isDate(req.query.today) ? req.query.today : todayCN()),
     deadlines: db.prepare('SELECT * FROM deadlines WHERE case_id = ? ORDER BY due_on ASC').all(c.id),
     tasks: db.prepare("SELECT * FROM tasks WHERE case_id = ? ORDER BY status = 'open' DESC, COALESCE(NULLIF(due_on,''), NULLIF(plan_date,''), '9999')").all(c.id),
     worklog: db.prepare('SELECT * FROM worklog WHERE case_id = ? ORDER BY worked_on DESC, id DESC').all(c.id),
@@ -262,6 +307,10 @@ r.patch('/cases/:id', (req, res) => {
     if (f in b && b[f] && !isDate(b[f])) return res.status(400).json({ error: `${f} 须为 YYYY-MM-DD` });
   }
   const conditionChanged = ['procedure', 'crime_type', 'trial_mode', 'case_nature', 'custody_status'].some(f => f in b && b[f] !== c[f]);
+  const reconsiderationChanged = 'reconsideration_precondition' in b && b.reconsideration_precondition !== c.reconsideration_precondition;
+  if (reconsiderationChanged && !validatePrecondition(b.reconsideration_precondition)) {
+    return res.status(400).json({ error: 'reconsideration_precondition 须为 yes/no/unknown' });
+  }
   const nextCase = { ...c, ...Object.fromEntries(EDITABLE.filter(f => f in b).map(f => [f, b[f]])) };
   const preview = conditionChanged ? conditionChangePreview(nextCase) : null;
   const sets = [];
@@ -306,6 +355,7 @@ r.patch('/cases/:id', (req, res) => {
     }
     audit(req.actor, 'update', 'case', c.id, Object.keys(b).join(','));
     if (conditionChanged) reconciled = reconcileConditions(db.prepare('SELECT * FROM cases WHERE id=?').get(c.id), req.actor, preview);
+    if (reconsiderationChanged) reconcilePrecondition(c.id, b.reconsideration_precondition, req.actor);
 
     if (stageChanged) {
       const proc = 'procedure' in b ? b.procedure : c.procedure;

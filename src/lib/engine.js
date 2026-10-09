@@ -20,12 +20,16 @@ function loadRules(name) {
   if (!fs.existsSync(file)) return [];
   return JSON.parse(fs.readFileSync(file, 'utf8')).rules || [];
 }
-const RULES = [
+export const RULES = [
   ...loadRules('deadline_rules.json'),
   ...loadRules('deadline_rules_criminal.json'),
   ...loadRules('deadline_rules_complaint.json'),
   ...loadRules('deadline_rules_admin.json'),
 ];
+
+export function ruleById(ruleId) {
+  return RULES.find((rule) => rule.id === ruleId) || null;
+}
 
 // ── 规则适用判定（多维）────────────────────────────────────────────
 // 一级隔离：scope=criminal 的规则只对刑事程序生效，反之亦然。
@@ -38,6 +42,7 @@ export function missingConditions(caseRow, events) {
   const missing = new Map();
   for (const rule of RULES) {
     if (rule.manual_only || !events.some(e => e.type === rule.trigger)) continue;
+    if (rule.direct_litigation && caseRow.reconsideration_precondition === 'yes') continue;
     if (!ruleMatches({ ...rule, applies: undefined }, caseRow)) continue;
     for (const [label] of Object.entries(rule.applies || {})) {
       const field = APPLIES_FIELD[label];
@@ -53,8 +58,8 @@ export function missingConditions(caseRow, events) {
 export function conditionChangePreview(caseRow) {
   const retire = [], protectedItems = [];
   for (const d of db.prepare("SELECT * FROM deadlines WHERE case_id=? AND rule_id!='' AND status='pending'").all(caseRow.id)) {
-    const rule = RULES.find(r => r.id === d.rule_id);
-    if (!rule || ruleMatches(rule, caseRow)) continue;
+    const rule = ruleById(d.rule_id);
+    if (!rule || (ruleMatches(rule, caseRow) && !(rule.direct_litigation && caseRow.reconsideration_precondition === 'yes'))) continue;
     (d.is_manual_override ? protectedItems : retire).push({ id: d.id, name: d.name, due_on: d.due_on, rule_id: d.rule_id });
   }
   return { retire, protected: protectedItems };
@@ -116,6 +121,7 @@ export function applyManualParams(rule, dlRow) {
   if (!blank(dlRow?.manual_days)) merged.days = Number(dlRow.manual_days);
   if (!blank(dlRow?.manual_unit)) merged.unit = dlRow.manual_unit;
   if (!blank(dlRow?.manual_count_from)) merged.count_from = dlRow.manual_count_from;
+  if (!blank(dlRow?.manual_count_from)) merged._manual_count_from = dlRow.manual_count_from;
   if (!blank(dlRow?.manual_roll)) merged.roll = dlRow.manual_roll;
   return merged;
 }
@@ -162,6 +168,8 @@ export function deriveForEvent(event, caseRow, actor) {
     // 人工于界面上切换口径时被引用（此时改的是 37 日那条的 manual_days，
     // 届满日仍由引擎按参数重算）——所以它们不能自己冒出来，否则一拘留就三条。
     if (rule.manual_only) continue;
+    if (rule.kind === 'elapsed_reminder') continue;
+    if (rule.direct_litigation && caseRow.reconsideration_precondition === 'yes') continue;
     if (!ruleMatches(rule, caseRow)) continue;
 
     if (rule.kind === 'court_specified') {
@@ -181,9 +189,9 @@ export function deriveForEvent(event, caseRow, actor) {
     const { due_on, calc_note, coverage_warning, coverage_missing_years } = computeDue(rule, event);
     setChangeRuleId(rule.id);
     const info = db.prepare(
-      `INSERT INTO deadlines (case_id, name, due_on, trigger_event_id, rule_id, basis, calc_note, is_manual_override, severity)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
-    ).run(caseRow.id, rule.name, due_on, event.id, rule.id, rule.basis, calc_note, rule.severity);
+      `INSERT INTO deadlines (case_id, name, due_on, trigger_event_id, rule_id, basis, calc_note, is_manual_override, severity, advisory)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ).run(caseRow.id, rule.name, due_on, event.id, rule.id, rule.basis, calc_note, rule.severity, rule.kind === 'suggested' ? 1 : 0);
     audit(actor, 'derive-deadline', 'deadline', info.lastInsertRowid, `rule=${rule.id} event=${event.id} due=${due_on}`);
     created.deadlines.push({
       id: info.lastInsertRowid,
@@ -191,6 +199,8 @@ export function deriveForEvent(event, caseRow, actor) {
       due_on,
       severity: rule.severity,
       rule_id: rule.id,
+      advisory: rule.kind === 'suggested' ? 1 : 0,
+      advisory_note: rule.advisory_note || '',
       coverage_warning,
       coverage_missing_years,
     });
@@ -252,6 +262,8 @@ export function rulesSummary() {
     days: r.days ?? null,
     unit: r.unit ?? null,
     manual_only: !!r.manual_only,
+    advisory: r.kind === 'suggested',
+    advisory_note: r.advisory_note || '',
     variants: (r.variants || [])
       .map((v) => {
         const s = byId.get(v.rule_id);

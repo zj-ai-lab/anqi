@@ -28,7 +28,7 @@ export function buildDigest(caseId = null) {
     db
       .prepare(
         `SELECT d.*, c.name AS case_name FROM deadlines d JOIN cases c ON c.id = d.case_id
-         WHERE d.status = 'pending' AND d.review_status = 'confirmed'
+         WHERE d.status = 'pending' AND d.review_status = 'confirmed' AND d.advisory = 0
            AND c.status = 'active' AND d.due_on > ? AND d.due_on <= ?
          ORDER BY d.due_on, d.severity = 'critical' DESC`
       )
@@ -38,7 +38,7 @@ export function buildDigest(caseId = null) {
   const overdueAndRed = db
     .prepare(
       `SELECT d.*, c.name AS case_name FROM deadlines d JOIN cases c ON c.id = d.case_id
-       WHERE d.status = 'pending' AND d.review_status = 'confirmed'
+       WHERE d.status = 'pending' AND d.review_status = 'confirmed' AND d.advisory = 0
          AND c.status = 'active' AND d.due_on <= ?
        ORDER BY d.due_on, d.severity = 'critical' DESC`
     )
@@ -51,7 +51,7 @@ export function buildDigest(caseId = null) {
        WHERE c.status = 'active'
          AND NOT EXISTS (
            SELECT 1 FROM deadlines d
-            WHERE d.case_id = c.id AND d.status = 'pending' AND d.review_status = 'confirmed'
+            WHERE d.case_id = c.id AND d.status = 'pending' AND d.review_status = 'confirmed' AND d.advisory = 0
          )
          AND NOT EXISTS (SELECT 1 FROM events e WHERE e.case_id = c.id AND e.type = 'hearing' AND e.occurred_on >= ?)
        ORDER BY c.updated_at`

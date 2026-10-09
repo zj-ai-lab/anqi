@@ -354,6 +354,21 @@ document.getElementById('share-person').addEventListener('change', (e) => {
 
 const ROLE_PILL = { 当事人: 'ok', 对方当事人: 'warn', 承办法官: 'acc', 法官助理: 'acc', 书记员: '', 对方律师: 'warn', 合作律师: 'acc', 其他: '' };
 
+function showPreconditionSuggestion(suggestion) {
+  const old = document.getElementById('precondition-suggestion-dialog');
+  old?.remove();
+  const box = el('div', { id: 'precondition-suggestion-dialog', class: 'precondition-hint', role: 'status' },
+    el('b', {}, '请确认复议前置'),
+    el('p', {}, suggestion.reason),
+    el('span', { class: 'tl-actions' },
+      el('button', { class: 'btn small primary', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: 'yes' }, '已设为复议前置：是'); box.remove(); } }, '设为「是」'),
+      el('button', { class: 'btn small', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: 'no' }, '已设为复议前置：否'); box.remove(); } }, '设为「否」'),
+      el('button', { class: 'btn small', type: 'button', onclick: () => box.remove() }, '稍后'),
+    )
+  );
+  document.querySelector('main.page')?.prepend(box);
+}
+
 function contactRow(p) {
   return el('div', { class: 'row' },
     el('span', { class: `pill ${ROLE_PILL[p.role] || ''}` }, p.role),
@@ -398,6 +413,7 @@ document.getElementById('event-form').addEventListener('submit', async (e) => {
   const filesInput = document.getElementById('ev-files');
   const files = [...(filesInput.files || [])];
   const r = await api(`/cases/${id}/events`, { body });
+  if (r.precondition_suggestion) showPreconditionSuggestion(r.precondition_suggestion);
   let uploaded = 0;
   for (const f of files) {
     try { await uploadFile(f, { entity: 'event', entityId: r.id }); uploaded++; }
@@ -1189,8 +1205,8 @@ function taskRow(t) {
 }
 
 // ---- 时间线 ----
-function tlItem(date, nodeCls, kindPill, bodyEls, actions = null) {
-  return el('div', { class: 'tl-item' },
+function tlItem(date, nodeCls, kindPill, bodyEls, actions = null, extraClass = '') {
+  return el('div', { class: `tl-item ${extraClass}`.trim() },
     el('span', { class: `tl-node ${nodeCls}`, 'aria-hidden': 'true' }),
     el('span', { class: 'tl-date' }, date),
     el('div', { class: 'tl-body' }, kindPill, ' ', ...bodyEls),
@@ -1290,6 +1306,7 @@ const FIELD_CN = {
   client_role: '我方地位', opponent: '对方', case_type:'案件类型', procedure: '程序', stage: '阶段',
   stage_entered_at: '进入阶段时间', status: '状态', accepted_at: '收案日', folder_path: '工作区',
   sol_starts_on: '时效起算', note: '备注', legalrag_url: 'LegalRAG 链接', crime_type: '作案类型',
+  reconsideration_precondition: '复议前置',
   trial_mode: '审理程序', case_nature: '案件性质', custody_status: '强制措施', case_side: '我方立场',
   entrust_stage: '委托阶段', co_counsel: '同案辩护人', contract_no: '合同编号',
   custody_place: '羁押场所', handling_agency: '办案机关', created_at: '创建时间',
@@ -1300,6 +1317,7 @@ const FIELD_CN = {
   calc_note: '算法说明', is_manual_override: '人工覆盖', severity: '紧急度', done_at: '完成于',
   review_status: '复核状态', manual_days: '手算天数', manual_unit: '手算单位',
   manual_count_from: '起算基准', manual_roll: '顺延方式', override_reason: '覆盖理由',
+  advisory: '参考期限', suppressed_reason: '抑制原因',
   // tasks
   title: '标题', plan_date: '计划日', deadline_id: '关联期限', priority: '优先级', origin: '来源',
   due_time: '截止时刻',
@@ -1318,6 +1336,7 @@ const VALUE_CN = {
   },
   severity: SEV_LABEL,
   review_status: { pending_review: '待核', confirmed: '已核' },
+  reconsideration_precondition: { yes: '是', no: '否', unknown: '未确定' },
   manual_unit: { natural_days: '自然日', workdays: '工作日', months: '月', years: '年' },
   priority: { high: '高优先', normal: '一般', low: '低优先' },
   is_manual_override: { 0: '否', 1: '是' },
@@ -1434,9 +1453,27 @@ async function loadChanges({ reset = true } = {}) {
   renderChanges();
 }
 
+function renderElapsed(items) {
+  const section = document.getElementById('case-elapsed');
+  const list = document.getElementById('elapsed-list');
+  if (!section || !list) return;
+  section.hidden = !items.length;
+  list.replaceChildren(...items.map((item) => el('div', { class: 'elapsed-item' },
+    el('div', {}, el('b', {}, item.event_label), ` · ${item.occurred_on} · ${item.elapsed_text}`),
+    el('div', { class: 'elapsed-reminders' }, ...item.reminders.map((reminder) => {
+      const duration = reminder.label.match(/\d+(?:\.\d+)?\s*(?:个月|年|天)/)?.[0] || reminder.label;
+      return el('span', {
+        class: `pill elapsed-reminder ${reminder.reached ? 'is-reached' : ''}`,
+        title: reminder.reached ? reminder.label : '',
+      }, reminder.reached ? `已满 ${duration}` : `${duration}提醒 ${reminder.due_on}`);
+    })),
+  )));
+}
+
 // ---- 渲染 ----
 function render() {
   const c = bundle.case;
+  const isAdminCase = String(c.procedure || '').startsWith('行政') || c.case_type === '行政';
   document.title = `${c.name} · 案齐`;
   document.getElementById('title').textContent = c.name;
   document.getElementById('subtitle').textContent =
@@ -1460,15 +1497,25 @@ function render() {
   document.getElementById('case-source-text').textContent = c.note || '';
 
   const ef = document.getElementById('edit-form');
-  for (const f of ['name', 'case_type', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent', 'accepted_at', 'note', 'legalrag_url']) {
+  for (const f of ['name', 'case_type', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent', 'accepted_at', 'note', 'legalrag_url', 'reconsideration_precondition']) {
     if (ef.elements[f]) ef.elements[f].value = c[f] || '';
   }
+  const preconditionField = document.getElementById('reconsideration-precondition-field');
+  preconditionField.hidden = !isAdminCase;
   efProc.value = c.procedure;
   syncEditStages(c.stage);
   criminalForm.fill(c);
   const warnings = document.getElementById('condition-warnings');
   warnings.hidden = !(bundle.condition_warnings || []).length;
   warnings.textContent = (bundle.condition_warnings || []).length ? `期限待补条件：${bundle.condition_warnings.map(w => w.label).join('、')}。请编辑案件信息；已有期限并不代表期限已齐全。` : '';
+  const preconditionWarning = document.getElementById('precondition-warning');
+  const preconditionHint = document.getElementById('precondition-hint');
+  preconditionWarning.hidden = !(isAdminCase && c.reconsideration_precondition === 'yes');
+  preconditionWarning.textContent = preconditionWarning.hidden ? '' : '⚠️ 复议前置：本案须先申请行政复议，对复议决定不服再起诉（行政复议法§23）。未经复议直接起诉的，人民法院裁定不予立案（法释〔2018〕1号§56）；已经立案的，裁定驳回起诉（同解释§69①(五)）。直接起诉期限已停用，起诉期限以复议决定送达/复议期满起算（行政诉讼法§45、行政复议法§34）。';
+  const hasDutyApplied = (bundle.events || []).some((event) => event.type === 'admin_duty_applied');
+  preconditionHint.hidden = !(isAdminCase && c.reconsideration_precondition === 'unknown' && hasDutyApplied);
+  preconditionHint.textContent = preconditionHint.hidden ? '' : '⚠️ 本案记录了申请履职事件，请确认「复议前置」是/否。';
+  renderElapsed(bundle.elapsed || []);
   document.getElementById('legalrag-slot').replaceChildren(
     c.legalrag_url
       ? el('a', { class: 'btn small', href: c.legalrag_url, target: '_blank', rel: 'noopener' }, 'LegalRAG 案件库 ↗')
@@ -1492,7 +1539,7 @@ function render() {
   // 本案期限跑道（母题）
   const today = todayStr();
   const pend = bundle.deadlines
-    .filter((x) => x.status === 'pending')
+    .filter((x) => x.status === 'pending' && !x.advisory)
     .map((x) => ({ ...x, days_left: daysTo(x.due_on, today) }))
     .sort((a, b) => a.days_left - b.days_left);
 
@@ -1590,10 +1637,13 @@ function render() {
       )
     ) })),
     ...bundle.deadlines.map((d) => {
+      const rule = ruleById.get(d.rule_id);
       const overdue = d.status === 'pending' && d.due_on < today;
       const nodeCls = d.status !== 'pending' ? 'tl-node-muted'
         : d.severity === 'critical' ? 'tl-node-crit' : d.severity === 'high' ? 'tl-node-warn' : 'tl-node-ok';
-      const buildPill = () => d.status === 'pending'
+      const buildPill = () => d.advisory
+        ? el('span', { class: 'pill', title: rule?.advisory_note || '' }, '参考 · 非约束')
+        : d.status === 'pending'
         ? el('span', { class: `pill ${d.severity === 'critical' ? 'crit' : d.severity === 'high' ? 'warn' : 'ok'}` },
             `死线 · ${SEV_LABEL[d.severity]}${overdue ? ' · 已逾期' : ''}`)
         : el('span', { class: `pill ${d.status === 'done' ? 'ok' : ''}` }, `死线 · ${STATUS_LABEL[d.status]}`);
@@ -1602,17 +1652,20 @@ function render() {
           el('b', {}, d.name), ' ',
           basisBtn(d),
           d.calc_note ? el('div', { class: 'tl-note' }, `算法：${d.calc_note}`) : null,
+          d.suppressed_reason ? el('div', { class: 'tl-note' }, `已抑制：${d.suppressed_reason}`) : null,
+          d.advisory ? el('span', { class: 'pill', title: rule?.advisory_note || '' }, '参考 · 非约束') : null,
           d.is_manual_override ? el('span', { class: 'pill' }, '人工设定') : null,
           d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
           d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
         ],
         d.status === 'pending' ? el('span', {},
           confirmReviewBtn(d),
-          editDueBtn(d),
-          el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
-          el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
+          d.advisory ? el('button', { class: 'btn small', type: 'button', title: rule?.advisory_note || '', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('参考期限已忽略'); load(); } }, '忽略') : editDueBtn(d),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
           el('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (!confirm('删除该期限？')) return; await api(`/deadlines/${d.id}`, { method: 'DELETE' }); toast('已删除'); load(); } }, '删')
-        ) : null
+        ) : null,
+        d.advisory ? 'deadline-advisory' : ''
       ) };
     }),
     ...bundle.worklog.map((w) => ({ kind: 'log', date: w.worked_on, sort2: 3, build: () => tlItem(w.worked_on, 'tl-node-log',
