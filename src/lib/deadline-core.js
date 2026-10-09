@@ -67,7 +67,7 @@ function addMonths(dateStr, n) {
 
 // 单条规则计算：返回 { due_on, calc_note, coverage_warning }
 export function computeDue(rule, event, calendar) {
-  const { isCovered, isNonWorking } = calendar;
+  const { isCovered, isNonWorking, kindOf = () => null } = calendar;
   const notes = [];
   let base = event.occurred_on;
 
@@ -97,7 +97,65 @@ export function computeDue(rule, event, calendar) {
   const start = shift ? addDays(base, shift) : base;
   const seg = back ? '前推' : shift ? `次日起算（起算日 ${start}）` : '当日起算';
   let raw;
-  if (rule.unit === 'months') {
+  let workdaySpan = null;
+  if (rule.unit === 'workdays') {
+    const count = Number(rule.days);
+    if (!Number.isInteger(count) || count < 0) throw new Error('workdays 的 days 必须是非负整数');
+    const counted = [];
+    const skippedHolidays = [];
+    const skippedWeekends = [];
+    const missingYears = new Set();
+    let cursor;
+    let n = 0;
+    let iterations = 0;
+    if (back) {
+      cursor = addDays(base, -1);
+      while (n < count) {
+        iterations++;
+        if (iterations > 1000) throw new Error('workdays 计算超过 1000 次迭代');
+        if (!isCovered(cursor)) missingYears.add(Number(cursor.slice(0, 4)));
+        const kind = kindOf(cursor);
+        if (!isNonWorking(cursor)) {
+          n++;
+          counted.push(cursor);
+        } else if (kind === 'holiday') {
+          skippedHolidays.push(cursor);
+        } else if (weekdayOf(cursor) === 0 || weekdayOf(cursor) === 6) {
+          skippedWeekends.push(cursor);
+        }
+        if (n === count) break;
+        cursor = addDays(cursor, -1);
+      }
+      raw = count === 0 ? base : counted.at(-1);
+      workdaySpan = { missingYears, counted, skippedHolidays, skippedWeekends };
+      notes.push(`${base} 前推 ${count} 个工作日（不含起算日） → ${raw}；结果按工作日构造，不再顺延`);
+    } else {
+      cursor = rule.count_from === 'same_day' ? base : addDays(base, 1);
+      while (n < count) {
+        iterations++;
+        if (iterations > 1000) throw new Error('workdays 计算超过 1000 次迭代');
+        if (!isCovered(cursor) && cursor !== base) missingYears.add(Number(cursor.slice(0, 4)));
+        const kind = kindOf(cursor);
+        if (!isNonWorking(cursor)) {
+          n++;
+          counted.push(cursor);
+        } else if (kind === 'holiday') {
+          skippedHolidays.push(cursor);
+        } else if (weekdayOf(cursor) === 0 || weekdayOf(cursor) === 6) {
+          skippedWeekends.push(cursor);
+        }
+        if (n === count) break;
+        cursor = addDays(cursor, 1);
+      }
+      raw = count === 0 ? base : counted.at(-1);
+      workdaySpan = { missingYears, counted, skippedHolidays, skippedWeekends };
+      notes.push(`${base} ${rule.count_from === 'same_day' ? '当日起算' : '次日起算'} ${count} 个工作日 → ${raw}；结果按工作日构造，不再顺延`);
+    }
+    if (skippedHolidays.length) notes.push(`期间内跳过法定节假日 ${skippedHolidays.length} 天（${skippedHolidays.join('、')}）`);
+    if (skippedWeekends.length) notes.push(`期间内跳过周末 ${skippedWeekends.length} 天`);
+    const countedWorkdays = counted.filter((d) => kindOf(d) === 'workday');
+    if (countedWorkdays.length) notes.push(`调休上班日 ${countedWorkdays.join('、')} 计入`);
+  } else if (rule.unit === 'months') {
     raw = addMonths(start, back ? -rule.days : rule.days);
     notes.push(`${base} ${seg} ${rule.days} 个月 → ${raw}`);
   } else if (rule.unit === 'years') {
@@ -118,8 +176,6 @@ export function computeDue(rule, event, calendar) {
   }
 
   let due = raw;
-  let coverageWarning = false;
-  if (!isCovered(due)) coverageWarning = true;
   if (rule.roll && rule.roll !== 'none') {
     const step = rule.roll === 'backward' ? -1 : 1;
     let hops = 0;
@@ -133,8 +189,26 @@ export function computeDue(rule, event, calendar) {
       notes.push(`届满日 ${due}（周${WD[weekdayOf(due)]}）为工作日，不顺延`);
     }
   }
-  if (coverageWarning) notes.push(`⚠️ 节假日表未覆盖 ${due.slice(0, 4)} 年，仅按周末顺延，法定节假日请人工复核`);
+  const missingYears = new Set(workdaySpan?.missingYears || []);
+  if (rule.unit === 'workdays') {
+    // 工作日需要覆盖整个计数跨度（包含被跳过的日期）；base 本身不属于跨度。
+    for (const d of [...(workdaySpan?.counted || []), ...(workdaySpan?.skippedHolidays || []), ...(workdaySpan?.skippedWeekends || [])]) {
+      if (d === base) continue; // same_day 的 base 是起算锚点，不属于 base exclusive…due inclusive 跨度
+      if (!isCovered(d)) missingYears.add(Number(d.slice(0, 4)));
+    }
+  } else {
+    // 自然日/月/年只要求原始届满日与最终顺延日所在年份有年度数据。
+    if (!isCovered(raw)) missingYears.add(Number(raw.slice(0, 4)));
+    if (!isCovered(due)) missingYears.add(Number(due.slice(0, 4)));
+  }
+  const coverage_missing_years = [...missingYears].sort((a, b) => a - b);
+  const coverageWarning = coverage_missing_years.length > 0;
+  if (coverageWarning) {
+    const years = coverage_missing_years.map((year) => `${year} 年`).join('、');
+    notes.push(`⚠️ 节假日数据缺 ${years}（国务院办公厅当年《部分节假日安排的通知》未入库）：本期限仅按周末推算，可能不准，须人工核对；更新：node tools/update-holidays.js --year ${coverage_missing_years[0]}`);
+    notes.push('未覆盖年份已列入 coverage_missing_years');
+  }
 
   const calc_note = `【引擎】${notes.join('；')}。依据：${rule.basis}`;
-  return { due_on: due, calc_note, coverage_warning: coverageWarning };
+  return { due_on: due, calc_note, coverage_warning: coverageWarning, coverage_missing_years };
 }

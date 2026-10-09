@@ -405,11 +405,15 @@ document.getElementById('event-form').addEventListener('submit', async (e) => {
   }
   const nd = r.derived?.deadlines?.length || 0;
   const nt = r.derived?.tasks?.length || 0;
+  const coverageWarnings = r.coverage_warnings || [];
   const parts = [];
   if (nd) parts.push(`派生 ${nd} 条期限`);
   if (nt) parts.push(`${nt} 条录入任务`);
   if (uploaded) parts.push(`${uploaded} 份文书入夹`);
-  toast(parts.length ? `已记录 → ${parts.join('、')}` : '事件已记录 ✓');
+  if (coverageWarnings.length) {
+    parts.push(`⚠️ 节假日数据缺 ${coverageWarnings.map((w) => `${w.name}（${w.due_on}，缺 ${w.missing_years.join('、')} 年）`).join('、')}`);
+  }
+  toast(parts.length ? `已记录 → ${parts.join('、')}` : '事件已记录 ✓', coverageWarnings.length ? 9000 : 2200);
   e.target.reset();
   await load();
   await loadFiles();
@@ -571,7 +575,7 @@ async function editDeadlineParams(d) {
   const pick = (key, label, options) => ({ key, label, type: 'select', value: d[key] || '', options: [{ value: '', label: '沿用规则' }, ...options.map(([value, label]) => ({ value, label }))] });
   const v = await datePrompt({ title: `计算参数：${d.name}`, hint: '由本地引擎计算；参数随触发日期重算。直接指定的人工日期受保护。请填写调整理由。', fields: [
     { key: 'manual_days', label: '数量（留空沿用规则）', type: 'number', value: d.manual_days ?? '', min: 0, max: 3650, step: 1 },
-    pick('manual_unit', '单位', [['natural_days', '自然日'], ['months', '月'], ['years', '年']]),
+    pick('manual_unit', '单位', [['natural_days', '自然日'], ['workdays', '工作日'], ['months', '月'], ['years', '年']]),
     pick('manual_count_from', '起算方式', [['next_day', '次日起'], ['same_day', '当日起']]),
     pick('manual_roll', '假期顺延', [['none', '不顺延'], ['backward', '向前避开假期'], ['forward', '向后顺延']]),
     { key: 'override_reason', label: '调整理由', type: 'text', value: d.override_reason || '', required: true },
@@ -621,6 +625,7 @@ function deadlineMeta(d) {
     d.is_manual_override ? el('span', {}, '人工设定') : null,
     d.review_status === 'pending_review' ? el('span', { class: 'sep' }, '·') : null,
     d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
+    d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
   ];
 }
 
@@ -1313,6 +1318,7 @@ const VALUE_CN = {
   },
   severity: SEV_LABEL,
   review_status: { pending_review: '待核', confirmed: '已核' },
+  manual_unit: { natural_days: '自然日', workdays: '工作日', months: '月', years: '年' },
   priority: { high: '高优先', normal: '一般', low: '低优先' },
   is_manual_override: { 0: '否', 1: '是' },
   created_by: { manual: '手工', llm: 'AI 填写', import: '导入' },
@@ -1598,6 +1604,7 @@ function render() {
           d.calc_note ? el('div', { class: 'tl-note' }, `算法：${d.calc_note}`) : null,
           d.is_manual_override ? el('span', { class: 'pill' }, '人工设定') : null,
           d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
+          d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
         ],
         d.status === 'pending' ? el('span', {},
           confirmReviewBtn(d),

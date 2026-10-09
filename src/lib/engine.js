@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, audit, setChangeRuleId, withChangeContext } from '../db.js';
+import { db, audit, setChangeRuleId, withChangeContext, HOLIDAY_YEARS } from '../db.js';
 import { ruleMatches, APPLIES_FIELD, computeDue as computeCalendarDue } from './deadline-core.js';
 export { ruleMatches };
 
@@ -82,10 +82,8 @@ export function reconcileConditions(caseRow, actor, preview) {
 const weekdayOf = (d) => new Date(d + 'T00:00:00Z').getUTCDay();
 
 const holidayKind = db.prepare('SELECT kind FROM holidays WHERE date = ?');
-const yearCovered = db.prepare("SELECT 1 AS c FROM holidays WHERE date LIKE ? LIMIT 1");
-
 function isCovered(dateStr) {
-  return !!yearCovered.get(dateStr.slice(0, 4) + '-%');
+  return HOLIDAY_YEARS.has(Number(dateStr.slice(0, 4)));
 }
 
 // 非工作日 =（周末且非调休补班）或 法定节假日
@@ -96,8 +94,12 @@ function isNonWorking(dateStr) {
   return w === 0 || w === 6;
 }
 
+function kindOf(dateStr) {
+  return holidayKind.get(dateStr)?.kind || null;
+}
+
 export function computeDue(rule, event) {
-  return computeCalendarDue(rule, event, { isCovered, isNonWorking });
+  return computeCalendarDue(rule, event, { isCovered, isNonWorking, kindOf });
 }
 
 // ── 手动参数（第一层：调参数 → 届满日自动重算）────────────────────────
@@ -126,12 +128,14 @@ export function recomputeForDeadline(dlRow) {
   if (!rule || !dlRow.trigger_event_id) return null;
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(dlRow.trigger_event_id);
   if (!event) return null;
-  const { due_on, calc_note } = computeDue(applyManualParams(rule, dlRow), event);
+  const { due_on, calc_note, coverage_warning, coverage_missing_years } = computeDue(applyManualParams(rule, dlRow), event);
   return {
     due_on,
     calc_note: hasManualParams(dlRow)
       ? calc_note.replace('【引擎】', '【引擎 · 手动参数】')
       : calc_note,
+    coverage_warning,
+    coverage_missing_years,
   };
 }
 
@@ -174,14 +178,22 @@ export function deriveForEvent(event, caseRow, actor) {
     }
 
     if (existsForEvent.get(event.id, rule.id)) continue; // 幂等：同事件同规则不重复派生
-    const { due_on, calc_note } = computeDue(rule, event);
+    const { due_on, calc_note, coverage_warning, coverage_missing_years } = computeDue(rule, event);
     setChangeRuleId(rule.id);
     const info = db.prepare(
       `INSERT INTO deadlines (case_id, name, due_on, trigger_event_id, rule_id, basis, calc_note, is_manual_override, severity)
        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)`
     ).run(caseRow.id, rule.name, due_on, event.id, rule.id, rule.basis, calc_note, rule.severity);
     audit(actor, 'derive-deadline', 'deadline', info.lastInsertRowid, `rule=${rule.id} event=${event.id} due=${due_on}`);
-    created.deadlines.push({ id: info.lastInsertRowid, name: rule.name, due_on, severity: rule.severity });
+    created.deadlines.push({
+      id: info.lastInsertRowid,
+      name: rule.name,
+      due_on,
+      severity: rule.severity,
+      rule_id: rule.id,
+      coverage_warning,
+      coverage_missing_years,
+    });
   }
   return created;
 

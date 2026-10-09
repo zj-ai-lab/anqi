@@ -138,7 +138,14 @@ r.post('/cases/:id/events', (req, res) => {
       actor: req.actor,
       createdBy: ['manual', 'llm', 'import'].includes(req.body?.created_by) ? req.body.created_by : 'manual',
     });
-    res.json({ ...row, derived });
+    const coverage_warnings = (derived.deadlines || [])
+      .filter((deadline) => deadline.coverage_warning)
+      .map((deadline) => ({
+        name: deadline.name,
+        due_on: deadline.due_on,
+        missing_years: deadline.coverage_missing_years || [],
+      }));
+    res.json({ ...row, derived, ...(coverage_warnings.length ? { coverage_warnings } : {}) });
   } catch (error) {
     responseError(res, error);
   }
@@ -217,7 +224,7 @@ r.post('/deadlines/:id/confirm-review', (req, res) => {
 });
 
 // 手动调参（第一层）合法取值。允许空串＝清除该覆盖项，回归规则默认值。
-const MANUAL_UNITS = ['natural_days', 'months', 'years'];
+const MANUAL_UNITS = ['natural_days', 'workdays', 'months', 'years'];
 const MANUAL_COUNT_FROM = ['next_day', 'same_day'];
 const MANUAL_ROLL = ['none', 'backward', 'forward'];
 const MANUAL_FIELDS = ['manual_days', 'manual_unit', 'manual_count_from', 'manual_roll'];
