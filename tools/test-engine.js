@@ -44,26 +44,28 @@ assert.equal(r.due_on, '2026-02-28', `补班日应视为工作日: ${r.due_on}`)
 r = computeDue(R_APPEAL, { occurred_on: '2026-02-10', service_method: '' });
 assert.equal(r.due_on, '2026-02-25', `工作日: ${r.due_on}`);
 
-// 5) 月单位 + 法定次日起算（与 rules/deadline_rules.json 的 retrial_application 对齐）：
-//    2026-03-15 生效 → 次日起算 03-16 → +6 个月 = 2026-09-16（周三）
+// 5) 月单位按民法典§202直接取到期月对应日：2026-03-15 +6 个月 = 2026-09-15。
 r = computeDue(R_RETRIAL, { occurred_on: '2026-03-15', service_method: '' });
-assert.equal(r.due_on, '2026-09-16', `月加法: ${r.due_on}`);
-assert.ok(r.calc_note.includes('次日起算'), 'calc_note 应记录次日起算');
+assert.equal(r.due_on, '2026-09-15', `月加法: ${r.due_on}`); // R4: month = corresponding day (民法典§202)
+assert.ok(r.calc_note.includes('到期月对应日'), 'calc_note 应记录对应日');
 
-// 5b) 月末钳制：起算日落在 31 日而目标月无 31 日 → 钳到该月最后一日
-//     2026-01-30 生效 → 次日起算 01-31 → +1 月 = 02-28（该日为调休补班日，不顺延）
+// 5b) 月末钳制：目标月无对应日 → 钳到该月最后一日
+//     2026-01-30 生效 → +1 月对应日 = 02-28（该日为调休补班日，不顺延）
 const R_MONTH_END = {
   id: 'month_end', name: '月末钳制', days: 1, unit: 'months',
   count_from: 'next_day', roll: 'forward',
 };
 r = computeDue(R_MONTH_END, { occurred_on: '2026-01-30', service_method: '' });
-assert.equal(r.due_on, '2026-02-28', `月末钳制: ${r.due_on}`);
+assert.equal(r.due_on, '2026-02-28', `月末钳制: ${r.due_on}`); // R4: month = corresponding day (民法典§202)
 
 // 6) 年单位 + 未覆盖年份告警：2026-06-30 + 2 年 → 2028-06-30，coverage_warning=true
 r = computeDue(R_EXEC, { occurred_on: '2026-06-30', service_method: '' });
 assert.equal(r.due_on.slice(0, 4), '2028');
 assert.equal(r.coverage_warning, true, '2028 未覆盖应告警');
 assert.ok(r.calc_note.includes('未覆盖'), 'calc_note 应含未覆盖提示');
+const R_LEAP_YEAR = { id: 'leap_year', name: '闰年对应日', days: 1, unit: 'years', count_from: 'next_day', roll: 'none' };
+r = computeDue(R_LEAP_YEAR, { occurred_on: '2024-02-29', service_method: '' });
+assert.equal(r.due_on, '2025-02-28', `闰年 02-29 + 1 年对应日: ${r.due_on}`); // R4: year = corresponding day (民法典§202)
 
 // 7) 公告送达修饰：2026-01-05 公告 → 基准推至 02-04，+15 = 02-19（春节假）→ 顺延 02-24
 r = computeDue(R_DEFENSE_PUBLIC, { occurred_on: '2026-01-05', service_method: '公告送达' });

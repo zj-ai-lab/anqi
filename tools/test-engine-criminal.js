@@ -171,9 +171,8 @@ console.log('E. applies 过滤（审理程序）');
   assert.ok(!ids.includes('一审审限（简易程序）'), '普通程序不得派生简易程序审限');
   assert.ok(!ids.includes('一审审限（速裁程序）'), '普通程序不得派生速裁审限');
   const d2m = d.deadlines.find((x) => x.name === '一审审限（普通程序，2 个月）');
-  // 2026-09-12 裁定「丙」：月数类改法定算法（次日起算）→ 3-31 受案，起算日 4-1，+2 月 = 6-1。
-  // 改前为 5-31（含当日口径），晚 1 天。此处期望值随裁定同步更新。
-  assert.equal(d2m.due_on, '2026-06-01', `3-31 次日起算 + 2 月：${d2m.due_on}`);
+  // R4: month = corresponding day (民法典§202)：3-31 +2 月 = 5-31。
+  assert.equal(d2m.due_on, '2026-05-31', `3-31 + 2 月对应日：${d2m.due_on}`); // R4: month = corresponding day (民法典§202)
   ok('普通程序 → 2 个月 / 3 个月，未串入简易、速裁规则');
 
   // E2 简易程序：应派生 20 日，不派生 2 个月
@@ -237,28 +236,32 @@ console.log('G. 未知维度保守拒绝');
 }
 
 // ─────────────────────────────────────────────────────────────
-// H. 月/年数法定算法（Q10 裁定「丙」）：次日起算 + 月末钳制
+// H. 月/年数按民法典§202取对应日；自然日仍次日起算
 // ─────────────────────────────────────────────────────────────
-console.log('H. 月数法定算法（次日起算）');
+console.log('H. 月数对应日算法');
 {
   const { computeDue } = await import('../src/lib/engine.js');
   const rule = { id: 't_month', unit: 'months', days: 2, count_from: 'next_day', roll: 'none', basis: '测试' };
 
-  // H1 常规日：3-1 逮捕 + 2 月，次日起算 → 起算日 3-2 → 5-2（改前含当日口径为 5-1，早 1 天）
+  // H1 常规日：3-1 + 2 月对应日 = 5-1。
   const h1 = computeDue(rule, { occurred_on: '2026-03-01' });
-  assert.equal(h1.due_on, '2026-05-02', `3-1 + 2 月（次日起算）= 5-2，实际 ${h1.due_on}`);
-  assert.ok(h1.calc_note.includes('次日起算（起算日 2026-03-02）'), 'calc_note 须写明起算日，浮层据此提示差异');
-  ok('3-1 逮捕 + 2 月 → 2026-05-02（法定次日起算）');
+  assert.equal(h1.due_on, '2026-05-01', `3-1 + 2 月对应日 = 5-1，实际 ${h1.due_on}`); // R4: month = corresponding day (民法典§202)
+  assert.ok(h1.calc_note.includes('到期月对应日'), 'calc_note 须写明对应日');
+  ok('3-1 逮捕 + 2 月 → 2026-05-01（民法典§202）');
 
-  // H2 月末钳制：1-30 + 1 月，起算日 1-31 → 2-28（不得被钳成 3-1）
+  // H2 月末钳制：1-30 + 1 月对应日 → 2-28。
   const h2 = computeDue({ ...rule, days: 1 }, { occurred_on: '2026-01-30' });
-  assert.equal(h2.due_on, '2026-02-28', `1-30 + 1 月 = 2-28，实际 ${h2.due_on}`);
+  assert.equal(h2.due_on, '2026-02-28', `1-30 + 1 月 = 2-28，实际 ${h2.due_on}`); // R4: month = corresponding day (民法典§202)
   ok('1-30 + 1 月 → 2026-02-28（月末钳制正确）');
 
-  // H3 年数类同样尊重 count_from：2026-03-01 + 1 年 → 起算日 3-2 → 2027-03-02
+  // H3 年数类也取对应日：2026-03-01 + 1 年 → 2027-03-01。
   const h3 = computeDue({ ...rule, unit: 'years', days: 1 }, { occurred_on: '2026-03-01' });
-  assert.equal(h3.due_on, '2027-03-02', `3-1 + 1 年 = 2027-03-02，实际 ${h3.due_on}`);
-  ok('年数类同走次日起算');
+  assert.equal(h3.due_on, '2027-03-01', `3-1 + 1 年 = 2027-03-01，实际 ${h3.due_on}`); // R4: year = corresponding day (民法典§202)
+  ok('年数类取对应日');
+
+  // H3b 倒推月数同样从事件日取对应日：3-1 前推 1 月 = 2-1。
+  const h3b = computeDue({ ...rule, days: 1, direction: 'before' }, { occurred_on: '2026-03-01' });
+  assert.equal(h3b.due_on, '2026-02-01', `3-1 前推 1 月对应日 = 2-1，实际 ${h3b.due_on}`); // R4: month = corresponding day (民法典§202)
 
   // H4 收紧口径：自然日类仍为 next_day（与 40 条基本表一致），不得回退成含当日
   const h4 = computeDue({ id: 't_day', unit: 'natural_days', days: 10, count_from: 'next_day', roll: 'none', basis: '测试' }, { occurred_on: '2026-07-08' });
@@ -364,7 +367,7 @@ console.log('K. 17 值阶段标签');
   assert.ok(procedures.includes('刑事控告立案前'), '程序词表应含「刑事控告立案前」');
   assert.ok(Array.isArray(stageTemplates['刑事控告立案前']) && stageTemplates['刑事控告立案前'].length === 7,
     '控告立案前阶段链应 7 个环节');
-  assert.equal(eventTypes.length, 62, `事件词表应为 62（民诉 39 + 刑事 8 + 行政 15），实际 ${eventTypes.length}`);
+  assert.equal(eventTypes.length, 66, `事件词表应为 66（含当前行政事件），实际 ${eventTypes.length}`);
   assert.ok(eventTypes.some((t) => t.id === 'admin_act_known'), '事件词表应含行政事件');
   assert.ok(procedures.includes('行政一审'), '程序词表应含行政一审');
   assert.equal(Object.keys(stageLabelMap).length, 17, 'stageLabelMap 索引完整');
@@ -393,8 +396,8 @@ console.log('L. 手动调参优先级');
 
   // L2 改单位：天 → 月，届满日重算（不是停留在原日期）
   const r2 = recomputeForDeadline({ ...base, manual_days: 1, manual_unit: 'months', manual_count_from: 'next_day', manual_roll: 'none' });
-  assert.equal(r2.due_on, '2026-08-09', `7-8 次日起算 + 1 月 = 8-9，实际 ${r2.due_on}`);
-  ok('manual_unit=months → 届满日重算为 2026-08-09');
+  assert.equal(r2.due_on, '2026-08-08', `7-8 + 1 月对应日 = 8-8，实际 ${r2.due_on}`); // R4: month = corresponding day (民法典§202)
+  ok('manual_unit=months → 届满日重算为 2026-08-08');
 
   // L3 改顺延：7-18 为周六，roll=forward → 顺延至 7-20（周一）
   const r3 = recomputeForDeadline({ ...base, manual_days: 10, manual_unit: 'natural_days', manual_count_from: 'next_day', manual_roll: 'forward' });

@@ -83,19 +83,20 @@ export function computeDue(rule, event, calendar) {
 
   // 期限方向：after=自锚点向后（常规）；before=自锚点向前（刑诉法 §187 开庭前送达/公布）
   const back = rule.direction === 'before';
-  // 起算方式（count_from）：期间开始之日不计入 → 次日起算
+  // 起算方式（count_from）：自然日/工作日的期间开始之日不计入 → 次日起算。
+  // 月/年单位按民法典§202：到期月的对应日为最后一日，直接从事件锚点计算，
+  // 不适用 next_day；月末没有对应日时由 addMonths 钳到月末。
   // （刑诉法 §105：期间以时、日、月计算，期间开始的时和日不算在期间以内；
   //   以月计算的期间自本月某日至下月同日为一个月 —— 刑诉法解释 §202①）。
   //
-  // 2026-09-12 裁定「丙」：月/年单位此前忽略 count_from，一律按"含当日"直接加月，
-  // 结果比法定算法早 1 天（3-1 逮捕 + 2 月 → 算出 5-1，法定应 5-2）。现改为法定算法，
-  // 并在 UI 法条浮层注明"实务文书常按含当日写，早 1 天"的差异。
-  //
-  // 实现要点：先定起算日（次日起算＝锚点 +1 日），再加月/年；月末钳制以起算日为准，
-  // 例：锚点 01-30 + 1 月 → 起算日 01-31 → 02-28（不能被钳成 03-01）。
-  const shift = !back && rule.count_from === 'next_day' ? 1 : 0;
+  // R4：月/年单位不再读取 count_from，直接从事件日按对应日计算。
+  // 自然日/工作日仍按 count_from 决定是否次日起算；月末无对应日时钳到月末。
+  const monthYear = rule.unit === 'months' || rule.unit === 'years';
+  const shift = !monthYear && !back && rule.count_from === 'next_day' ? 1 : 0;
   const start = shift ? addDays(base, shift) : base;
-  const seg = back ? '前推' : shift ? `次日起算（起算日 ${start}）` : '当日起算';
+  const seg = monthYear
+    ? (rule.unit === 'months' ? '起按月计算' : '起按年计算')
+    : back ? '前推' : shift ? `次日起算（起算日 ${start}）` : '当日起算';
   let raw;
   let workdaySpan = null;
   if (rule.unit === 'workdays') {
@@ -157,10 +158,12 @@ export function computeDue(rule, event, calendar) {
     if (countedWorkdays.length) notes.push(`调休上班日 ${countedWorkdays.join('、')} 计入`);
   } else if (rule.unit === 'months') {
     raw = addMonths(start, back ? -rule.days : rule.days);
-    notes.push(`${base} ${seg} ${rule.days} 个月 → ${raw}`);
+    notes.push(`${base} ${seg} ${rule.days} 个月 → 到期月对应日 ${raw}（民法典§202；无对应日取月末）`);
+    if (rule._manual_count_from || rule.manual_count_from) notes.push(`手动起算方式「${rule._manual_count_from || rule.manual_count_from}」对月单位不作次日平移`);
   } else if (rule.unit === 'years') {
     raw = addMonths(start, (back ? -1 : 1) * rule.days * 12);
-    notes.push(`${base} ${seg} ${rule.days} 年 → ${raw}`);
+    notes.push(`${base} ${seg} ${rule.days} 年 → 到期月对应日 ${raw}（民法典§202；无对应日取月末）`);
+    if (rule._manual_count_from || rule.manual_count_from) notes.push(`手动起算方式「${rule._manual_count_from || rule.manual_count_from}」对年单位不作次日平移`);
   } else if (back) {
     // 向前推：「至迟在开庭 N 日以前」＝锚点日减 N（开庭日不计入）。
     // 此类规则是"从开庭日往前倒推"，不存在期间起算问题

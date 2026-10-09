@@ -53,9 +53,9 @@ try {
   assert.equal(bundle.deadlines.find(d => d.id === cap.id).due_on, '2026-10-20');
   const open = bundle.deadlines.find(d => d.status === 'pending' && d.id !== cap.id);
   const params = await request('PATCH', `/deadlines/${open.id}`, { manual_days: 2, manual_unit: 'months', manual_count_from: 'next_day', manual_roll: 'none', override_reason: '虚构参数' });
-  assert.equal(params.due_on, '2026-11-03');
+  assert.equal(params.due_on, '2026-11-02'); // R4: month = corresponding day (民法典§202)
   await request('PATCH', `/events/${event.id}`, { occurred_on: '2026-09-03', type: 'invalid', confirm: true }, 400);
-  assert.equal((await request('GET', `/cases/${c.id}`)).deadlines.find(d => d.id === open.id).due_on, '2026-11-03', '校验失败不可先改期限');
+  assert.equal((await request('GET', `/cases/${c.id}`)).deadlines.find(d => d.id === open.id).due_on, '2026-11-02', '校验失败不可先改期限'); // R4: month = corresponding day (民法典§202)
   await request('PATCH', `/deadlines/${open.id}`, { due_on: '2026-12-01', override_reason: '参数改为指定日期' });
   await request('PATCH', `/events/${event.id}`, { occurred_on: '2026-09-03', confirm: true });
   const direct = (await request('GET', `/cases/${c.id}`)).deadlines.find(d => d.id === open.id);

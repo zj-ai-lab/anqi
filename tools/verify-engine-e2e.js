@@ -50,8 +50,8 @@ section('L1. 独立复算：与引擎穷举比对（2025-06 ~ 2028-12 每一天�
   function indep(r, anchor) {
     const back = r.direction === 'before';
     const cf = r.count_from;
-    if (r.unit === 'months') { const st = cf === 'next_day' ? addD(anchor, 1) : anchor; return addM(st, back ? -r.days : r.days); }
-    if (r.unit === 'years') { const st = cf === 'next_day' ? addD(anchor, 1) : anchor; return addM(st, (back ? -1 : 1) * r.days * 12); }
+    if (r.unit === 'months') return addM(anchor, back ? -r.days : r.days); // R4: month = corresponding day (民法典§202)
+    if (r.unit === 'years') return addM(anchor, (back ? -1 : 1) * r.days * 12); // R4: year = corresponding day (民法典§202)
     if (back) return addD(anchor, -r.days);
     return cf === 'next_day' ? addD(anchor, r.days) : addD(anchor, r.days - 1);
   }
@@ -81,7 +81,7 @@ section('L2. 逻辑约束');
   }
   chk('跨规则恒等式 3+7=10 / 30+7=37（8 组）', ok1);
 
-  // 2.2 月末钳制：次日起算后起算日落在月末
+  // 2.2 月末钳制：到期月没有对应日时取月末（民法典§202）
   const clamp = [
     ['cr_prosecution_1m', '2027-01-30', '2027-02-28'],
     ['cr_prosecution_1m', '2028-01-30', '2028-02-29'],
@@ -96,10 +96,10 @@ section('L2. 逻辑约束');
 
   // 2.3 次日起算语义（法定算法）
   const next = [
-    ['cr_prosecution_1m', '2027-01-31', '2027-03-01'],
-    ['cr_trial1_2m', '2026-12-31', '2027-03-01'],
-    ['cr_prosecution_1m', '2028-02-29', '2028-04-01'],
-    ['cr_invest_detention_2m', '2026-03-01', '2026-05-02'],
+    ['cr_prosecution_1m', '2027-01-31', '2027-02-28'], // R4: month = corresponding day (民法典§202)
+    ['cr_trial1_2m', '2026-12-31', '2027-02-28'], // R4: month = corresponding day (民法典§202)
+    ['cr_prosecution_1m', '2028-02-29', '2028-03-29'], // R4: month = corresponding day (民法典§202)
+    ['cr_invest_detention_2m', '2026-03-01', '2026-05-01'], // R4: month = corresponding day (民法典§202)
   ];
   let ok3 = true;
   for (const [id, a, want] of next) if (G(id, a) !== want) { ok3 = false; console.log(`       差异 ${id} @${a} 实际=${G(id, a)} 应为=${want}`); }
@@ -177,17 +177,17 @@ section('L3. 端到端：辩护线完整链路（虚构案件，日期为手下�
 mkCase(9001, '（虚构）张某某盗窃案');
 step(9001, 'detained', '2026-03-05', { '提请批捕（普通案件）': '2026-03-08', '拘留最长期限届满（37 日）': '2026-04-11' });
 step(9001, 'approval_requested', '2026-03-07', { '检察院审查批捕决定期限': '2026-03-14' });
-step(9001, 'arrested', '2026-03-13', { '侦查羁押期限届满': '2026-05-14' });
+step(9001, 'arrested', '2026-03-13', { '侦查羁押期限届满': '2026-05-13' }); // R4: month = corresponding day (民法典§202)
 setProc(9001, '刑事审查起诉', '审查起诉');
-step(9001, 'transferred_prosecution', '2026-05-10', { '审查起诉期限届满': '2026-06-11' });
-step(9001, 'returned_investigation', '2026-06-05', { '退回补充侦查期限届满': '2026-07-06' });
+step(9001, 'transferred_prosecution', '2026-05-10', { '审查起诉期限届满': '2026-06-10' }); // R4: month = corresponding day (民法典§202)
+step(9001, 'returned_investigation', '2026-06-05', { '退回补充侦查期限届满': '2026-07-05' }); // R4: month = corresponding day (民法典§202)
 setProc(9001, '刑事一审', '一审');
-step(9001, 'court_accepted', '2026-07-03', { '一审审限（普通程序，2 个月）': '2026-09-04', '一审审限上限（普通程序，3 个月）': '2026-10-04' });
+step(9001, 'court_accepted', '2026-07-03', { '一审审限（普通程序，2 个月）': '2026-09-03', '一审审限上限（普通程序，3 个月）': '2026-10-03' }); // R4: month = corresponding day (民法典§202)
 step(9001, 'hearing_scheduled', '2026-09-20', { '起诉书副本送达（开庭前 10 日）': '2026-09-10', '传票/通知书送达（开庭前 3 日）': '2026-09-17' });
 step(9001, 'judgment_announced', '2026-09-30', { '当庭宣判后送达判决书（5 日）': '2026-10-05' });
 step(9001, 'judgment_served', '2026-10-08', { '上诉/抗诉期（判决）': '2026-10-18', '被害人请求抗诉期限': '2026-10-13' });
 setProc(9001, '刑事二审', '二审');
-step(9001, 'second_instance_accepted', '2026-10-20', { '二审审限（2 个月）': '2026-12-21' });
+step(9001, 'second_instance_accepted', '2026-10-20', { '二审审限（2 个月）': '2026-12-20' }); // R4: month = corresponding day (民法典§202)
 
 section('L4. 闸门与隔离');
 {

@@ -27,39 +27,42 @@ function due(ruleId, occurred_on, extra = {}) {
   return due_on;
 }
 
-// 期间开始之日不计入（行诉法解释 §48）：统一次日起算；届满日遇休息日顺延
-assert.equal(due('ad_sue_6m', '2026-03-01'), '2026-09-02'); // 起算日 03-02 + 6 个月
+// 日/工作日单位期间开始之日不计入（行诉法解释 §48）；月/年单位按民法典§202取对应日。
+assert.equal(due('ad_sue_6m', '2026-03-01'), '2026-09-01'); // R4: month = corresponding day (民法典§202)
 assert.equal(due('ad_sue_after_reconsideration_15d', '2026-03-01'), '2026-03-16');
 assert.equal(due('ad_reconsideration_apply_60d', '2026-01-01'), '2026-03-02');
 assert.equal(due('ad_defense_15d', '2026-06-01'), '2026-06-16');
 assert.equal(due('ad_appeal_judgment_15d', '2026-06-01'), '2026-06-16');
 assert.equal(due('ad_appeal_ruling_10d', '2026-06-01'), '2026-06-11');
-assert.equal(due('ad_trial1_6m', '2026-01-15'), '2026-07-16');
-assert.equal(due('ad_trial2_3m', '2026-01-15'), '2026-04-16');
+assert.equal(due('ad_trial1_6m', '2026-01-15'), '2026-07-15'); // R4: month = corresponding day (民法典§202)
+assert.equal(due('ad_trial2_3m', '2026-01-15'), '2026-04-15'); // R4: month = corresponding day (民法典§202)
 // 申请执行期限三种起算点（行诉法解释 §153②）：各自独立事件触发
 assert.equal(byId.ad_execution_2y, undefined, '旧的「生效即起算」执行规则已拆分');
 assert.equal(byId.ad_execution_2y_term_end.trigger, 'performance_period_ended');
 assert.equal(byId.ad_execution_2y_installment.trigger, 'installment_period_ended');
 assert.equal(byId.ad_execution_2y_no_term.trigger, 'no_term_document_served');
 assert.equal(due('ad_execution_2y_term_end', '2026-01-01'), '2028-01-03'); // 2028-01-02 周日 → 顺延周一（2028 无数据，告警见下）
-assert.equal(due('ad_execution_2y_installment', '2026-03-31'), '2028-04-03'); // 04-01 周六 → 04-03 周一
+assert.equal(due('ad_execution_2y_installment', '2026-03-31'), '2028-03-31'); // R4: year = corresponding day (民法典§202)
 assert.equal(due('ad_execution_2y_no_term', '2026-06-10'), '2028-06-12'); // 06-11 周日 → 06-12
 assert.equal(computeDue(byId.ad_execution_2y_term_end, { occurred_on: '2026-01-01', service_method: '' }).coverage_warning, true, '2028 年无节假日数据须告警');
 // 不履行法定职责：两个月等待 + 履职期限届满后六个月（行诉法§47①、解释§66、法释〔2026〕3号§7）
 assert.equal(byId.ad_sue_after_duty_6m.trigger, 'admin_duty_period_expired');
 assert.equal(byId.ad_sue_after_duty_6m.days, 6);
 assert.equal(byId.ad_sue_after_duty_6m.unit, 'months');
-assert.equal(due('ad_duty_wait_2m', '2026-08-01'), '2026-10-08'); // 08-02 起算 + 2 月 = 10-02 国庆 → 顺延 10-08
-assert.equal(due('ad_sue_after_duty_6m', '2026-03-02'), '2026-09-03'); // 次日 03-03 + 6 月
+assert.equal(due('ad_duty_wait_2m', '2026-08-01'), '2026-10-08'); // R4: month = corresponding day (民法典§202)：08-01 + 2 个月 = 10-01，国庆 → 顺延 10-08
+assert.equal(due('ad_sue_after_duty_6m', '2026-03-02'), '2026-09-02'); // R4: month = corresponding day (民法典§202)
 assert.equal(due('ad_reconsideration_duty_wait_60d', '2026-08-01'), '2026-09-30');
 assert.equal(due('ad_reconsideration_after_duty_60d', '2026-03-02'), '2026-05-06'); // 05-01 劳动节 → 05-06
 assert.equal(due('ad_sue_after_reconsideration_timeout_15d', '2026-09-20'), '2026-10-08'); // 10-05 国庆 → 10-08
-assert.equal(due('ad_sue_cap_other_5y', '2020-01-01'), '2025-01-02');
-assert.equal(due('ad_agency_exec_apply_3m', '2026-03-01'), '2026-06-02');
+assert.equal(due('ad_sue_cap_other_5y', '2020-01-01'), '2025-01-02'); // R4: year = corresponding day (民法典§202)，对应日元旦后按 roll 顺延
+assert.equal(due('ad_agency_exec_apply_3m', '2026-03-01'), '2026-06-01'); // R4: month = corresponding day (民法典§202)
 // 复议「三日、五日、七日、十日」为工作日（行政复议法 §88②）：逐个工作日计数，跳过国庆、计入 10-10 调休周六
 const wdRules = rules.filter((r) => r.unit === 'workdays').map((r) => r.id).sort();
 assert.deepEqual(wdRules, ['ad_reconsideration_accept_review_5wd', 'ad_reconsideration_copy_7wd', 'ad_reconsideration_copy_simple_3wd',
-  'ad_reconsideration_reply_10d', 'ad_reconsideration_reply_simple_5wd', 'ad_reconsideration_supplement_10wd']);
+  'ad_reconsideration_reply_10d', 'ad_reconsideration_reply_simple_5wd', 'ad_reconsideration_supplement_10wd',
+  'ad_sg_escalation_transfer_5wd', 'ad_sg_hearing_notice_5wd', 'ad_sg_norm_review_notice_3wd',
+  'ad_sg_norm_review_transfer_7wd', 'ad_sg_self_correction_5wd', 'ad_sg_supplement_notice_5wd',
+  'ad_sg_transfer_via_agency_5wd']);
 assert.ok(rules.every((r) => !r._engine_approx), '不得再有工作日近似');
 assert.equal(due('ad_reconsideration_reply_10d', '2026-09-28'), '2026-10-16');
 assert.equal(due('ad_reconsideration_reply_simple_5wd', '2026-09-28'), '2026-10-10'); // 09-29,09-30,10-08,10-09,10-10(调休六)
@@ -99,7 +102,7 @@ assert.ok(!out3.deadlines.some((d) => d.rule_id === 'ad_sue_after_duty_6m'));
 assert.ok((out3.tasks || []).length >= 1, '应铺履职期限核对任务');
 const ev4 = db.prepare("INSERT INTO events (case_id, type, occurred_on) VALUES (?, 'admin_duty_period_expired', '2026-10-08')").run(caseId);
 const out4 = deriveForEvent(db.prepare('SELECT * FROM events WHERE id=?').get(ev4.lastInsertRowid), caseRow, 'test');
-assert.ok(out4.deadlines.some((d) => d.rule_id === 'ad_sue_after_duty_6m' && d.due_on === '2027-04-09' && d.coverage_warning), JSON.stringify(out4.deadlines));
+assert.ok(out4.deadlines.some((d) => d.rule_id === 'ad_sue_after_duty_6m' && d.due_on === '2027-04-08' && d.coverage_warning), JSON.stringify(out4.deadlines)); // R4: month = corresponding day (民法典§202)
 
 const civilId = db.prepare(
   "INSERT INTO cases (name, procedure, stage, case_type, status) VALUES ('虚构民案','一审','已立案','民事','active')"
