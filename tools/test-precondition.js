@@ -8,6 +8,7 @@ const { db, withChangeContext } = await import('../src/db.js');
 const { deriveForEvent } = await import('../src/lib/engine.js');
 const { createEventRecord } = await import('../src/routes/records.js');
 const { reconcilePrecondition, validatePrecondition } = await import('../src/routes/cases.js');
+const { suggestPrecondition } = await import('../src/lib/precondition-suggest.js');
 
 const id = db.prepare("INSERT INTO cases (name,procedure,stage,case_type) VALUES ('复议前置测试案','行政一审','已立案','行政')").run().lastInsertRowid;
 let c = db.prepare('SELECT * FROM cases WHERE id=?').get(id);
@@ -39,5 +40,33 @@ assert.equal(noSuggestion.precondition_suggestion, null);
 assert.equal(validatePrecondition('yes'), true);
 assert.equal(validatePrecondition('bad'), false);
 assert.throws(() => db.prepare("UPDATE cases SET reconsideration_precondition='bad' WHERE id=?").run(id), /CHECK constraint/);
+
+const pureYes = suggestPrecondition('admin_penalty_on_spot', { procedure: '行政一审', case_type: '行政', reconsideration_precondition: 'unknown' });
+assert.equal(pureYes.suggest, 'yes');
+assert.match(pureYes.reason, /§23①\(一\)/);
+const pureNat = suggestPrecondition('admin_natural_resource_decision', { procedure: '行政一审', case_type: '行政', reconsideration_precondition: 'unknown' });
+assert.equal(pureNat.suggest, 'yes');
+const pureGov = suggestPrecondition('admin_gov_info_not_disclosed', { procedure: '行政一审', case_type: '行政', reconsideration_precondition: 'unknown' });
+assert.equal(pureGov.suggest, 'yes');
+assert.match(pureGov.reason, /§23①\(四\)|实施条例§31/);
+assert.equal(suggestPrecondition('admin_penalty_on_spot', { procedure: '行政一审', reconsideration_precondition: 'yes' }), null, 'already yes → no suggest');
+assert.equal(suggestPrecondition('admin_penalty_on_spot', { procedure: '一审', case_type: '民事', reconsideration_precondition: 'unknown' }), null);
+
+const flip = suggestPrecondition('admin_duty_expressly_refused', { procedure: '行政一审', reconsideration_precondition: 'yes' });
+assert.equal(flip.suggest, 'no');
+assert.match(flip.reason, /实施条例§30②/);
+const flip2 = suggestPrecondition('admin_duty_partially_performed', { procedure: '行政一审', reconsideration_precondition: 'unknown' });
+assert.equal(flip2.suggest, 'no');
+assert.equal(suggestPrecondition('admin_duty_expressly_refused', { procedure: '行政一审', reconsideration_precondition: 'no' }), null);
+
+const spotId = db.prepare("INSERT INTO cases (name,procedure,stage,case_type) VALUES ('当场处罚案','行政一审','已立案','行政')").run().lastInsertRowid;
+const spot = createEventRecord({ caseId: spotId, payload: { type: 'admin_penalty_on_spot', occurred_on: '2026-06-01' }, actor: 'test' });
+assert.equal(spot.precondition_suggestion.suggest, 'yes');
+assert.match(spot.precondition_suggestion.reason, /当场/);
+
+const refuseId = db.prepare("INSERT INTO cases (name,procedure,stage,case_type,reconsideration_precondition) VALUES ('明示拒绝案','行政一审','已立案','行政','yes')").run().lastInsertRowid;
+const refuse = createEventRecord({ caseId: refuseId, payload: { type: 'admin_duty_expressly_refused', occurred_on: '2026-07-01' }, actor: 'test' });
+assert.equal(refuse.precondition_suggestion.suggest, 'no');
+
 db.close();
-console.log('PASS: reconsideration precondition suppression/restoration/audit/suggestion/validation');
+console.log('PASS: reconsideration precondition + expanded §23 suggestions + §30② flip-to-no');

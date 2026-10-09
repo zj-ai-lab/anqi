@@ -357,12 +357,21 @@ const ROLE_PILL = { 当事人: 'ok', 对方当事人: 'warn', 承办法官: 'acc
 function showPreconditionSuggestion(suggestion) {
   const old = document.getElementById('precondition-suggestion-dialog');
   old?.remove();
-  const box = el('div', { id: 'precondition-suggestion-dialog', class: 'precondition-hint', role: 'status' },
-    el('b', {}, '请确认复议前置'),
+  const wantNo = suggestion.suggest === 'no';
+  const title = wantNo ? '建议将复议前置改为「否」' : '请确认复议前置';
+  const primaryLabel = wantNo ? '改为「否」' : '设为「是」';
+  const primaryValue = wantNo ? 'no' : 'yes';
+  const primaryMsg = wantNo ? '已设为复议前置：否' : '已设为复议前置：是';
+  const secondaryLabel = wantNo ? '保持「是」' : '设为「否」';
+  const secondaryValue = wantNo ? 'yes' : 'no';
+  const secondaryMsg = wantNo ? '已设为复议前置：是' : '已设为复议前置：否';
+  const box = el('div', { id: 'precondition-suggestion-dialog', class: wantNo ? 'precondition-hint is-flip-no' : 'precondition-hint', role: 'status' },
+    el('b', {}, title),
+    suggestion.category ? el('p', { class: 'meta' }, suggestion.category) : null,
     el('p', {}, suggestion.reason),
     el('span', { class: 'tl-actions' },
-      el('button', { class: 'btn small primary', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: 'yes' }, '已设为复议前置：是'); box.remove(); } }, '设为「是」'),
-      el('button', { class: 'btn small', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: 'no' }, '已设为复议前置：否'); box.remove(); } }, '设为「否」'),
+      el('button', { class: 'btn small primary', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: primaryValue }, primaryMsg); box.remove(); } }, primaryLabel),
+      el('button', { class: 'btn small', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: secondaryValue }, secondaryMsg); box.remove(); } }, secondaryLabel),
       el('button', { class: 'btn small', type: 'button', onclick: () => box.remove() }, '稍后'),
     )
   );
@@ -1581,8 +1590,10 @@ function render() {
   preconditionWarning.hidden = !(isAdminCase && c.reconsideration_precondition === 'yes');
   preconditionWarning.textContent = preconditionWarning.hidden ? '' : '⚠️ 复议前置：本案须先申请行政复议，对复议决定不服再起诉（行政复议法§23）。未经复议直接起诉的，人民法院裁定不予立案（法释〔2018〕1号§56）；已经立案的，裁定驳回起诉（同解释§69①(五)）。直接起诉期限已停用，起诉期限以复议决定送达/复议期满起算（行政诉讼法§45、行政复议法§34）。';
   const hasDutyApplied = (bundle.events || []).some((event) => event.type === 'admin_duty_applied');
-  preconditionHint.hidden = !(isAdminCase && c.reconsideration_precondition === 'unknown' && hasDutyApplied);
-  preconditionHint.textContent = preconditionHint.hidden ? '' : '⚠️ 本案记录了申请履职事件，请确认「复议前置」是/否。';
+  const PRECONDITION_YES_EVENT_TYPES = new Set(['admin_duty_applied','admin_penalty_on_spot','admin_natural_resource_decision','admin_gov_info_not_disclosed']);
+  const hasPreconditionCue = (bundle.events || []).some((ev) => PRECONDITION_YES_EVENT_TYPES.has(ev.type));
+  preconditionHint.hidden = !(isAdminCase && c.reconsideration_precondition === 'unknown' && hasPreconditionCue);
+  preconditionHint.textContent = preconditionHint.hidden ? '' : '⚠️ 本案记录了可能属于复议前置的事件（当场处罚／自然资源／履职申请／信息公开不予公开等），请确认「复议前置」是/否。';
   renderElapsed(bundle.elapsed || []);
   document.getElementById('legalrag-slot').replaceChildren(
     c.legalrag_url

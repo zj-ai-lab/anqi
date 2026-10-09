@@ -367,7 +367,7 @@ console.log('K. 17 值阶段标签');
   assert.ok(procedures.includes('刑事控告立案前'), '程序词表应含「刑事控告立案前」');
   assert.ok(Array.isArray(stageTemplates['刑事控告立案前']) && stageTemplates['刑事控告立案前'].length === 7,
     '控告立案前阶段链应 7 个环节');
-  assert.equal(eventTypes.length, 66, `事件词表应为 66（含当前行政事件），实际 ${eventTypes.length}`);
+  assert.equal(eventTypes.length, 73, `事件词表应为 73（民诉+刑事+行政，含 R5 复议前置事件），实际 ${eventTypes.length}`);
   assert.ok(eventTypes.some((t) => t.id === 'admin_act_known'), '事件词表应含行政事件');
   assert.ok(procedures.includes('行政一审'), '程序词表应含行政一审');
   assert.equal(Object.keys(stageLabelMap).length, 17, 'stageLabelMap 索引完整');

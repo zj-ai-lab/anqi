@@ -3884,3 +3884,5 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .batch-type-bar{margin-top:.6rem;align-items:center;gap:.75rem}
 .batch-type-bar[hidden]{display:none!important}
 #chip-untyped{border-style:dashed}
+
+.precondition-hint.is-flip-no{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 12%,transparent)}

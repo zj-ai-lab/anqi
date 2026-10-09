@@ -76,6 +76,34 @@
     {
       "id": "reconsideration_suspended_for_norm_review",
       "label": "复议因附带审查中止"
+    },
+    {
+      "id": "admin_penalty_on_spot",
+      "label": "当场作出的行政处罚决定（收到/作出）"
+    },
+    {
+      "id": "admin_natural_resource_decision",
+      "label": "侵犯已依法取得的自然资源所有权/使用权的决定"
+    },
+    {
+      "id": "admin_gov_info_not_disclosed",
+      "label": "政府信息公开：不予公开/部分不予公开决定"
+    },
+    {
+      "id": "admin_gov_info_applied",
+      "label": "申请政府信息公开"
+    },
+    {
+      "id": "admin_duty_expressly_refused",
+      "label": "行政机关明示拒绝履行法定职责"
+    },
+    {
+      "id": "admin_duty_partially_performed",
+      "label": "行政机关不完全履行法定职责"
+    },
+    {
+      "id": "admin_expressly_not_accepted",
+      "label": "行政机关明确答复不予受理履职申请"
     }
   ]
 }
