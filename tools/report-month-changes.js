@@ -13,7 +13,10 @@ const { computeDue } = await import('../src/lib/engine.js');
 const files = ['deadline_rules.json', 'deadline_rules_criminal.json', 'deadline_rules_complaint.json', 'deadline_rules_admin.json'];
 const holiday = db.prepare('SELECT kind FROM holidays WHERE date=?');
 const weekday = (value) => new Date(value + 'T00:00:00Z').getUTCDay();
-const nonWorking = (value) => holiday.get(value)?.kind === 'holiday' || [0, 6].includes(weekday(value));
+const nonWorking = (value) => {
+  const kind = holiday.get(value)?.kind;
+  return kind ? kind === 'holiday' : [0, 6].includes(weekday(value));
+};
 
 function addMonths(dateStr, n) {
   const [y, m, d] = dateStr.split('-').map(Number);
