@@ -1,10 +1,43 @@
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import { parseNotice, compareWithData } from '../src/lib/holiday-notice.js';
-import { checkAllYears } from './update-holidays.js';
+import { checkAllYears, mirrorDays, officialSections } from './update-holidays.js';
 import { HOLIDAY_YEARS } from '../src/db.js';
 
 const years = [2020, 2021, 2022, 2023, 2024, 2025, 2026];
+const fixture2025 = `
+<header>一、页面导航：2024年11月12日</header>
+<aside>侧栏：一、不要解析这里的日期 2024年11月12日</aside>
+<div id="UCAP-CONTENT">
+  <p><strong>一、元旦：</strong>1月1日（周三）放假1天，不调休。</p>
+  <p><strong>二、春节：</strong>1月28日（农历除夕、周二）至2月4日（农历正月初七、周二）放假调休，共8天。1月26日（周日）、2月8日（周六）上班。</p>
+  <p><strong>三、清明节：</strong>4月4日（周五）至6日（周日）放假，共3天。</p>
+  <p><strong>四、劳动节：</strong>5月1日（周四）至5日（周一）放假调休，共5天。4月27日（周日）上班。</p>
+  <p><strong>五、端午节：</strong>5月31日（周六）至6月2日（周一）放假，共3天。</p>
+  <p><strong>六、国庆节、中秋节：</strong>10月1日（周三）至8日（周三）放假调休，共8天。9月28日（周日）、10月11日（周六）上班。</p>
+</div>
+<footer><p><strong>一、元旦：</strong>2024年11月12日放假。</p></footer>`;
+const fixture2025Doc = JSON.parse(fs.readFileSync('rules/holidays-2025.json', 'utf8'));
+assert.equal(compareWithData(parseNotice(officialSections(fixture2025), 2025), fixture2025Doc).ok, true, 'official HTML extraction 2025');
+
+const mirrorFixture2025 = [
+  { name: '元旦', date: '2025-01-01', isOffDay: true },
+  { name: '春节', date: '2025-01-26', isOffDay: false },
+  { name: '春节', date: '2025-01-28', isOffDay: true },
+  { name: '春节', date: '2025-02-08', isOffDay: false },
+];
+assert.deepEqual(mirrorDays(mirrorFixture2025).map(({ date, kind }) => ({ date, kind })), [
+  { date: '2025-01-01', kind: 'holiday' },
+  { date: '2025-01-26', kind: 'workday' },
+  { date: '2025-01-28', kind: 'holiday' },
+  { date: '2025-02-08', kind: 'workday' },
+], 'mirror isOffDay mapping');
+const mirrorDoc2025 = {
+  days: fixture2025Doc.days.map(({ date, kind, name }) => ({ date, name, isOffDay: kind === 'holiday' })),
+};
+const notice2025 = parseNotice(fs.readFileSync('rules/holiday-notices/2025.txt', 'utf8'), 2025);
+assert.equal(compareWithData(notice2025, { days: mirrorDays(mirrorDoc2025) }).ok, true, 'mirror-shaped 2025 comparison');
+
 for (const year of years) {
   const doc = JSON.parse(fs.readFileSync(`rules/holidays-${year}.json`, 'utf8'));
   assert.equal(doc.schema_version, 2, `${year} schema_version`);

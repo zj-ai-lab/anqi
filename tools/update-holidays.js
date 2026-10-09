@@ -17,12 +17,12 @@ function govUrl(value) {
   try { return /^https?:\/\/(?:[^/]+\.)?gov\.cn(?:\/|$)/i.test(new URL(value).href); } catch { return false; }
 }
 
-function mirrorDays(doc) {
+export function mirrorDays(doc) {
   const rows = Array.isArray(doc) ? doc : doc?.days || doc?.data || [];
   return rows.flatMap((item) => {
     const date = String(item?.date || item?.day || item?.holidayDate || '').slice(0, 10);
     if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return [];
-    const kind = item.kind || (item.holiday === true || item.isOffDay === true || item.type === 'holiday' ? 'holiday' : item.workday === true || item.type === 'workday' ? 'workday' : '');
+    const kind = item.kind || (item.holiday === true || item.isOffDay === true || item.type === 'holiday' ? 'holiday' : item.workday === true || item.isOffDay === false || item.type === 'workday' ? 'workday' : '');
     if (!['holiday', 'workday'].includes(kind)) return [];
     return [{ date, kind, name: item.name || item.title || '' }];
   });
@@ -34,24 +34,58 @@ function sourceUrls(doc) {
   return values.map((item) => typeof item === 'string' ? item : item?.url || item?.href || '').filter(govUrl);
 }
 
-function stripHtml(html) {
-  return String(html)
-    .replace(/<script[\s\S]*?<\/script>/gi, ' ')
-    .replace(/<style[\s\S]*?<\/style>/gi, ' ')
-    .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<[^>]+>/g, ' ')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/&amp;/g, '&')
-    .replace(/&#39;/g, "'")
-    .replace(/&quot;/g, '"')
-    .replace(/[ \t\f\v]+/g, ' ')
-    .trim();
+function ucapContent(html) {
+  const source = String(html);
+  const open = /<div\b[^>]*\bid\s*=\s*(?:"UCAP-CONTENT"|'UCAP-CONTENT'|UCAP-CONTENT)[^>]*>/i.exec(source);
+  if (!open) return source;
+  const start = open.index + open[0].length;
+  const tags = /<\/?div\b[^>]*>/gi;
+  tags.lastIndex = start;
+  let depth = 1;
+  let match;
+  while ((match = tags.exec(source))) {
+    if (/^<\//.test(match[0])) {
+      depth -= 1;
+      if (depth === 0) return source.slice(start, match.index);
+    } else if (!/\/\s*>$/.test(match[0])) {
+      depth += 1;
+    }
+  }
+  return source.slice(start);
 }
 
-function officialSections(text) {
-  const value = stripHtml(text);
-  const pos = value.indexOf('一、');
-  return pos < 0 ? '' : value.slice(pos).replace(/\s*([一二三四五六七八九十]+)、/g, '\n$1、').trim();
+function decodeEntities(text) {
+  return text.replace(/&(?:nbsp|amp|lt|gt|quot|#39|#x[0-9a-f]+|#[0-9]+);/gi, (entity) => {
+    const name = entity.slice(1, -1).toLowerCase();
+    if (name === 'nbsp') return ' ';
+    if (name === 'amp') return '&';
+    if (name === 'lt') return '<';
+    if (name === 'gt') return '>';
+    if (name === 'quot') return '"';
+    if (name === '#39') return "'";
+    const code = name.startsWith('#x') ? Number.parseInt(name.slice(2), 16) : Number.parseInt(name.slice(1), 10);
+    try { return Number.isInteger(code) ? String.fromCodePoint(code) : entity; } catch { return entity; }
+  });
+}
+
+export function stripHtml(html) {
+  return decodeEntities(String(html)
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<\/(?:p|div|li|h[1-6]|tr)\s*>/gi, '\n')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+  ).replaceAll('\r', '').trim();
+}
+
+export function officialSections(text) {
+  const value = stripHtml(ucapContent(text));
+  const heading = /[一二三四五六七八九十]+、[^：:\n]{1,12}[：:]/;
+  const first = heading.exec(value);
+  if (!first) return '';
+  const second = value.indexOf(first[0], first.index + first[0].length);
+  const sectionText = value.slice(first.index, second < 0 ? value.length : second);
+  return sectionText.trim();
 }
 
 async function fetchText(url) {
