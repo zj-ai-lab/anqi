@@ -72,19 +72,11 @@ function deadlineEls(c) {
 function caseCard(c) {
   const sp = STATUS_PILL[c.status];
   const stale = c.status === 'active' && c.stage_days > 30;
-  const check = el('input', { type: 'checkbox', class: 'case-select', 'data-id': String(c.id) });
-  check.checked = selectedIds.has(c.id);
-  check.addEventListener('click', (ev) => {
-    const next = !selectedIds.has(c.id);
-    ev.preventDefault();
-    ev.stopPropagation();
-    queueMicrotask(() => {
-      check.checked = next;
-      if (next) selectedIds.add(c.id);
-      else selectedIds.delete(c.id);
-      syncBatchBar();
-    });
+  const selectLabel = `选择 ${c.name}`;
+  const check = el('input', {
+    type: 'checkbox', class: 'case-select', 'data-id': String(c.id), 'aria-label': selectLabel,
   });
+  check.checked = selectedIds.has(c.id);
   check.addEventListener('change', (ev) => {
     ev.stopPropagation();
     if (check.checked) selectedIds.add(c.id);
@@ -92,8 +84,7 @@ function caseCard(c) {
     syncBatchBar();
   });
   const typePill = el('span', { class: 'pill case-type ' + typeClass(c) + (caseType(c) === '未分类' ? ' case-type-untyped' : '') }, caseType(c));
-  return el('a', { class: 'case-card', href: `/case.html?id=${c.id}` },
-    check,
+  const card = el('a', { class: 'case-card', href: `/case.html?id=${c.id}` },
     el('span', { class: 'cname' }, c.name), typePill,
     el('span', { class: 'cmeta' },
       c.case_no ? el('span', { class: 'case' }, c.case_no) : el('span', {}, '案号待补'),
@@ -113,6 +104,10 @@ function caseCard(c) {
       sp ? el('span', { class: `pill ${sp[0]}` }, sp[1]) : deadlineEls(c),
       el('span', { class: 'meta' }, `期限 ${c.pending_deadlines} · 待办 ${c.open_tasks}`)
     )
+  );
+  return el('div', { class: 'case-card-wrap' },
+    el('label', { class: 'case-select-wrap', 'aria-label': selectLabel }, check),
+    card,
   );
 }
 

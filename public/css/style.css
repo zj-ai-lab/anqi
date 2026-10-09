@@ -3832,8 +3832,10 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 
 /* 未分类：虚线描边，方便在列表里挑出来手工归类 */
 .case-type-5,.case-type-untyped{border-style:dashed!important;opacity:.92}
-.case-card{position:relative}
-.case-card .case-select{position:absolute;top:.55rem;left:.55rem;z-index:2}
+.case-card-wrap{position:relative;min-width:0}
+.case-card-wrap>.case-card{height:100%;box-sizing:border-box}
+.case-card-wrap .case-select-wrap{position:absolute;top:.75rem;left:.75rem;z-index:2;display:flex;align-items:center}
+.case-card-wrap .case-card .cname{padding-left:1.5rem}
 .batch-type-bar{margin-top:.6rem;align-items:center;gap:.75rem}
 .batch-type-bar[hidden]{display:none!important}
 #chip-untyped{border-style:dashed}
