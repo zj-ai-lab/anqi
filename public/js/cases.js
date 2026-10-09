@@ -7,8 +7,12 @@ import { api, el, toast, fmtDaysLeft, todayStr } from './api.js';
 import { mountNav } from './nav.js';
 import { miniStepper } from './charts.js';
 import { bindFold } from './fold.js';
+import { mountCriminalFields } from './criminal-fields.js';
 
+import {CASE_TYPES,caseType,typeClass,typeOrder,procedureLabel} from './case-types.js';
 await mountNav();
+
+const selectedIds = new Set();
 
 const meta = await api('/meta');
 
@@ -31,13 +35,14 @@ try {
 // 新建案件表单：程序 → 阶段联动
 const procSel = document.getElementById('nc-procedure');
 const stageSel = document.getElementById('nc-stage');
-for (const p of meta.procedures) procSel.append(el('option', { value: p }, p));
+for (const p of meta.procedures) procSel.append(el('option', { value: p }, procedureLabel(p)));
 function syncStages() {
   stageSel.replaceChildren();
   for (const s of meta.stage_templates[procSel.value] || []) stageSel.append(el('option', { value: s }, s));
 }
 procSel.addEventListener('change', syncStages);
 syncStages();
+mountCriminalFields(document.getElementById('nc-criminal-fields'), meta, procSel, stageSel);
 
 document.getElementById('new-case-form').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -67,17 +72,31 @@ function deadlineEls(c) {
 function caseCard(c) {
   const sp = STATUS_PILL[c.status];
   const stale = c.status === 'active' && c.stage_days > 30;
-  return el('a', { class: 'case-card', href: `/case.html?id=${c.id}` },
-    el('span', { class: 'cname' }, c.name),
+  const selectLabel = `选择 ${c.name}`;
+  const check = el('input', {
+    type: 'checkbox', class: 'case-select', 'data-id': String(c.id), 'aria-label': selectLabel,
+  });
+  check.checked = selectedIds.has(c.id);
+  check.addEventListener('change', (ev) => {
+    ev.stopPropagation();
+    if (check.checked) selectedIds.add(c.id);
+    else selectedIds.delete(c.id);
+    syncBatchBar();
+  });
+  const typePill = el('span', { class: 'pill case-type ' + typeClass(c) + (caseType(c) === '未分类' ? ' case-type-untyped' : '') }, caseType(c));
+  const card = el('a', { class: 'case-card', href: `/case.html?id=${c.id}` },
+    el('span', { class: 'cname' }, c.name), typePill,
     el('span', { class: 'cmeta' },
-      c.case_no ? el('span', { class: 'case' }, c.case_no) : el('span', {}, '未立案 · 案号待补'),
+      c.case_no ? el('span', { class: 'case' }, c.case_no) : el('span', {}, '案号待补'),
       c.court ? el('span', {}, c.court) : null,
       c.cause ? el('span', {}, c.cause) : null
     ),
     el('span', { class: 'cfoot' },
       miniStepper(meta.stage_templates[c.procedure] || [], c.stage),
-      el('span', { class: 'pill acc' }, `${c.procedure} · ${c.stage}`),
-      stale
+      el('span', { class: 'pill acc' }, `${procedureLabel(c.procedure)} · ${c.stage || '阶段待补'}`),
+      c.stage_days == null
+        ? el('span', { class: 'meta' }, '阶段起算日待补')
+        : stale
         ? el('span', { class: 'pill warn' }, `停留 ${c.stage_days} 天`)
         : el('span', { class: 'meta' }, `停留 ${c.stage_days} 天`)
     ),
@@ -85,6 +104,10 @@ function caseCard(c) {
       sp ? el('span', { class: `pill ${sp[0]}` }, sp[1]) : deadlineEls(c),
       el('span', { class: 'meta' }, `期限 ${c.pending_deadlines} · 待办 ${c.open_tasks}`)
     )
+  );
+  return el('div', { class: 'case-card-wrap' },
+    el('label', { class: 'case-select-wrap', 'aria-label': selectLabel }, check),
+    card,
   );
 }
 
@@ -97,7 +120,8 @@ async function load() {
   const params = new URLSearchParams();
   if (fetchStatus) params.set('status', fetchStatus);
   if (q) params.set('q', q);
-  const cases = await api('/cases?' + params.toString());
+  const cases = (await api('/cases?' + params.toString())).filter(c=>!document.getElementById('f-type').value||caseType(c)===document.getElementById('f-type').value);
+  const grouping=document.getElementById('f-group').value;if(grouping==='type')cases.sort(typeOrder);
 
   // 副题 = 当前视图的期限体检；0 值一律不出现（CRITIQUE 修复项 4「0 值降权」）
   let over = 0, soon = 0, gap = 0;
@@ -115,6 +139,17 @@ async function load() {
   if (soon) parts.push(`${soon} 件 7 日内到期`);
   if (gap) parts.push(`${gap} 件无在追期限`);
   document.getElementById('subtitle').textContent = parts.join(' · ');
+
+  const untypedN = cases.filter((c) => caseType(c) === '未分类').length;
+  const chip = document.getElementById('chip-untyped');
+  if (chip) {
+    if (untypedN) {
+      chip.hidden = false;
+      chip.textContent = `未分类 ${untypedN} 件`;
+    } else {
+      chip.hidden = true;
+    }
+  }
 
   const box = document.getElementById('case-list');
   box.replaceChildren();
@@ -135,12 +170,13 @@ async function load() {
   const mainCases = showArchive ? active : cases;
   const groups = new Map();
   for (const c of mainCases) {
-    if (!groups.has(c.procedure)) groups.set(c.procedure, []);
-    groups.get(c.procedure).push(c);
+    const key=grouping==='type'?caseType(c):grouping==='procedure'?c.procedure:'全部案件';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(c);
   }
   for (const [proc, list] of groups) {
     box.append(el('div', { class: 'group-title case-procedure-title' },
-      el('span', {}, proc),
+      el('span', {}, procedureLabel(proc)),
       el('span', { class: 'count' }, `${list.length} 件`)
     ));
     box.append(el('div', { class: 'case-grid' }, list.map(caseCard)));
@@ -169,9 +205,35 @@ async function load() {
     });
     box.append(archive);
   }
+  syncBatchBar();
 }
 
-document.getElementById('f-status').addEventListener('change', load);
+
+function visibleCaseIds() {
+  return [...document.querySelectorAll('#case-list .case-select')].map((n) => Number(n.dataset.id));
+}
+function syncBatchBar() {
+  const bar = document.getElementById('batch-type-bar');
+  const count = document.getElementById('batch-type-count');
+  const all = document.getElementById('batch-select-all');
+  const ids = visibleCaseIds();
+  // drop selections that left the current view
+  for (const id of [...selectedIds]) {
+    if (!ids.includes(id) && !document.querySelector(`.case-select[data-id="${id}"]`)) {
+      /* keep selections across filter changes until explicitly cleared on apply */
+    }
+  }
+  const n = selectedIds.size;
+  if (bar) bar.hidden = n === 0;
+  if (count) count.textContent = n ? `已选 ${n} 件` : '';
+  if (all) {
+    const visSel = ids.filter((id) => selectedIds.has(id));
+    all.checked = ids.length > 0 && visSel.length === ids.length;
+    all.indeterminate = visSel.length > 0 && visSel.length < ids.length;
+  }
+}
+
+for(const id of ['f-type','f-group','f-status'])document.getElementById(id).addEventListener('change',load);
 let timer;
 document.getElementById('f-q').addEventListener('input', () => {
   clearTimeout(timer);
@@ -186,4 +248,30 @@ document.addEventListener('keydown', (e) => {
   document.getElementById('f-q').focus();
 });
 document.addEventListener('anjian:changed', load);
+
+document.getElementById('chip-untyped')?.addEventListener('click', () => {
+  document.getElementById('f-type').value = '未分类';
+  load();
+});
+document.getElementById('batch-select-all')?.addEventListener('change', (e) => {
+  const on = e.target.checked;
+  for (const id of visibleCaseIds()) {
+    if (on) selectedIds.add(id);
+    else selectedIds.delete(id);
+  }
+  for (const node of document.querySelectorAll('#case-list .case-select')) node.checked = on;
+  syncBatchBar();
+});
+document.getElementById('batch-type-apply')?.addEventListener('click', async () => {
+  const ids = [...selectedIds];
+  if (!ids.length) return;
+  const case_type = document.getElementById('batch-type-select').value;
+  const result = await api('/cases/batch-type', { body: { ids, case_type } });
+  toast(`已更新 ${result.updated.length} 件` + (result.unchanged.length ? `，${result.unchanged.length} 件本已是「${case_type}」` : ''));
+  selectedIds.clear();
+  await load();
+  syncBatchBar();
+});
+
 await load();
+syncBatchBar();

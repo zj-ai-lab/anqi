@@ -13,7 +13,7 @@
      auto = 不设 data-skin（由 CSS @media prefers-color-scheme 回落 jade），契约见 css/style.css 层 B。 -->
 <script>(function(){var D=document.documentElement,K='anjian-skin',O='anjian-theme',BG={pro:'#F6F7F8',paper:'#F4EFE3',jade:'#050D0A'},L={light:'pro',dark:'jade',auto:'auto'},s=null;try{s=localStorage.getItem(K);if(!s){var o=localStorage.getItem(O);if(o!==null){s=L[o]||'auto';localStorage.setItem(K,s);localStorage.removeItem(O);}}}catch(e){}if(s!=='pro'&&s!=='paper'&&s!=='jade'&&s!=='auto')s='auto';var r=s==='auto'?(matchMedia('(prefers-color-scheme: dark)').matches?'jade':'pro'):s;if(s==='auto')D.removeAttribute('data-skin');else D.setAttribute('data-skin',s);D.style.colorScheme=s==='auto'?'light dark':(r==='jade'?'dark':'light');var m=document.querySelector('meta[name="theme-color"]');if(m)m.setAttribute('content',BG[r]);})();</script>
 <link rel="stylesheet" href="/css/fonts.css?v=1">
-<link rel="stylesheet" href="/css/style.css?v=2.5.3">
+<link rel="stylesheet" href="/css/style.css?v=2.7.3-pr22b">
 </head>
 <body>
 <!-- 顶栏与快录条由 js/nav.js 运行时注入，本页不写。 -->
@@ -36,9 +36,16 @@
             <option value="">全部</option>
           </select>
         </label>
-        <label class="f">搜索
+        <label class="f">类型<select id="f-type"><option value="">全部类型</option><option>未分类</option><option>民事</option><option>刑事</option><option>行政</option><option>非诉</option><option>其他</option></select></label><label class="f">展示<select id="f-group"><option value="type">按类型分组</option><option value="procedure">按程序分组</option><option value="none">不分组</option></select></label><label class="f">搜索
           <input type="search" id="f-q" size="32" placeholder="案件名 / 案号 / 当事人 / 案由 / 法院" aria-keyshortcuts="/">
         </label>
+        <button type="button" class="btn small" id="chip-untyped" hidden>未分类 0 件</button>
+      </div>
+      <div class="formrow batch-type-bar" id="batch-type-bar" hidden>
+        <label class="f check"><input type="checkbox" id="batch-select-all"> 全选本页</label>
+        <label class="f">批量设为<select id="batch-type-select"><option>未分类</option><option>民事</option><option>刑事</option><option>行政</option><option>非诉</option><option>其他</option></select></label>
+        <button type="button" class="btn small primary" id="batch-type-apply">应用到所选</button>
+        <span class="meta" id="batch-type-count"></span>
       </div>
     </div>
   </section>
@@ -49,7 +56,7 @@
     <form id="new-case-form">
       <div class="formgrid">
         <label class="f">案件名称<input name="name" required placeholder="张三诉李四民间借贷纠纷"></label>
-        <label class="f">程序<select name="procedure" id="nc-procedure"></select></label>
+        <label class="f">案件类型<select name="case_type"><option>未分类</option><option>民事</option><option>刑事</option><option>行政</option><option>非诉</option><option>其他</option></select></label><label class="f">程序<select name="procedure" id="nc-procedure"></select></label>
         <label class="f">阶段<select name="stage" id="nc-stage"></select></label>
         <label class="f">案号<input name="case_no" placeholder="立案前可空"></label>
         <label class="f">案由<input name="cause" placeholder="民间借贷纠纷"></label>
@@ -63,6 +70,7 @@
         </select></label>
         <label class="f">备注<input name="note"></label>
       </div>
+      <div id="nc-criminal-fields"></div>
       <button class="btn primary" type="submit">建案</button>
     </form>
   </details>
@@ -70,6 +78,6 @@
   <!-- 由 cases.js 整块重建：按程序分组，每组 = 一个 .group-title + 一个 .case-grid -->
   <div id="case-list"></div>
 </main>
-<script type="module" src="/js/cases.js?v=2.7.0.2"></script>
+<script type="module" src="/js/cases.js?v=2.7.3-pr22b"></script>
 </body>
 </html>

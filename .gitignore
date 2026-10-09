@@ -38,3 +38,25 @@ data/files-dev/
 skills-lock.json
 # 第三方设计参考素材（open-design，Apache-2.0）——设计已吸收进 DESIGN-TOKENS，素材不入库
 docs/design-refs/
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sqlite-wal
+*.sqlite-shm
+*.sqlite3-wal
+*.sqlite3-shm
+private-data/
+case-data/
+case-exports/
+feishu-exports/
+backups/
+secrets/
+git-private-markers.json
+.env.local
+__pycache__/
+*.pyc
+.sync.local*.json
+/build-local/
+/local-profile/
+/node_modules

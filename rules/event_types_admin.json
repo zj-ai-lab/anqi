@@ -1,0 +1,109 @@
+{
+  "_comment": "行政诉讼 / 行政复议专用事件类型。id 不与民诉/刑事冲突；通用事件（filed/served/judgment_served 等）复用既有词表。",
+  "types": [
+    {
+      "id": "admin_act_made",
+      "label": "行政行为作出"
+    },
+    {
+      "id": "admin_act_known",
+      "label": "知道/应当知道行政行为（内容和实施主体）"
+    },
+    {
+      "id": "admin_duty_applied",
+      "label": "申请行政机关履行法定职责"
+    },
+    {
+      "id": "reconsideration_accepted",
+      "label": "行政复议申请受理"
+    },
+    {
+      "id": "reconsideration_copy_served",
+      "label": "被申请人收到复议申请书副本"
+    },
+    {
+      "id": "reconsideration_decision_served",
+      "label": "收到行政复议决定书/不予受理/驳回申请决定"
+    },
+    {
+      "id": "admin_appeal_received",
+      "label": "法院收到上诉状（行政二审）"
+    },
+    {
+      "id": "admin_filing_deadline_expired",
+      "label": "相对人法定复议/起诉期限届满"
+    },
+    {
+      "id": "admin_duty_period_expired",
+      "label": "履职期限届满（依申请履职）"
+    },
+    {
+      "id": "reconsideration_period_expired",
+      "label": "行政复议期限届满（复议机关未作决定）"
+    },
+    {
+      "id": "admin_reconsideration_received",
+      "label": "行政复议机关收到复议申请"
+    },
+    {
+      "id": "reconsideration_supplement_notice_served",
+      "label": "收到行政复议补正通知"
+    },
+    {
+      "id": "performance_period_ended",
+      "label": "生效文书规定的履行期间届满（最后一日）"
+    },
+    {
+      "id": "installment_period_ended",
+      "label": "分期履行：某期履行期间届满"
+    },
+    {
+      "id": "no_term_document_served",
+      "label": "未定履行期限的生效文书送达"
+    },
+    {
+      "id": "reconsideration_filed_via_agency",
+      "label": "通过原处罚机关提交复议申请（原机关收到）"
+    },
+    {
+      "id": "reconsideration_escalation_decided",
+      "label": "上级复议机关决定提级审理（通知下级）"
+    },
+    {
+      "id": "reconsideration_hearing_date",
+      "label": "复议听证举行日"
+    },
+    {
+      "id": "reconsideration_suspended_for_norm_review",
+      "label": "复议因附带审查中止"
+    },
+    {
+      "id": "admin_penalty_on_spot",
+      "label": "当场作出的行政处罚决定（收到/作出）"
+    },
+    {
+      "id": "admin_natural_resource_decision",
+      "label": "侵犯已依法取得的自然资源所有权/使用权的决定"
+    },
+    {
+      "id": "admin_gov_info_not_disclosed",
+      "label": "政府信息公开：不予公开/部分不予公开决定"
+    },
+    {
+      "id": "admin_gov_info_applied",
+      "label": "申请政府信息公开"
+    },
+    {
+      "id": "admin_duty_expressly_refused",
+      "label": "行政机关明示拒绝履行法定职责"
+    },
+    {
+      "id": "admin_duty_partially_performed",
+      "label": "行政机关不完全履行法定职责"
+    },
+    {
+      "id": "admin_expressly_not_accepted",
+      "label": "行政机关明确答复不予受理履职申请"
+    }
+  ]
+}

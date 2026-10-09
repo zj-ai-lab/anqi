@@ -5,7 +5,7 @@ import { db, audit } from '../db.js';
 // audit 不落号码明文，只记 role+姓名。
 const r = Router();
 
-const ROLES = ['当事人', '对方当事人', '承办法官', '法官助理', '书记员', '对方律师', '合作律师', '其他'];
+import {CONTACT_ROLES as ROLES} from '../lib/contact-fields.js';
 
 function contactError(message, status = 400, code = 'contact_invalid') {
   const error = new Error(message);

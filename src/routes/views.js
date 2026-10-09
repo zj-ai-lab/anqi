@@ -2,15 +2,16 @@ import { Router } from 'express';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { db, audit, withImmediateTransaction } from '../db.js';
+import { db, audit, withImmediateTransaction, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
 import { buildDigest } from '../lib/digest.js';
-import { eventTypes, stageTemplates, procedures } from '../lib/vocab.js';
+import { eventTypes, stageTemplates, procedures, stageLabels, lawTexts } from '../lib/vocab.js';
 import { deriveForEvent, rulesSummary } from '../lib/engine.js';
 import { llmReady } from '../lib/llm.js';
 import { releaseDueSnoozes } from '../lib/recommendations.js';
 import { agentKeyStatus, agentReady } from '../agent/config.js';
 import { ownFeePredicate } from '../lib/fee-accounting.js';
+import { criminalFields } from '../lib/case-fields.js';
 
 const r = Router();
 
@@ -30,6 +31,9 @@ r.get('/meta', (req, res) => {
     event_types: eventTypes,
     stage_templates: stageTemplates,
     procedures,
+    criminal_fields: criminalFields,
+    stage_labels: stageLabels,   // 17 值刑事诉讼状态标签（含 17→7 procedure 映射）
+    law_texts: lawTexts,         // 本地法条原文库（浮层溯源用；缺文件时为空数组）
     severities: ['critical', 'high', 'normal'],
     deadline_rules: rulesSummary(),
   });
@@ -82,7 +86,7 @@ r.get('/stats', (req, res) => {
       SUM(CASE WHEN status='done' AND (done_at IS NULL OR substr(done_at,1,10) >  due_on) THEN 1 ELSE 0 END) AS late_done,
       SUM(CASE WHEN status='missed' OR (status='pending' AND due_on < ?)     THEN 1 ELSE 0 END) AS missed,
       SUM(CASE WHEN status='waived' THEN 1 ELSE 0 END) AS waived
-    FROM deadlines WHERE due_on <= ? AND substr(due_on,1,4) = ?`, today, today, year);
+    FROM deadlines WHERE due_on <= ? AND substr(due_on,1,4) = ? AND advisory = 0`, today, today, year);
   const dueTotal = dl.due_total || 0;
   const compliance = dueTotal ? Math.round(((dl.on_time || 0) / dueTotal) * 100) : null; // 无已到期期限时为 null，页面显示「—」而不是假的 100%
 
@@ -228,7 +232,7 @@ r.get('/calendar', (req, res) => {
 
     deadlines: db.prepare(
       `SELECT d.id, d.name, d.due_on, d.severity, d.status, d.case_id, c.name AS case_name
-       FROM deadlines d JOIN cases c ON c.id = d.case_id WHERE d.due_on LIKE ? ORDER BY d.due_on`
+       FROM deadlines d JOIN cases c ON c.id = d.case_id WHERE d.due_on LIKE ? AND d.advisory = 0 ORDER BY d.due_on`
     ).all(like),
     hearings: db.prepare(
       `SELECT e.id, e.occurred_on, e.note, e.case_id, c.name AS case_name
@@ -282,7 +286,7 @@ r.post('/inbox/:id/accept', (req, res) => {
   }
   const caseId = row.case_id || payload.case_id || null;
   try {
-    const created = withImmediateTransaction(() => {
+    const created = withChangeContext({ actor: req.actor }, () => {
       const fresh = db.prepare('SELECT status FROM inbox WHERE id=?').get(row.id);
       if (fresh?.status !== 'pending') {
         const error = new Error('该收件已裁决');

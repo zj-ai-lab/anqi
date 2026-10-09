@@ -1,0 +1,636 @@
+{
+  "_comment": "刑事期限规则表。与民诉规则分文件维护，由 engine.js 合并加载；每条 basis 保留法条号，修订须经 practitioner review。",
+  "_design": {
+    "scope": "所有规则带 scope=criminal 一级标识。理由：刑事与民诉共用部分 trigger（如 judgment_served 上诉期、court_accepted 受理），无此标识会双触发。引擎据此判断案件 procedure 是否属刑事程序集。",
+    "roll_policy": "全部规则 roll=none。依据：用户 2026-09-11 裁定「节假日一律不顺延，允许人为改」。刑诉法 §105 本为两分规定（在押不顺延、非在押顺延），采一律不顺延后：在押情形与法条完全一致；非在押情形显示偏早，按偏早准备不会错过，方向安全。需顺延时走 is_manual_override（D4 保护，重算不覆盖）。",
+    "direction": "三条规则期限落在锚点之前（开庭前送达/公布），direction=before，需引擎支持减法。",
+    "applies": "多维适用条件，字段名对应 cases 表新增列。未填字段按默认值处理：作案类型=普通、审理程序=普通程序、案件性质=公诉。",
+    "extendable": "凡「经批准延长」类（§156/§158/§159/§172/§208/§243/§258）均为 court_specified：引擎只铺录入任务，延长事实与日期由人工填入，不自动推算。理由：批准与否、何时批准，系统无从得知。",
+    "manual_only_variants": "2026-09-19 reviewer裁定：拘留最长期限在实务中按常态 37 日出告警，10 日（3+7）与 14 日（顶格 7+7）属少数情形，改由人工在界面上切换口径。实现：口径规则带 manual_only=true，引擎在 deriveForEvent 阶段跳过、永不自动派生（该标志只影响是否自动派生，不影响 computeDue 本身）；主规则用 variants 列出可切换口径，且只以兄弟规则 id 引用——天数/名称/依据保持单一定义，避免两处漂移。切换口径时前端 PATCH manual_days + name + basis + severity，届满日仍由引擎按 manual_days 重算（此时 is_manual_override=1 且 hasManualParams=true，级联重算照旧生效，改锚点日期不会让该条停摆）。",
+    "count_from": "起算方式。2026-09-12 用户裁定「丙」已落地：月/年单位改为尊重 count_from，统一按法定算法「期间开始之日不计入、次日起算」——刑诉法 §105（期间以时、日、月计算，期间开始的时和日不算在期间以内）；以月计算的期间自本月某日至下月同日为一个月（刑诉法解释 §202①）。故 13 条月数类规则由 same_day 改 next_day，届满日比改前晚 1 天（例：3-1 逮捕 + 2 月：改前 5-1 → 改后 5-2）。⚠️ 实务文书常按「含当日」书写，与本表相差 1 天；UI 法条浮层已按裁定注明该差异。3 条开庭前倒推类规则（§187 送达/公布）direction=before，属「从开庭日往前推」，无期间起算问题，count_from 记 not_applicable 以免误导（原填 same_day 属无效标注）。注：原键 known_issue_count_from 已由本键取代，其中「待核实、不下结论」的搁置状态已解除——2026-09-12 两库互验（北大法宝 + 华宇元典）已完成核实。"
+  },
+  "review": "approved",
+  "reviewed_by": "reviewer",
+  "reviewed_at": "2026-09-11",
+  "laws_verified": "《中华人民共和国刑事诉讼法（2018修正）》主席令第10号，2018-10-26 施行，现行有效",
+  "amended_at": "2026-09-19",
+  "amended_by": "reviewer",
+  "amended_note": "① 13 条月数类 count_from: same_day → next_day（法定算法，届满日晚 1 天）；② 3 条开庭前倒推类 count_from → not_applicable；③ _design.known_issue_count_from 由 _design.count_from 取代；④ 配套引擎改动见 src/lib/engine.js「起算方式」段；⑤ 2026-09-19：cr_detention_cap_37 去掉 applies（原限流窜/多次/结伙），改为全部案件的默认口径，并新增 variants 声明 37/14/10 三档；cr_detention_cap_10、cr_detention_cap_14 加 manual_only=true（不再自动派生，仅作手动切换口径的元数据），名称统一改为「（N 日）」便于识别；cr_detention_cap_14 的 severity 由 normal 提为 critical（同为法定羁押上限，不应降级显示）；⑥ 配套引擎改动：deriveForEvent 跳过 manual_only、rulesSummary 暴露 days/manual_only/variants。",
+  "rules": [
+    {
+      "id": "cr_detention_report_normal",
+      "name": "提请批捕（普通案件）",
+      "scope": "criminal",
+      "trigger": "detained",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "applies": {
+        "作案类型": [
+          "普通"
+        ]
+      },
+      "basis": "刑诉法 §91①（公安机关对被拘留的人认为需要逮捕的，应当在拘留后 3 日以内提请检察院审查批准；特殊情况可延长 1 日至 4 日）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_detention_report_three",
+      "name": "提请批捕（流窜/多次/结伙作案）",
+      "scope": "criminal",
+      "trigger": "detained",
+      "kind": "statutory",
+      "days": 30,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies": {
+        "作案类型": [
+          "流窜作案",
+          "多次作案",
+          "结伙作案"
+        ]
+      },
+      "basis": "刑诉法 §91②（对于流窜作案、多次作案、结伙作案的重大嫌疑分子，提请审查批准的时间可以延长至 30 日）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_arrest_review_7d",
+      "name": "检察院审查批捕决定期限",
+      "scope": "criminal",
+      "trigger": "approval_requested",
+      "kind": "statutory",
+      "days": 7,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §91③（检察院应当自接到提请批准逮捕书后 7 日以内作出批准或不批准逮捕的决定）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_detention_cap_10",
+      "name": "拘留最长期限届满（10 日）",
+      "scope": "criminal",
+      "trigger": "detained",
+      "kind": "statutory",
+      "manual_only": true,
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §91①③（提请批捕 3 日 + 检察院审查 7 日）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_detention_cap_14",
+      "name": "拘留最长期限届满（14 日）",
+      "scope": "criminal",
+      "trigger": "detained",
+      "kind": "statutory",
+      "manual_only": true,
+      "days": 14,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §91①③（提请批捕延长至 7 日 + 检察院审查 7 日）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_detention_cap_37",
+      "name": "拘留最长期限届满（37 日）",
+      "scope": "criminal",
+      "trigger": "detained",
+      "kind": "statutory",
+      "days": 37,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "variants": [
+        {
+          "rule_id": "cr_detention_cap_37",
+          "label": "37 日 · 提请批捕 30 日 + 审查 7 日（实务常态）"
+        },
+        {
+          "rule_id": "cr_detention_cap_14",
+          "label": "14 日 · 提请批捕顶格 7 日 + 审查 7 日"
+        },
+        {
+          "rule_id": "cr_detention_cap_10",
+          "label": "10 日 · 提请批捕 3 日 + 审查 7 日"
+        }
+      ],
+      "basis": "刑诉法 §91②③（提请批捕 30 日 + 检察院审查 7 日）。本条为默认口径；普通案件未延长提请期的法定上限为 10 日（3+7）或 14 日（顶格 7+7），可在本条上手动切换口径（见 variants）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_invest_detention_2m",
+      "name": "侦查羁押期限届满",
+      "scope": "criminal",
+      "trigger": "arrested",
+      "kind": "statutory",
+      "days": 2,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "basis": "刑诉法 §156（对犯罪嫌疑人逮捕后的侦查羁押期限不得超过 2 个月）",
+      "severity": "critical",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_invest_ext_1m_entry",
+      "name": "侦查羁押延长（+1 个月）",
+      "scope": "criminal",
+      "trigger": "arrested",
+      "kind": "court_specified",
+      "task_title": "录入侦查羁押延长情况（案情复杂经上一级检察院批准可延长 1 个月）",
+      "basis": "刑诉法 §156（案情复杂、期限届满不能终结的案件，可经上一级人民检察院批准延长 1 个月）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_invest_ext_2m_entry",
+      "name": "侦查羁押延长（+2 个月，四类案件）",
+      "scope": "criminal",
+      "trigger": "arrested",
+      "kind": "court_specified",
+      "task_title": "录入侦查羁押延长情况（四类案件经省级检察院批准可延长 2 个月）",
+      "basis": "刑诉法 §158（交通十分不便的边远地区重大复杂案件、重大犯罪集团案件、流窜作案的重大复杂案件、犯罪涉及面广取证困难的重大复杂案件，经省级检察院批准可延长 2 个月）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_invest_ext_3m_entry",
+      "name": "侦查羁押再延长（+2 个月，可能判 10 年以上）",
+      "scope": "criminal",
+      "trigger": "arrested",
+      "kind": "court_specified",
+      "task_title": "录入侦查羁押再延长情况（可能判 10 年以上，经省级检察院批准可再延长 2 个月）",
+      "basis": "刑诉法 §159（对犯罪嫌疑人可能判处 10 年有期徒刑以上刑罚，依 §158 延长期限届满仍不能侦查终结的，经省级检察院批准可再延长 2 个月）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_bail_12m",
+      "name": "取保候审期限届满",
+      "scope": "criminal",
+      "trigger": "bail_granted",
+      "kind": "statutory",
+      "days": 12,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §79①（人民法院、人民检察院和公安机关对犯罪嫌疑人、被告人取保候审最长不得超过 12 个月）",
+      "severity": "critical",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_surveillance_6m",
+      "name": "监视居住期限届满",
+      "scope": "criminal",
+      "trigger": "surveillance_granted",
+      "kind": "statutory",
+      "days": 6,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §79①（监视居住最长不得超过 6 个月）",
+      "severity": "critical",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_release_notice_entry",
+      "name": "解除取保/监居后通知",
+      "scope": "criminal",
+      "trigger": "bail_granted",
+      "kind": "court_specified",
+      "task_title": "期限届满时及时解除取保候审/监视居住并通知本人及有关单位",
+      "basis": "刑诉法 §79②（对于发现不应当追究刑事责任或者取保候审、监视居住期限届满的，应当及时解除，并通知被取保候审、监视居住人和有关单位）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_prosecution_1m",
+      "name": "审查起诉期限届满",
+      "scope": "criminal",
+      "trigger": "transferred_prosecution",
+      "kind": "statutory",
+      "days": 1,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "applies": {
+        "审理程序": [
+          "普通程序",
+          "简易程序"
+        ]
+      },
+      "basis": "刑诉法 §172①（人民检察院对于监察机关、公安机关移送起诉的案件，应当在 1 个月以内作出决定）",
+      "severity": "critical",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_prosecution_ext_15d_entry",
+      "name": "审查起诉延长（+15 日）",
+      "scope": "criminal",
+      "trigger": "transferred_prosecution",
+      "kind": "court_specified",
+      "task_title": "录入审查起诉延长情况（重大、复杂案件可延长 15 日）",
+      "basis": "刑诉法 §172①（重大、复杂的案件，可以延长 15 日）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_prosecution_fast_10d",
+      "name": "审查起诉期限届满（认罪认罚速裁）",
+      "scope": "criminal",
+      "trigger": "transferred_prosecution",
+      "kind": "statutory",
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "applies": {
+        "审理程序": [
+          "速裁程序"
+        ]
+      },
+      "basis": "刑诉法 §172①（犯罪嫌疑人认罪认罚、符合速裁程序适用条件的，应当在 10 日以内作出决定；对可能判处的有期徒刑超过一年的，可以延长至 15 日）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_return_supplementary_1m",
+      "name": "退回补充侦查期限届满",
+      "scope": "criminal",
+      "trigger": "returned_investigation",
+      "kind": "statutory",
+      "days": 1,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §175③（对于补充侦查的案件，应当在 1 个月以内补充侦查完毕；补充侦查以二次为限）",
+      "severity": "high",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_lien_conversion_10d",
+      "name": "留置转拘留后决定强制措施期限",
+      "scope": "criminal",
+      "trigger": "lien_transferred",
+      "kind": "statutory",
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "basis": "刑诉法 §170②（对于监察机关移送起诉的已采取留置措施的案件，检察院应当先行拘留，留置措施自动解除，应当在拘留后 10 日以内作出是否逮捕、取保候审或者监视居住的决定；特殊情况可延长 1 日至 4 日）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_trial1_2m",
+      "name": "一审审限（普通程序，2 个月）",
+      "scope": "criminal",
+      "trigger": "court_accepted",
+      "kind": "statutory",
+      "days": 2,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies": {
+        "审理程序": [
+          "普通程序"
+        ]
+      },
+      "basis": "刑诉法 §208①（人民法院审理公诉案件，应当在受理后 2 个月以内宣判）",
+      "severity": "critical",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_trial1_cap_3m",
+      "name": "一审审限上限（普通程序，3 个月）",
+      "scope": "criminal",
+      "trigger": "court_accepted",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies": {
+        "审理程序": [
+          "普通程序"
+        ]
+      },
+      "basis": "刑诉法 §208①（至迟不得超过 3 个月）",
+      "severity": "high",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_trial1_ext_3m_entry",
+      "name": "一审审限延长（+3 个月）",
+      "scope": "criminal",
+      "trigger": "court_accepted",
+      "kind": "court_specified",
+      "task_title": "录入一审审限延长情况（死刑/附带民诉/§158 四类情形，经上一级法院批准可延长 3 个月）",
+      "basis": "刑诉法 §208①（对于可能判处死刑的案件或者附带民事诉讼的案件，以及有本法 §158 规定情形之一的，经上一级人民法院批准，可以延长 3 个月；因特殊情况还需要延长的，报请最高人民法院批准）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_trial1_simplified_20d",
+      "name": "一审审限（简易程序）",
+      "scope": "criminal",
+      "trigger": "court_accepted",
+      "kind": "statutory",
+      "days": 20,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "applies": {
+        "审理程序": [
+          "简易程序"
+        ]
+      },
+      "basis": "刑诉法 §220（适用简易程序审理案件，人民法院应当在受理后 20 日以内审结；对可能判处的有期徒刑超过三年的，可以延长至一个半月）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_trial1_fast_10d",
+      "name": "一审审限（速裁程序）",
+      "scope": "criminal",
+      "trigger": "court_accepted",
+      "kind": "statutory",
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "extendable": true,
+      "applies": {
+        "审理程序": [
+          "速裁程序"
+        ]
+      },
+      "basis": "刑诉法 §225（适用速裁程序审理案件，人民法院应当在受理后 10 日以内审结；对可能判处的有期徒刑超过一年的，可以延长至 15 日）",
+      "severity": "high"
+    },
+    {
+      "id": "cr_trial_private_6m",
+      "name": "自诉案件审限（被告人未羁押）",
+      "scope": "criminal",
+      "trigger": "court_accepted",
+      "kind": "statutory",
+      "days": 6,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "applies": {
+        "案件性质": [
+          "自诉"
+        ]
+      },
+      "basis": "刑诉法 §212②（人民法院审理自诉案件的期限，被告人被羁押的适用 §208①②；未被羁押的应当在受理后 6 个月以内宣判）",
+      "severity": "normal",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_indictment_before_10d",
+      "name": "起诉书副本送达（开庭前 10 日）",
+      "scope": "criminal",
+      "trigger": "hearing_scheduled",
+      "kind": "statutory",
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "before",
+      "count_from": "not_applicable",
+      "roll": "none",
+      "basis": "刑诉法 §187②（人民法院决定开庭审判后，应当将人民检察院的起诉书副本至迟在开庭 10 日以前送达被告人及其辩护人）",
+      "severity": "critical",
+      "count_from_note": "开庭日往前倒推，无期间起算问题；该字段对本条不生效"
+    },
+    {
+      "id": "cr_summons_before_3d",
+      "name": "传票/通知书送达（开庭前 3 日）",
+      "scope": "criminal",
+      "trigger": "hearing_scheduled",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "natural_days",
+      "direction": "before",
+      "count_from": "not_applicable",
+      "roll": "none",
+      "basis": "刑诉法 §187③（传票和通知书至迟在开庭 3 日以前送达）",
+      "severity": "high",
+      "count_from_note": "开庭日往前倒推，无期间起算问题；该字段对本条不生效"
+    },
+    {
+      "id": "cr_public_notice_before_3d",
+      "name": "公开审判先期公布（开庭前 3 日）",
+      "scope": "criminal",
+      "trigger": "hearing_scheduled",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "natural_days",
+      "direction": "before",
+      "count_from": "not_applicable",
+      "roll": "none",
+      "basis": "刑诉法 §187③（公开审判的案件，应当在开庭 3 日以前先期公布案由、被告人姓名、开庭时间和地点）",
+      "severity": "normal",
+      "count_from_note": "开庭日往前倒推，无期间起算问题；该字段对本条不生效"
+    },
+    {
+      "id": "cr_judgment_delivery_5d",
+      "name": "当庭宣判后送达判决书（5 日）",
+      "scope": "criminal",
+      "trigger": "judgment_announced",
+      "kind": "statutory",
+      "days": 5,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §202（当庭宣告判决的，应当在 5 日以内将判决书送达当事人和提起公诉的人民检察院；定期宣告判决的，应当在宣告后立即送达）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_appeal_judgment_10d",
+      "name": "上诉/抗诉期（判决）",
+      "scope": "criminal",
+      "trigger": "judgment_served",
+      "kind": "statutory",
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §230（不服判决的上诉和抗诉的期限为 10 日，从接到判决书的第二日起算）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_appeal_ruling_5d",
+      "name": "上诉/抗诉期（裁定）",
+      "scope": "criminal",
+      "trigger": "ruling_served",
+      "kind": "statutory",
+      "days": 5,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §230（不服裁定的上诉和抗诉的期限为 5 日，从接到裁定书的第二日起算）",
+      "severity": "critical"
+    },
+    {
+      "id": "cr_victim_appeal_request_5d",
+      "name": "被害人请求抗诉期限",
+      "scope": "criminal",
+      "trigger": "judgment_served",
+      "kind": "statutory",
+      "days": 5,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §229（被害人及其法定代理人不服地方各级人民法院第一审判决的，自收到判决书后 5 日以内，有权请求人民检察院提出抗诉；检察院自收到请求后 5 日以内应当作出是否抗诉的决定并答复）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_trial2_2m",
+      "name": "二审审限（2 个月）",
+      "scope": "criminal",
+      "trigger": "second_instance_accepted",
+      "kind": "statutory",
+      "days": 2,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §243（第二审人民法院受理上诉、抗诉案件，应当在 2 个月以内审结）",
+      "severity": "critical",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_trial2_ext_2m_entry",
+      "name": "二审审限延长（+2 个月）",
+      "scope": "criminal",
+      "trigger": "second_instance_accepted",
+      "kind": "court_specified",
+      "task_title": "录入二审审限延长情况（死刑/附带民诉/§158 四类情形，经省高院批准可延长 2 个月）",
+      "basis": "刑诉法 §243（对于可能判处死刑的案件或者附带民事诉讼的案件，以及有本法 §158 规定情形之一的，经省、自治区、直辖市高级人民法院批准或者决定，可以延长 2 个月）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_retrial_3m",
+      "name": "再审审限（3 个月）",
+      "scope": "criminal",
+      "trigger": "retrial_decided",
+      "kind": "statutory",
+      "days": 3,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §258①（人民法院按照审判监督程序重新审判的案件，应当在作出提审、再审决定之日起 3 个月以内审结，需要延长期限的，不得超过 6 个月）",
+      "severity": "normal",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_retrial_directive_1m",
+      "name": "指令再审决定期限（1 个月）",
+      "scope": "criminal",
+      "trigger": "appeal_accepted",
+      "kind": "statutory",
+      "days": 1,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §258②（接受抗诉的人民法院按照审判监督程序审判抗诉的案件，审理期限适用前款规定；对需要指令下级人民法院再审的，应当自接受抗诉之日起 1 个月以内作出决定）",
+      "severity": "normal",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_conditional_nonprosecution_6m",
+      "name": "附条件不起诉考验期起算（6 个月）",
+      "scope": "criminal",
+      "trigger": "conditional_nonprosecution",
+      "kind": "statutory",
+      "days": 6,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §283②（附条件不起诉的考验期为 6 个月以上 1 年以下，从人民检察院作出附条件不起诉的决定之日起计算；法定上限为 1 年，实际考验期须人工确认后改期）",
+      "severity": "normal",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_confiscation_notice_6m",
+      "name": "没收违法所得公告期（6 个月）",
+      "scope": "criminal",
+      "trigger": "confiscation_accepted",
+      "kind": "statutory",
+      "days": 6,
+      "unit": "months",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §299②（人民法院受理没收违法所得的申请后，应当发出公告，公告期间为 6 个月）",
+      "severity": "normal",
+      "count_from_note": "2026-09-12 裁定丙：改法定算法（次日起算），届满日较改前晚 1 天"
+    },
+    {
+      "id": "cr_custody_review_10d",
+      "name": "羁押必要性审查处理情况反馈（10 日）",
+      "scope": "criminal",
+      "trigger": "custody_review_suggested",
+      "kind": "statutory",
+      "days": 10,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §95（犯罪嫌疑人、被告人被逮捕后，人民检察院仍应当对羁押的必要性进行审查；对不需要继续羁押的，应当建议予以释放或者变更强制措施；有关机关应当在 10 日以内将处理情况通知人民检察院）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_psych_eval_exclude_entry",
+      "name": "精神病鉴定期间不计入办案期限",
+      "scope": "criminal",
+      "trigger": "psych_eval_started",
+      "kind": "court_specified",
+      "task_title": "记载精神病鉴定起止期间，并在届满日上顺加相应天数（鉴定期间不计入办案期限）",
+      "basis": "刑诉法 §149（对犯罪嫌疑人作精神病鉴定的期间不计入办案期限）",
+      "severity": "normal"
+    },
+    {
+      "id": "cr_meeting_48h",
+      "name": "看守所安排会见（48 小时内）",
+      "scope": "criminal",
+      "trigger": "meeting_requested",
+      "kind": "statutory",
+      "days": 2,
+      "unit": "natural_days",
+      "direction": "after",
+      "count_from": "next_day",
+      "roll": "none",
+      "basis": "刑诉法 §39②（辩护律师持律师执业证书、律师事务所证明和委托书或者法律援助公函要求会见在押的犯罪嫌疑人、被告人的，看守所应当及时安排会见，至迟不得超过 48 小时）",
+      "severity": "normal"
+    }
+  ]
+}

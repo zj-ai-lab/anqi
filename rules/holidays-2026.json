@@ -1,52 +1,213 @@
 {
-  "_comment": "2026 年放假与调休。来源：国务院办公厅关于2026年部分节假日安排的通知（国办发明电〔2025〕7号，2025-11-04 发布），已于 2026-07-11 从 gov.cn 原文逐日核对（https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm）。kind=holiday 放假；kind=workday 调休补班（周末上班，引擎视为工作日不顺延）。周末由引擎自动计算，不在此表。",
+  "_comment": "2026 年法定节假日放假与调休补班。kind=holiday 放假；kind=workday 调休上班（周末上班，引擎视为工作日）。周末由引擎自动计算，不在此表。数据由 tools/update-holidays.js 从 NateScarlet/holiday-cn 镜像抓取，并逐日对照国务院办公厅通知原文（rules/holiday-notices/2026.txt，摘自下列 gov.cn 页面）校验一致后入库。",
+  "schema_version": 2,
   "year": 2026,
   "source": "国办发明电〔2025〕7号",
+  "source_urls": [
+    "https://www.gov.cn/zhengce/zhengceku/202511/content_7047091.htm"
+  ],
+  "mirror": "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/2026.json",
+  "verified": {
+    "status": "verified",
+    "method": "逐日比对 gov.cn 通知原文（rules/holiday-notices/2026.txt）与镜像数据，放假日与调休上班日完全一致",
+    "at": "2026-10-09",
+    "by": "Grok Bot"
+  },
   "days": [
-    { "date": "2026-01-01", "kind": "holiday" },
-    { "date": "2026-01-02", "kind": "holiday" },
-    { "date": "2026-01-03", "kind": "holiday" },
-    { "date": "2026-01-04", "kind": "workday" },
-
-    { "date": "2026-02-14", "kind": "workday" },
-    { "date": "2026-02-15", "kind": "holiday" },
-    { "date": "2026-02-16", "kind": "holiday" },
-    { "date": "2026-02-17", "kind": "holiday" },
-    { "date": "2026-02-18", "kind": "holiday" },
-    { "date": "2026-02-19", "kind": "holiday" },
-    { "date": "2026-02-20", "kind": "holiday" },
-    { "date": "2026-02-21", "kind": "holiday" },
-    { "date": "2026-02-22", "kind": "holiday" },
-    { "date": "2026-02-23", "kind": "holiday" },
-    { "date": "2026-02-28", "kind": "workday" },
-
-    { "date": "2026-04-04", "kind": "holiday" },
-    { "date": "2026-04-05", "kind": "holiday" },
-    { "date": "2026-04-06", "kind": "holiday" },
-
-    { "date": "2026-05-01", "kind": "holiday" },
-    { "date": "2026-05-02", "kind": "holiday" },
-    { "date": "2026-05-03", "kind": "holiday" },
-    { "date": "2026-05-04", "kind": "holiday" },
-    { "date": "2026-05-05", "kind": "holiday" },
-    { "date": "2026-05-09", "kind": "workday" },
-
-    { "date": "2026-06-19", "kind": "holiday" },
-    { "date": "2026-06-20", "kind": "holiday" },
-    { "date": "2026-06-21", "kind": "holiday" },
-
-    { "date": "2026-09-20", "kind": "workday" },
-    { "date": "2026-09-25", "kind": "holiday" },
-    { "date": "2026-09-26", "kind": "holiday" },
-    { "date": "2026-09-27", "kind": "holiday" },
-
-    { "date": "2026-10-01", "kind": "holiday" },
-    { "date": "2026-10-02", "kind": "holiday" },
-    { "date": "2026-10-03", "kind": "holiday" },
-    { "date": "2026-10-04", "kind": "holiday" },
-    { "date": "2026-10-05", "kind": "holiday" },
-    { "date": "2026-10-06", "kind": "holiday" },
-    { "date": "2026-10-07", "kind": "holiday" },
-    { "date": "2026-10-10", "kind": "workday" }
+    {
+      "date": "2026-01-01",
+      "kind": "holiday",
+      "name": "元旦"
+    },
+    {
+      "date": "2026-01-02",
+      "kind": "holiday",
+      "name": "元旦"
+    },
+    {
+      "date": "2026-01-03",
+      "kind": "holiday",
+      "name": "元旦"
+    },
+    {
+      "date": "2026-01-04",
+      "kind": "workday",
+      "name": "元旦"
+    },
+    {
+      "date": "2026-02-14",
+      "kind": "workday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-15",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-16",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-17",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-18",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-19",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-20",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-21",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-22",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-23",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-02-28",
+      "kind": "workday",
+      "name": "春节"
+    },
+    {
+      "date": "2026-04-04",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2026-04-05",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2026-04-06",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2026-05-01",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2026-05-02",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2026-05-03",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2026-05-04",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2026-05-05",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2026-05-09",
+      "kind": "workday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2026-06-19",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2026-06-20",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2026-06-21",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2026-09-20",
+      "kind": "workday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-09-25",
+      "kind": "holiday",
+      "name": "中秋节"
+    },
+    {
+      "date": "2026-09-26",
+      "kind": "holiday",
+      "name": "中秋节"
+    },
+    {
+      "date": "2026-09-27",
+      "kind": "holiday",
+      "name": "中秋节"
+    },
+    {
+      "date": "2026-10-01",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-02",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-03",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-04",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-05",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-06",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-07",
+      "kind": "holiday",
+      "name": "国庆节"
+    },
+    {
+      "date": "2026-10-10",
+      "kind": "workday",
+      "name": "国庆节"
+    }
   ]
 }

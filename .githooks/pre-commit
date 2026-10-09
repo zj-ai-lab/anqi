@@ -1,0 +1,2 @@
+#!/bin/sh
+exec /usr/bin/python3 tools/git-private-data-guard.py staged

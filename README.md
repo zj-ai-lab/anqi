@@ -405,6 +405,14 @@ npm run dev
 
 安全问题请勿公开提交，按 [SECURITY.md](SECURITY.md) 使用 GitHub 私密漏洞报告。
 
+## 本地隐私护栏（可选）
+
+仓库附带 `.githooks/` 与 `tools/git-private-data-guard.py`，用于在 commit/push 前拦截疑似私人案件数据。本仓库**不会**自动设置 `core.hooksPath`；若需要启用，在本机仓库内自行：
+
+```bash
+git config core.hooksPath .githooks
+```
+
 ## 许可证
 
 案齐源代码以 [GNU Affero General Public License v3.0 only](LICENSE)（`AGPL-3.0-only`）授权。该许可证允许商业使用、修改和再分发，同时要求满足其源码提供及网络交互相关义务。

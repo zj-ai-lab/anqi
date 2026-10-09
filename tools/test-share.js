@@ -3,6 +3,9 @@
 //       L0 digest 待分成口径（本月出现、跨月逾期、结清即消失）。
 // 用法：DB_PATH=$(mktemp -d)/t.db node tools/test-share.js
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
+const latestMigration = Math.max(...readdirSync(new URL('../src/migrations/', import.meta.url))
+  .filter(f => /^\d{3}_.*\.sql$/.test(f)).map(f => Number(f.slice(0, 3))));
 import { db } from '../src/db.js';
 import { computeShare, generateSharesForPaidFee } from '../src/lib/share.js';
 import { buildDigest } from '../src/lib/digest.js';
@@ -30,7 +33,7 @@ assert.equal(computeShare(5000, 100), 5000, '整额 100%');
 assert.equal(computeShare(1000, 12.34), 123.4, '两位小数比例');
 
 // ── B. 收讫联动 + digest 口径（临时 DB，migrations 已跑到当前版本）──
-assert.equal(db.pragma('user_version', { simple: true }), 20, 'migration 应至 020');
+assert.equal(db.pragma('user_version', { simple: true }), latestMigration, 'migration 应至最新版本');
 
 const caseId = db
   .prepare("INSERT INTO cases (name, procedure, stage) VALUES ('张三诉李四民间借贷（测试）', '一审', '待裁判')")

@@ -1,5 +1,8 @@
 // 外层修复事务组合回归：计划、legacy 事实纠正与结算确认必须参与同一 BEGIN IMMEDIATE。
 import assert from 'node:assert/strict';
+import { readdirSync } from 'node:fs';
+const latestMigration = Math.max(...readdirSync(new URL('../src/migrations/', import.meta.url))
+  .filter(f => /^\d{3}_.*\.sql$/.test(f)).map(f => Number(f.slice(0, 3))));
 import { audit, db, withImmediateTransaction } from '../src/db.js';
 import {
   confirmSettlement,
@@ -11,7 +14,7 @@ function confirmBody(preview) {
   return { ...preview.request, fee_version: preview.fee_version, preview_hash: preview.preview_hash };
 }
 
-assert.equal(db.pragma('user_version', { simple: true }), 20, '组合事务测试必须运行在 020');
+assert.equal(db.pragma('user_version', { simple: true }), latestMigration, '组合事务测试必须运行在最新迁移');
 
 const caseId = Number(db.prepare(
   `INSERT INTO cases (name,procedure,stage) VALUES ('组合事务示例案（张三）','一审','待裁判')`

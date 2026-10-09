@@ -1,0 +1,27 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+
+process.env.DB_PATH = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-suggested-')), 't.db');
+const { db, withChangeContext } = await import('../src/db.js');
+const { deriveForEvent, computeDue } = await import('../src/lib/engine.js');
+const rules = JSON.parse(fs.readFileSync(new URL('../rules/deadline_rules_admin.json', import.meta.url), 'utf8')).rules;
+const hearing = rules.find((rule) => rule.id === 'ad_sg_hearing_notice_5wd');
+const id = db.prepare("INSERT INTO cases (name,procedure,stage,case_type) VALUES ('参考期限测试案','行政复议','申请审查','行政')").run().lastInsertRowid;
+const eventId = db.prepare("INSERT INTO events (case_id,type,occurred_on) VALUES (?, 'reconsideration_hearing_date', '2026-10-12')").run(id).lastInsertRowid;
+const event = db.prepare('SELECT * FROM events WHERE id=?').get(eventId);
+const c = db.prepare('SELECT * FROM cases WHERE id=?').get(id);
+const out = deriveForEvent(event, c, 'test');
+const row = db.prepare("SELECT * FROM deadlines WHERE case_id=? AND rule_id='ad_sg_hearing_notice_5wd'").get(id);
+assert.ok(row);
+assert.equal(row.advisory, 1);
+assert.equal(row.due_on, '2026-09-29');
+assert.equal(computeDue(hearing, event).due_on, '2026-09-29');
+assert.equal(db.prepare("SELECT MIN(due_on) due FROM deadlines WHERE case_id=? AND status='pending' AND advisory=0").get(id).due, null);
+withChangeContext({ actor: 'test' }, () => db.prepare("UPDATE deadlines SET status='waived' WHERE id=?").run(row.id));
+assert.equal(db.prepare('SELECT status FROM deadlines WHERE id=?').get(row.id).status, 'waived');
+assert.ok(db.prepare("SELECT 1 FROM change_log WHERE entity='deadline' AND entity_id=? AND field='status' AND new_value='waived'").get(row.id));
+assert.ok(out.deadlines.some((deadline) => deadline.advisory === 1));
+db.close();
+console.log('PASS: suggested deadline/advisory/filter/dismiss/before-workday');

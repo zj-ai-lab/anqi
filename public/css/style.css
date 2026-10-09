@@ -1914,6 +1914,49 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .dmodal-form input, .dmodal-form select { width: 100%; font-size: 15px; }
 .dmodal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
 
+/* ── 期限依据浮层（deadline-basis.js）：行内问号按钮 + 法条原文弹层 ──
+   依据文本此前直铺在跑道行/时间线，长文本打断排版；改为问号入口。
+   复用 A-24 的 .dmodal 骨架，仅新增内容层级样式；颜色一律走主题变量（三皮肤通用）。 */
+.basis-q {
+  font: inherit; font-size: 12px; line-height: 1;
+  padding: 2px 7px; border-radius: var(--r-pill);
+  border: 1px dashed var(--border-h); background: transparent;
+  color: var(--meta); cursor: pointer; white-space: nowrap;
+}
+.basis-q:hover, .basis-q:focus-visible {
+  color: var(--green); border-color: var(--green-line); background: var(--green-bg);
+}
+.dmodal.basis-pop { width: min(94vw, 620px); max-height: min(88vh, 820px); overflow: auto; }
+.basis-pop-hd { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.basis-pop-hd h3 { margin: 0; font-size: 17px; color: var(--ink); }
+.basis-pop-x {
+  font-size: 20px; line-height: 1; padding: 0 6px;
+  border: none; background: transparent; color: var(--meta); cursor: pointer;
+}
+.basis-pop-x:hover { color: var(--ink); }
+.basis-pop-sub { margin: 4px 0 12px; font-size: 12.5px; color: var(--meta); }
+.basis-pop-warn {
+  margin-bottom: 12px; padding: 9px 11px; border-radius: var(--r-btn);
+  border: 1px solid var(--amber-line); background: var(--amber-bg); color: var(--amber);
+  font-size: 12.5px; line-height: 1.65;
+}
+.basis-art { padding: 12px 0; border-top: 1px solid var(--line); }
+.basis-art:first-of-type { border-top: none; padding-top: 2px; }
+.basis-art-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.basis-art-name { font-size: 14px; font-weight: 600; color: var(--ink); }
+.basis-art-label { margin-top: 3px; font-size: 12.5px; color: var(--meta); }
+.basis-art-text {
+  margin-top: 8px; padding: 10px 12px; border-radius: var(--r-btn);
+  background: var(--surface-2); border: 1px solid var(--line);
+  font-size: 13px; line-height: 1.85; color: var(--ink-2); white-space: pre-wrap;
+}
+.basis-art-src { margin-top: 6px; font-size: 11.5px; color: var(--faint); }
+.basis-calc {
+  margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line);
+  font-size: 12.5px; line-height: 1.7; color: var(--meta);
+}
+.basis-calc-hd { display: block; margin-bottom: 3px; font-weight: 600; color: var(--ink-2); }
+
 /* ── A-24a 分成计划 / 公式 / 结算弹层（fee-settlement.js） ── */
 .dmodal.settlement-modal {
   width: min(96vw, 880px); max-height: min(92vh, 920px); overflow: auto;
@@ -2238,6 +2281,51 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
 .case-head-deadline-card.is-overdue { background: var(--red-bg); box-shadow: inset 3px 0 0 var(--red); }
 .case-head-deadline-card.is-overdue > a > strong { color: var(--red); }
 .case-head-deadline .is-clear { color: var(--meta); font-size: 12px; }
+
+.precondition-warning {
+  margin: 0 0 12px;
+  padding: 12px 16px;
+  border: 1px solid var(--red);
+  border-left: 4px solid var(--red);
+  background: var(--red-bg);
+  color: var(--red);
+  font-weight: 650;
+}
+.precondition-hint {
+  margin: 0 0 12px;
+  padding: 10px 14px;
+  border: 1px solid var(--amber);
+  border-left: 4px solid var(--amber);
+  background: var(--amber-bg);
+  color: var(--ink);
+}
+.elapsed-item { padding: 10px 0; border-bottom: 1px solid var(--line); }
+.elapsed-item:last-child { border-bottom: 0; }
+.elapsed-reminders { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.elapsed-reminder { font-size: 12px; }
+.elapsed-reminder.is-reached { background: var(--amber-bg); color: var(--amber); }
+.deadline-advisory { border: 1px dashed var(--line); color: var(--meta); }
+.advisory-row { border: 1px dashed var(--line); color: var(--meta); background: var(--surface-2); }
+.advisory-row .rw-days { color: var(--meta); font: 600 13px/1 var(--sans); }
+.advisory-row .rw-main { grid-column: 2 / 4; color: var(--meta); }
+.advisory-runway { margin-top: 12px; }
+.criminal-roll-box {
+  margin-top: 8px; padding: 8px 10px; border: 1px solid var(--amber-line);
+  border-radius: var(--r-btn); background: var(--amber-bg); color: var(--amber);
+  font-size: 12px; line-height: 1.45;
+}
+.criminal-roll-title { font-weight: 650; }
+.criminal-roll-options { display: flex; gap: 6px; margin-top: 6px; }
+.criminal-roll-option {
+  flex: 1 1 0; min-width: 0; padding: 5px 7px; border: 1px solid var(--amber-line);
+  border-radius: var(--r-chip); background: transparent; color: inherit; text-align: left;
+  cursor: pointer; font: inherit;
+}
+.criminal-roll-option.is-current { background: var(--amber); color: var(--surface-solid); border-color: var(--amber); }
+.criminal-roll-info { margin-top: 4px; }
+.criminal-roll-note { margin-top: 5px; color: var(--muted); }
+.criminal-roll-note summary { cursor: pointer; color: var(--amber); }
+.criminal-roll-note a { color: inherit; }
 
 .case-page { padding-top: 24px; }
 .case-layout {
@@ -3664,6 +3752,90 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .archive-door, .archive-door-body { border-style: solid; }
 }
 
+/* ── 案件页 · 变更记录（change_log 的展示面）──
+   底账不是工作台：默认收起、只读、不提供任何编辑入口（改历史没有入口，
+   change_log 自身也带 append-only 触发器）。
+   一行 = 一次改动：何时 · 动作与对象 · 字段从什么改成什么 · 谁改的。 */
+.case-changes-body {
+  margin: 5px 9px 9px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-panel);
+  background: var(--surface-solid);
+  overflow: hidden;
+}
+.case-changes-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1.05fr) minmax(0, 1.35fr) auto;
+  align-items: baseline;
+  gap: 10px;
+  padding: 7px 11px;
+  border-top: 1px solid var(--line);
+}
+.case-changes-row:first-child { border-top: none; }
+.case-changes-when {
+  font: 450 11px/1.6 var(--f-num);
+  color: var(--meta);
+  white-space: nowrap;
+}
+.case-changes-target {
+  display: flex; align-items: baseline; gap: 6px;
+  min-width: 0;
+  font: 500 11.5px/1.6 var(--sans);
+  color: var(--ink-2);
+}
+.case-changes-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--ink);
+}
+.case-changes-diff {
+  min-width: 0;
+  font: 450 11.5px/1.6 var(--sans);
+  color: var(--ink);
+  text-wrap: pretty;
+}
+/* 旧值降权、新值留正文色：一眼看出去向，旧值只在需要回溯时才读 */
+.case-changes-from { color: var(--meta); }
+.case-changes-arrow { margin: 0 4px; color: var(--faint); font-family: var(--f-num); }
+/* 字段名与「新值」都落在正文列，必须分开：字段名降一档色调 + 加粗，
+   否则「状态 在追 → 已完成」会被读成三段并列的值。 */
+.case-changes-fieldname { color: var(--ink-2); font-weight: 550; }
+/* 新增/删除没有字段，中间列放的是行标签：删除加删除线（东西已经没了），
+   新增用正文色（东西还在）。 */
+.case-changes-row.is-insert .case-changes-diff { color: var(--ink); }
+.case-changes-row.is-delete .case-changes-diff {
+  color: var(--meta);
+  text-decoration: line-through;
+  text-decoration-color: var(--faint);
+}
+.case-changes-who {
+  justify-self: end; white-space: nowrap;
+  font: 450 11px/1.6 var(--sans);
+  color: var(--faint);
+}
+/* 动作语义色：新增=蓝（记事实）· 修改=赭（须留意）· 删除=红（不可回退） */
+.case-changes-op { flex: none; font: 590 10.5px/1.5 var(--sans); letter-spacing: .02em; }
+.case-changes-op.is-insert { color: var(--blue); }
+.case-changes-op.is-update { color: var(--amber); }
+.case-changes-op.is-delete { color: var(--red); }
+.case-changes-more {
+  display: flex; justify-content: center;
+  padding: 8px 11px;
+  border-top: 1px solid var(--line);
+}
+.case-changes-note {
+  padding: 10px 11px;
+  color: var(--meta);
+  font: 450 12px/1.6 var(--sans);
+}
+.case-changes-note.is-error { color: var(--red); }
+
+/* 窄屏：两行化（时间+对象 / 差异），谁改的落到第三行，不挤成一坨 */
+@media (max-width: 767px) {
+  .case-changes-row { grid-template-columns: 78px minmax(0, 1fr); row-gap: 2px; }
+  .case-changes-diff { grid-column: 1 / -1; }
+  .case-changes-who { grid-column: 1 / -1; justify-self: start; }
+}
+
 /* ╔═════════════════════════════════════════════════════════════════════════╗
    ║  降级层（必须在文件末尾：源顺序压住上面的字面量 blur / transition）        ║
    ╚═════════════════════════════════════════════════════════════════════════╝ */
@@ -3699,3 +3871,18 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
     backdrop-filter: none !important; -webkit-backdrop-filter: none !important;
   }
 }
+
+/* Shared case type badges: text remains the primary identifier. */
+.case-type{width:fit-content;font-weight:600;border:1px solid currentColor}.case-type-0{color:#174c96;background:#e8f0ff}.case-type-1{color:#92342e;background:#fcebea}.case-type-2{color:#67429a;background:#f1eafa}.case-type-3{color:#176753;background:#e4f4ec}.case-type-4{color:#825516;background:#fff1d9}.case-type-5{color:#535963;background:#edf0f3}
+
+/* 未分类：虚线描边，方便在列表里挑出来手工归类 */
+.case-type-5,.case-type-untyped{border-style:dashed!important;opacity:.92}
+.case-card-wrap{position:relative;min-width:0}
+.case-card-wrap>.case-card{height:100%;box-sizing:border-box}
+.case-card-wrap .case-select-wrap{position:absolute;top:.75rem;left:.75rem;z-index:2;display:flex;align-items:center}
+.case-card-wrap .case-card .cname{padding-left:1.5rem}
+.batch-type-bar{margin-top:.6rem;align-items:center;gap:.75rem}
+.batch-type-bar[hidden]{display:none!important}
+#chip-untyped{border-style:dashed}
+
+.precondition-hint.is-flip-no{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 12%,transparent)}

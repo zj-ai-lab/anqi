@@ -14,6 +14,7 @@ import sharesRouter from './src/routes/shares.js';
 import filesRouter from './src/routes/files.js';
 import contactsRouter from './src/routes/contacts.js';
 import peopleRouter from './src/routes/people.js';
+import changesRouter from './src/routes/changes.js';
 import legalragRouter from './src/routes/legalrag.js';
 import { createSettingsRouter } from './src/routes/settings.js';
 import internalRouter from './src/routes/internal.js';
@@ -75,7 +76,7 @@ app.use('/api', authRouter); // /api/login /api/logout（自带限速，不过�
 app.use(
   '/api', apiAuth,
   casesRouter, recordsRouter, viewsRouter, feesRouter, sharesRouter,
-  filesRouter, contactsRouter, peopleRouter, legalragRouter, settingsRouter, agentRouter
+  filesRouter, contactsRouter, peopleRouter, legalragRouter, settingsRouter, agentRouter, changesRouter
 );
 app.use('/internal', internalAuth, internalRouter);
 app.use(pageAuth, express.static(path.join(__dirname, 'public')));

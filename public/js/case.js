@@ -1,3 +1,5 @@
+import {procedureLabel} from './case-types.js';
+import { mountCriminalFields } from './criminal-fields.js';
 // 案件详情。DOM 契约见 case.html —— 改这里必须对着那里改。
 // 资金区钩子：#case-money #share-agreements #share-list #share-receivable-add #share-payable-add #share-form；open 修复单在已结行标「待修复」。
 // 设计体系 v2「一个骨架 · 三种材质」：面板 .panel/.p-head/.p-foot、期限跑道（母题）、
@@ -12,6 +14,7 @@ import { feeSettlementActions, openFormulaEditor, openPrimaryFeeSettlement, rend
 import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
 import { mountAgentDrawer } from './agent-drawer.js';
+import { setLawTexts, basisBtn } from './deadline-basis.js';
 
 await mountNav();
 
@@ -36,6 +39,8 @@ function initCaseFolds() {
   bindFold(document.getElementById('file-ignored'), `case-${id}-file-ignored`, false);
   // 归档门：details.archive-door，复用 fold.js 持久化
   bindFold(document.getElementById('case-archive-door'), `case-${id}-archive`, false);
+  // 变更记录门：默认收起——它是底账不是工作台，平时不该占版面
+  bindFold(document.getElementById('case-changes-fold'), `case-${id}-changes`, false);
   const archiveDoor = document.getElementById('case-archive-door');
   archiveDoor.addEventListener('toggle', () => {
     const caret = archiveDoor.querySelector('.archive-door-caret');
@@ -109,18 +114,25 @@ const evTypeSel = document.getElementById('ev-type');
 for (const t of meta.event_types) evTypeSel.append(el('option', { value: t.id }, t.label));
 const evLabel = Object.fromEntries(meta.event_types.map((t) => [t.id, t.label]));
 
+// 期限「依据」浮层所需的本地法条库（Q10 裁定「丙」）：本页已取过 /meta，直接注入，避免二次请求。
+setLawTexts(meta.law_texts);
+
+
 // 编辑案件信息：程序 → 阶段联动（与建案表单同一模式）。改名/改程序是「录错了」的自救口。
 const efProc = document.querySelector('#edit-form [name="procedure"]');
 const efStage = document.querySelector('#edit-form [name="stage"]');
-for (const p of meta.procedures) efProc.append(el('option', { value: p }, p));
+efProc.append(el('option', { value: '' }, '程序待补'));
+for (const p of meta.procedures) efProc.append(el('option', { value: p }, procedureLabel(p)));
 function syncEditStages(stage) {
   efStage.replaceChildren();
+  if (stage === '') efStage.append(el('option', { value: '' }, '阶段待补'));
   for (const s of meta.stage_templates[efProc.value] || []) efStage.append(el('option', { value: s }, s));
   // 当前阶段不在新程序词表里（历史自定义阶段）时保留显示，避免静默改成第一阶段
   if (stage && ![...efStage.options].some((o) => o.value === stage)) efStage.append(el('option', { value: stage }, stage));
   efStage.value = stage || efStage.options[0]?.value || '';
 }
-efProc.addEventListener('change', () => syncEditStages(''));
+efProc.addEventListener('change', () => syncEditStages());
+const criminalForm = mountCriminalFields(document.getElementById('edit-criminal-fields'), meta, efProc, efStage);
 
 let bundle = null;
 let people = [];
@@ -134,7 +146,13 @@ let stopFolderWatch = () => {};
 const daysTo = (dateStr, today = todayStr()) => Math.round((new Date(dateStr) - new Date(today)) / 86400000);
 
 async function patchCase(body, msg = '已保存 ✓') {
-  const r = await api(`/cases/${id}`, { method: 'PATCH', body });
+  let r = await api(`/cases/${id}`, { method: 'PATCH', body });
+  if (r.needs_confirm) {
+    const p = r.condition_preview;
+    if (!confirm(`条件变更将作废 ${p.retire.length} 条不再适用的自动期限，保留 ${p.protected.length} 条人工期限，并补充适用期限。请核对后确认：\n${p.retire.map(d => d.name).join('\n')}`)) return;
+    r = await api(`/cases/${id}`, { method: 'PATCH', body: { ...body, confirm_rederive: true } });
+    if (p.protected.length) toast('已保留人工期限，请核对其适用性');
+  }
   let text = msg;
   if (r.templated?.length) text += ` → 铺 ${r.templated.length} 条模板待办`;
   if (r.stage_change_log) text += ' · 已记入时间线';
@@ -186,7 +204,9 @@ document.getElementById('c-status').addEventListener('change', (e) => {
 
 document.getElementById('edit-form').addEventListener('submit', async (e) => {
   e.preventDefault();
-  await patchCase(Object.fromEntries(new FormData(e.target).entries()));
+  const changed = Object.fromEntries([...new FormData(e.target).entries()]
+    .filter(([key, value]) => value !== String(bundle.case[key] ?? '')));
+  if (Object.keys(changed).length) await patchCase(changed);
 });
 
 async function loadWorkspacePicker() {
@@ -334,6 +354,30 @@ document.getElementById('share-person').addEventListener('change', (e) => {
 
 const ROLE_PILL = { 当事人: 'ok', 对方当事人: 'warn', 承办法官: 'acc', 法官助理: 'acc', 书记员: '', 对方律师: 'warn', 合作律师: 'acc', 其他: '' };
 
+function showPreconditionSuggestion(suggestion) {
+  const old = document.getElementById('precondition-suggestion-dialog');
+  old?.remove();
+  const wantNo = suggestion.suggest === 'no';
+  const title = wantNo ? '建议将复议前置改为「否」' : '请确认复议前置';
+  const primaryLabel = wantNo ? '改为「否」' : '设为「是」';
+  const primaryValue = wantNo ? 'no' : 'yes';
+  const primaryMsg = wantNo ? '已设为复议前置：否' : '已设为复议前置：是';
+  const secondaryLabel = wantNo ? '保持「是」' : '设为「否」';
+  const secondaryValue = wantNo ? 'yes' : 'no';
+  const secondaryMsg = wantNo ? '已设为复议前置：是' : '已设为复议前置：否';
+  const box = el('div', { id: 'precondition-suggestion-dialog', class: wantNo ? 'precondition-hint is-flip-no' : 'precondition-hint', role: 'status' },
+    el('b', {}, title),
+    suggestion.category ? el('p', { class: 'meta' }, suggestion.category) : null,
+    el('p', {}, suggestion.reason),
+    el('span', { class: 'tl-actions' },
+      el('button', { class: 'btn small primary', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: primaryValue }, primaryMsg); box.remove(); } }, primaryLabel),
+      el('button', { class: 'btn small', type: 'button', onclick: async () => { await patchCase({ reconsideration_precondition: secondaryValue }, secondaryMsg); box.remove(); } }, secondaryLabel),
+      el('button', { class: 'btn small', type: 'button', onclick: () => box.remove() }, '稍后'),
+    )
+  );
+  document.querySelector('main.page')?.prepend(box);
+}
+
 function contactRow(p) {
   return el('div', { class: 'row' },
     el('span', { class: `pill ${ROLE_PILL[p.role] || ''}` }, p.role),
@@ -378,6 +422,7 @@ document.getElementById('event-form').addEventListener('submit', async (e) => {
   const filesInput = document.getElementById('ev-files');
   const files = [...(filesInput.files || [])];
   const r = await api(`/cases/${id}/events`, { body });
+  if (r.precondition_suggestion) showPreconditionSuggestion(r.precondition_suggestion);
   let uploaded = 0;
   for (const f of files) {
     try { await uploadFile(f, { entity: 'event', entityId: r.id }); uploaded++; }
@@ -385,11 +430,15 @@ document.getElementById('event-form').addEventListener('submit', async (e) => {
   }
   const nd = r.derived?.deadlines?.length || 0;
   const nt = r.derived?.tasks?.length || 0;
+  const coverageWarnings = r.coverage_warnings || [];
   const parts = [];
   if (nd) parts.push(`派生 ${nd} 条期限`);
   if (nt) parts.push(`${nt} 条录入任务`);
   if (uploaded) parts.push(`${uploaded} 份文书入夹`);
-  toast(parts.length ? `已记录 → ${parts.join('、')}` : '事件已记录 ✓');
+  if (coverageWarnings.length) {
+    parts.push(`⚠️ 节假日数据缺 ${coverageWarnings.map((w) => `${w.name}（${w.due_on}，缺 ${w.missing_years.join('、')} 年）`).join('、')}`);
+  }
+  toast(parts.length ? `已记录 → ${parts.join('、')}` : '事件已记录 ✓', coverageWarnings.length ? 9000 : 2200);
   e.target.reset();
   await load();
   await loadFiles();
@@ -502,15 +551,74 @@ function doneBtn(d, cls = 'btn small rw-done') {
   }, '完成');
 }
 
+// 规则元数据按 id 索引（含 variants：可切换口径）
+const ruleById = new Map((meta.deadline_rules || []).map((r) => [r.id, r]));
+
 // 改期：跑道行与时间线共用一个入口（手动改期 → 人工设定，级联重算默认不再覆盖它）
+// 若所用规则声明了 variants（现只有拘留最长期限：37／14／10 三档），先让用户选口径——
+// 选口径＝只改 manual_days，届满日仍由引擎按天数重算、法条依据随之切换；
+// 选「自己填日期」走原手动改期路径。规则没声明 variants 的期限，行为与改前完全一致。
 async function editDeadlineDue(d) {
+  const rule = ruleById.get(d.rule_id);
+  const variants = rule?.variants || [];
+  if (variants.length) {
+    // 已被人工填过日期（不是按天数算的）：默认落在「自己填日期」，避免用户随手确认就把手填日期冲掉
+    const handPicked = d.is_manual_override && d.manual_days == null;
+    const pick = await datePrompt({
+      title: `改「${d.name}」截止日`,
+      hint: '按天数算：选一档口径，届满日由引擎按该天数重算，法条依据同步切换。自己填日期：直接指定截止日，标为人工设定。',
+      fields: [{
+        key: 'pick', label: '拘留可羁押的最长天数', type: 'select',
+        value: handPicked ? 'custom' : String(d.manual_days ?? rule.days ?? ''),
+        options: [
+          ...variants.map((v) => ({ value: String(v.days), label: v.label })),
+          { value: 'custom', label: '自己填日期（不按天数）' },
+          { value: 'params', label: '自定计算参数及理由' },
+        ],
+      }],
+    });
+    if (!pick) return;
+    const target = variants.find((v) => String(v.days) === pick.pick);
+    if (pick.pick === 'params') return editDeadlineParams(d);
+    if (!target) return editDeadlineDueByDate(d);
+    await api(`/deadlines/${d.id}`, {
+      method: 'PATCH',
+      body: { manual_days: target.days, name: target.name, basis: target.basis, severity: target.severity },
+    });
+    toast(`已按 ${target.days} 日口径重算 ✓`); load();
+    return;
+  }
+  if (rule && d.trigger_event_id) {
+    const pick = await datePrompt({ title: `调整「${d.name}」`, fields: [{ key: 'mode', label: '调整方式', type: 'select', options: [{ value: 'date', label: '直接指定日期' }, { value: 'params', label: '按参数计算' }] }] });
+    if (!pick) return;
+    if (pick.mode === 'params') return editDeadlineParams(d);
+  }
+  return editDeadlineDueByDate(d);
+}
+
+async function editDeadlineParams(d) {
+  const pick = (key, label, options) => ({ key, label, type: 'select', value: d[key] || '', options: [{ value: '', label: '沿用规则' }, ...options.map(([value, label]) => ({ value, label }))] });
+  const v = await datePrompt({ title: `计算参数：${d.name}`, hint: '由本地引擎计算；参数随触发日期重算。直接指定的人工日期受保护。请填写调整理由。', fields: [
+    { key: 'manual_days', label: '数量（留空沿用规则）', type: 'number', value: d.manual_days ?? '', min: 0, max: 3650, step: 1 },
+    pick('manual_unit', '单位', [['natural_days', '自然日'], ['workdays', '工作日'], ['months', '月'], ['years', '年']]),
+    pick('manual_count_from', '起算方式', [['next_day', '次日起'], ['same_day', '当日起']]),
+    pick('manual_roll', '假期顺延', [['none', '不顺延'], ['backward', '向前避开假期'], ['forward', '向后顺延']]),
+    { key: 'override_reason', label: '调整理由', type: 'text', value: d.override_reason || '', required: true },
+  ] });
+  if (!v) return;
+  await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { ...v, manual_days: v.manual_days === '' ? null : Number(v.manual_days) } });
+  toast('参数已保存并重算 ✓'); await load();
+}
+
+// 手动改期（原路径）：直接指定截止日
+async function editDeadlineDueByDate(d) {
   const v = await datePrompt({
     title: `改「${d.name}」截止日`,
     hint: '手动改期将标记为人工设定，级联重算默认不再覆盖它',
-    fields: [{ key: 'due_on', label: '截止日', value: d.due_on, required: true }],
+    fields: [{ key: 'due_on', label: '截止日', value: d.due_on, required: true }, { key: 'override_reason', label: '调整理由', type: 'text', value: d.override_reason || '', required: true }],
   });
   if (!v || v.due_on === d.due_on) return;
-  await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { due_on: v.due_on } });
+  await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { due_on: v.due_on, override_reason: v.override_reason } });
   toast('截止日已改 ✓'); load();
 }
 
@@ -532,16 +640,54 @@ function confirmReviewBtn(d, cls = 'btn small primary') {
 }
 
 // 依据 / 算法 / 人工设定 —— 跑道行与头条共用的小字尾
+// 依据改为问号按钮（点开看法条原文），长文本不再直铺行内。
 function deadlineMeta(d) {
   return [
     el('span', {}, SEV_LABEL[d.severity] || '一般'),
     d.basis ? el('span', { class: 'sep' }, '·') : null,
-    d.basis ? el('span', {}, d.basis) : null,
+    basisBtn(d),
     d.is_manual_override ? el('span', { class: 'sep' }, '·') : null,
     d.is_manual_override ? el('span', {}, '人工设定') : null,
     d.review_status === 'pending_review' ? el('span', { class: 'sep' }, '·') : null,
     d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
+    d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
   ];
+}
+
+const CRIMINAL_ROLL_NOTE = '刑诉法§105②：期间的最后一日为节假日的，以节假日后的第一日为期满日期，但犯罪嫌疑人、被告人或者罪犯在押期间，应当至期满之日为止，不得因节假日而延长。本规则默认不顺延（2026-09-11 决定）；如当事人未在押，可选择按§105顺延。';
+
+function criminalRollBox(d) {
+  const option = d.holiday_roll_option;
+  if (!option?.applies) return null;
+  const infoOnly = option.default_due === option.rolled_due;
+  const current = d.criminal_roll_choice === 'rolled' ? 'rolled' : 'default';
+  const choose = async (choice) => {
+    if (choice === d.criminal_roll_choice && d.due_on === option[choice === 'rolled' ? 'rolled_due' : 'default_due']) return;
+    await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { criminal_roll_choice: choice } });
+    toast(choice === 'rolled' ? '已按刑诉法§105顺延 ✓' : '已恢复默认不顺延 ✓');
+    load();
+  };
+  const box = el('div', { class: 'criminal-roll-box', role: 'note' },
+    el('div', { class: 'criminal-roll-title' }, option.contains_holidays?.length ? '期间含法定节假日' : '届满日为休息日'),
+    infoOnly
+      ? el('div', { class: 'criminal-roll-info' }, '期间内含法定节假日，届满日为工作日，顺延与否结果相同')
+      : el('div', { class: 'criminal-roll-options', role: 'group', 'aria-label': '刑事期限节假日顺延选择' },
+        el('button', { class: `criminal-roll-option${current === 'default' ? ' is-current' : ''}`, type: 'button', 'aria-pressed': String(current === 'default'), onclick: () => choose('default') }, `默认不顺延：${option.default_due}`),
+        el('button', { class: `criminal-roll-option${current === 'rolled' ? ' is-current' : ''}`, type: 'button', 'aria-pressed': String(current === 'rolled'), onclick: () => choose('rolled') }, `按§105顺延：${option.rolled_due}`),
+      ),
+    el('details', { class: 'criminal-roll-note' },
+      el('summary', {}, '刑诉法§105说明'),
+      el('div', {}, CRIMINAL_ROLL_NOTE, ' ', el('a', { href: 'http://www.npc.gov.cn/npc/c2/c12435/201905/t20190521_276591.html', target: '_blank', rel: 'noopener' }, '来源')),
+    ),
+  );
+  return box;
+}
+
+function ignoreAdvisoryBtn(d) {
+  return el('button', {
+    class: 'btn small', type: 'button', title: '参考期限不具有约束力',
+    onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('参考期限已忽略'); load(); },
+  }, '忽略');
 }
 
 // 头条：本案最近的那条死线。只在「真该喊」时出现（逾期或 ≤7 日）——
@@ -565,7 +711,8 @@ function runwayLead(d) {
         ...deadlineMeta(d),
         d.calc_note ? el('span', { class: 'sep' }, '·') : null,
         d.calc_note ? el('span', {}, d.calc_note) : null
-      )
+      ),
+      criminalRollBox(d)
     ),
     el('div', { class: 'rw-trk' }, track(d)),
     el('div', { class: 'rw-due' }, d.due_on.slice(5)),
@@ -587,12 +734,41 @@ function runwayRow(d, i) {
     ),
     el('div', { class: 'rw-main' },
       el('div', { class: 'm1' }, d.name),
-      el('div', { class: 'm2' }, ...deadlineMeta(d))
+      el('div', { class: 'm2' }, ...deadlineMeta(d)),
+      criminalRollBox(d)
     ),
     el('div', { class: 'rw-trk' }, track(d)),
     el('div', { class: 'rw-due' }, d.due_on.slice(5)),
     el('span', { class: 'rw-acts' }, confirmReviewBtn(d), editDueBtn(d), doneBtn(d))
   );
+}
+
+function advisoryRunwayRow(d, i) {
+  return el('div', { class: `rw-row advisory-row d${Math.min(i + 1, 3)}` },
+    el('div', { class: 'rw-days advisory-days' }, el('span', { class: 'pre' }, '参考')),
+    el('div', { class: 'rw-main' },
+      el('div', { class: 'm1' }, d.name),
+      el('div', { class: 'm2' }, el('span', { class: 'pill' }, '参考 · 非约束'),
+        el('span', { class: 'sep' }, '·'), el('span', {}, `到期 ${d.due_on}`)),
+      criminalRollBox(d),
+    ),
+    el('div', { class: 'rw-due' }, d.due_on.slice(5)),
+    el('span', { class: 'rw-acts' }, ignoreAdvisoryBtn(d)),
+  );
+}
+
+function advisoryRunway(items) {
+  const wrap = el('div', { class: 'runway runway-act advisory-runway' },
+    el('div', { class: 'rw-colhead' },
+      el('span', { class: 'h-days' }, '参考'),
+      el('span', { class: 'h-item' }, '参考期限 · 非约束'),
+      el('span', { class: 'h-trk' }, ''),
+      el('span', { class: 'h-due' }, '到期'),
+      el('span', { class: 'h-key' }, '操作'),
+    ),
+  );
+  items.forEach((d, i) => wrap.append(advisoryRunwayRow(d, i)));
+  return wrap;
 }
 
 function caseRunway(items) {
@@ -1104,8 +1280,8 @@ function taskRow(t) {
 }
 
 // ---- 时间线 ----
-function tlItem(date, nodeCls, kindPill, bodyEls, actions = null) {
-  return el('div', { class: 'tl-item' },
+function tlItem(date, nodeCls, kindPill, bodyEls, actions = null, extraClass = '') {
+  return el('div', { class: `tl-item ${extraClass}`.trim() },
     el('span', { class: `tl-node ${nodeCls}`, 'aria-hidden': 'true' }),
     el('span', { class: 'tl-date' }, date),
     el('div', { class: 'tl-body' }, kindPill, ' ', ...bodyEls),
@@ -1134,7 +1310,9 @@ function drawTimeline(nextItems = timelineItems) {
   const total = filtered.length;
   if (total <= TIMELINE_PREVIEW_LIMIT) timelineExpanded = false;
 
-  const visible = timelineExpanded ? filtered : filtered.slice(0, TIMELINE_PREVIEW_LIMIT);
+  const visible = timelineExpanded ? filtered : (() => {
+    return filtered.filter((item, i) => i < TIMELINE_PREVIEW_LIMIT || item.keepVisible);
+  })();
   const tl = document.getElementById('timeline');
   tl.replaceChildren(...visible.map((item) => item.build()));
   if (!total) {
@@ -1162,11 +1340,11 @@ function drawTimeline(nextItems = timelineItems) {
     return;
   }
   toggle.textContent = timelineExpanded
-    ? `收起，仅看最近 ${TIMELINE_PREVIEW_LIMIT} 条`
+    ? `收起，仅看最近 ${TIMELINE_PREVIEW_LIMIT} 条及待处理参考期限`
     : `展开全部（${total} 条）`;
   state.textContent = timelineExpanded
     ? `已显示全部 ${total} 条`
-    : `已显示最近 ${TIMELINE_PREVIEW_LIMIT} / 共 ${total} 条`;
+    : `已显示 ${visible.length} / 共 ${total} 条（含待处理参考期限）`;
 }
 
 for (const button of document.querySelectorAll('[data-timeline-filter]')) {
@@ -1187,9 +1365,192 @@ document.getElementById('timeline-toggle').addEventListener('click', (event) => 
   requestAnimationFrame(() => toggle.scrollIntoView({ behavior: 'auto', block: 'nearest' }));
 });
 
+// ---- 变更记录（change_log · 迁移 024）----
+// 只读底账：谁在何时把哪个字段从什么改成了什么。四条约束：
+//  1) 不许挡住案件页。本区自己 try/catch，失败只在区内落一行常驻错误（api() 已弹过
+//     一次瞬时的 toast），不上抛。底账是旁证不是主数据，它读不到不该拖垮整页。
+//  2) 分页走 id 游标（before = 上一页最后一条的 id），不用 OFFSET——change_log 是
+//     追加写表，OFFSET 翻页在有新写入插进来时会重复或漏条。
+//  3) 呈现层负责翻译（实体名 / 字段名 / 词表值 / 规则名），底账里存的是事实原文
+//     （events.type 存 'served' 而不是「送达」，见 024 头部注释）。
+//  4) 只读：不提供任何编辑入口；change_log 自身也挂了 append-only 触发器兜底。
+const CHANGES_PAGE = 50;
+const ENTITY_CN = { case: '案件', event: '事件', deadline: '期限', task: '待办', worklog: '日志', contact: '联系人', person: '通讯录对象', case_participant: '案件参与人', fee_item: '款项', fee_share: '分成', fee_share_agreement: '分成约定', fee_share_assignment: '分成计划', fee_share_settlement_run: '结算', fee_share_settlement_snapshot: '结算快照' };
+const ACTION_CN = { insert: '新增', update: '修改', delete: '删除' };
+const FIELD_CN = {
+  // cases
+  name: '案件名', case_no: '案号', cause: '案由', court: '法院', client: '我方当事人',
+  client_role: '我方地位', opponent: '对方', case_type:'案件类型', procedure: '程序', stage: '阶段',
+  stage_entered_at: '进入阶段时间', status: '状态', accepted_at: '收案日', folder_path: '工作区',
+  sol_starts_on: '时效起算', note: '备注', legalrag_url: 'LegalRAG 链接', crime_type: '作案类型',
+  reconsideration_precondition: '复议前置',
+  trial_mode: '审理程序', case_nature: '案件性质', custody_status: '强制措施', case_side: '我方立场',
+  entrust_stage: '委托阶段', co_counsel: '同案辩护人', contract_no: '合同编号',
+  custody_place: '羁押场所', handling_agency: '办案机关', created_at: '创建时间',
+  // events
+  type: '类型', occurred_on: '发生日', service_method: '送达方式', instrument: '文书', created_by: '来源',
+  // deadlines
+  due_on: '届满日', trigger_event_id: '触发事件', rule_id: '依据规则', basis: '法律依据',
+  calc_note: '算法说明', is_manual_override: '人工覆盖', severity: '紧急度', done_at: '完成于',
+  review_status: '复核状态', manual_days: '手算天数', manual_unit: '手算单位',
+  manual_count_from: '起算基准', manual_roll: '顺延方式', override_reason: '覆盖理由',
+  advisory: '参考期限', suppressed_reason: '抑制原因', criminal_roll_choice: '刑事节假日顺延选择',
+  // tasks
+  title: '标题', plan_date: '计划日', deadline_id: '关联期限', priority: '优先级', origin: '来源',
+  due_time: '截止时刻',
+  // worklog
+  worked_on: '工作日期', content: '内容', minutes: '时长', artifacts: '产出',
+};
+// 词表值 → 中文。同一个值在不同字段下含义不同（status 的 done 是「已完成」，
+// priority 的 normal 是「一般」），所以按字段名分表，不并成一张全局表。
+const VALUE_CN = {
+  // 期限态复用 api.js 的 STATUS_LABEL（同一份词表不要在两地各写一遍），
+  // 再补案件态与待办态——它们共用 status 这一列名，取值集合互不重叠。
+  status: {
+    ...STATUS_LABEL,
+    active: '在办', shelved: '搁置', closed: '已结',
+    open: '待办', dropped: '已放弃',
+  },
+  severity: SEV_LABEL,
+  review_status: { pending_review: '待核', confirmed: '已核' },
+  reconsideration_precondition: { yes: '是', no: '否', unknown: '未确定' },
+  manual_unit: { natural_days: '自然日', workdays: '工作日', months: '月', years: '年' },
+  priority: { high: '高优先', normal: '一般', low: '低优先' },
+  is_manual_override: { 0: '否', 1: '是' },
+  created_by: { manual: '手工', llm: 'AI 填写', import: '导入' },
+  origin: { manual: '手工', template: '阶段模板', llm: 'AI 填写', import: '导入', agent: 'AI 助理' },
+};
+// actor 是去个人化角色（见 013）。客户端可用 X-Anjian-Actor 传自定义标签，
+// 认不出来的原样显示，不猜。
+const ACTOR_CN = { web: '界面', cli: 'CLI', internal: '后台', api: '外部程序', system: '系统', ai: 'AI' };
+const changeRuleName = Object.fromEntries((meta.deadline_rules || []).map((r) => [r.id, r.name]));
+
+let changeItems = [];
+let changeCursor = null;      // null = 已经到底，没有更早的了
+let changeError = null;
+
+// change_log.changed_at 是 'YYYY-MM-DD HH:MM:SS'。同年省略年份——底账一行很挤，
+// 而多数改动都发生在当年；跨年的那些把年份补回来，免得误读。
+function changeWhenText(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}:\d{2})/.exec(String(value || ''));
+  if (!m) return String(value || '');
+  const sameYear = m[1] === todayStr().slice(0, 4);
+  return `${sameYear ? '' : m[1] + '-'}${m[2]}-${m[3]} ${m[4]}`;
+}
+
+function changeValueText(item, value) {
+  // update 差异里 null / 空串都是「本来就没填」，显示成「（空）」比留白好读
+  if (value === null || value === '') return '（空）';
+  if (item.field === 'type' && item.entity === 'event') return evLabel[value] || value;
+  const map = VALUE_CN[item.field];
+  return (map && map[value]) || value;
+}
+
+function changeWhoText(item) {
+  const parts = [ACTOR_CN[item.actor] || item.actor || '未记录'];
+  if (item.rule_id) parts.push(changeRuleName[item.rule_id] || `规则 ${item.rule_id}`);
+  if (item.origin === 'cloud') parts.push('云端');
+  return parts.join(' · ');
+}
+
+function changeRowEl(item) {
+  // 中间列：update 展示「字段 旧 → 新」；insert/delete 没有可指的字段，
+  // 展示写入时落下的行标签（见 024 的「为什么 insert/delete 也带一个值」）。
+  let middle;
+  if (!item.field && item.old_value == null && item.new_value == null) {
+    middle = el('span', { class: 'case-changes-diff' }, `记录 #${item.entity_id} · ${ACTION_CN[item.action] || item.action}`);
+  } else if (item.action === 'update') {
+    middle = el('span', { class: 'case-changes-diff' },
+      el('span', { class: 'case-changes-fieldname' }, FIELD_CN[item.field] || item.field || '—'),
+      ' ',
+      el('span', { class: 'case-changes-from' }, changeValueText(item, item.old_value)),
+      el('span', { class: 'case-changes-arrow' }, '→'),
+      el('span', {}, changeValueText(item, item.new_value)),
+    );
+  } else {
+    const label = item.action === 'insert' ? item.new_value : item.old_value;
+    middle = el('span', { class: 'case-changes-diff', title: label || '' },
+      label || el('span', { class: 'case-changes-from' }, '（无名称）'));
+  }
+  return el('div', { class: `case-changes-row is-${item.action}` },
+    el('span', { class: 'case-changes-when', title: item.changed_at }, changeWhenText(item.changed_at)),
+    el('span', { class: 'case-changes-target' },
+      el('span', { class: `case-changes-op is-${item.action}` }, ACTION_CN[item.action] || item.action),
+      el('span', {}, ENTITY_CN[item.entity] || item.entity),
+    ),
+    middle,
+    el('span', { class: 'case-changes-who' }, changeWhoText(item)),
+  );
+}
+
+function renderChanges() {
+  const body = document.getElementById('case-changes-body');
+  const meta = document.getElementById('case-changes-meta');
+  if (!body || !meta) return;
+
+  if (changeError) {
+    meta.textContent = '读取失败';
+    body.replaceChildren(el('div', { class: 'case-changes-note is-error' }, changeError));
+    return;
+  }
+  if (!changeItems.length) {
+    meta.textContent = '暂无变更';
+    body.replaceChildren(el('div', { class: 'case-changes-note' }, '还没有记下任何改动。'));
+    return;
+  }
+
+  meta.textContent = changeCursor === null
+    ? `共 ${changeItems.length} 条`
+    : `最近 ${changeItems.length} 条 · 还有更早的`;
+  const nodes = changeItems.map(changeRowEl);
+  if (changeCursor !== null) {
+    nodes.push(el('div', { class: 'case-changes-more' },
+      el('button', {
+        class: 'btn small', type: 'button',
+        onclick: () => loadChanges({ reset: false }),
+      }, '加载更早的'),
+    ));
+  }
+  body.replaceChildren(...nodes);
+}
+
+async function loadChanges({ reset = true } = {}) {
+  if (reset) { changeItems = []; changeCursor = null; changeError = null; }
+  const query = new URLSearchParams({ case_id: id, limit: String(CHANGES_PAGE) });
+  if (changeCursor !== null) query.set('before', String(changeCursor));
+  try {
+    const d = await api(`/changes?${query}`);
+    changeItems = changeItems.concat(d.items);
+    changeCursor = d.next_before;
+  } catch (error) {
+    // api() 已经弹过 toast；这里留一行常驻文字，是为了让「区块是空的」和
+    // 「区块读不出来」在页面上不至于长得一样。
+    changeError = `变更记录读取失败：${error.message || error}`;
+  }
+  renderChanges();
+}
+
+function renderElapsed(items) {
+  const section = document.getElementById('case-elapsed');
+  const list = document.getElementById('elapsed-list');
+  if (!section || !list) return;
+  section.hidden = !items.length;
+  list.replaceChildren(...items.map((item) => el('div', { class: 'elapsed-item' },
+    el('div', {}, el('b', {}, item.event_label), ` · ${item.occurred_on} · ${item.elapsed_text}`),
+    el('div', { class: 'elapsed-reminders' }, ...item.reminders.map((reminder) => {
+      const duration = reminder.label.match(/\d+(?:\.\d+)?\s*(?:个月|年|天)/)?.[0] || reminder.label;
+      return el('span', {
+        class: `pill elapsed-reminder ${reminder.reached ? 'is-reached' : ''}`,
+        title: reminder.reached ? reminder.label : '',
+      }, reminder.reached ? `已满 ${duration}` : `${duration}提醒 ${reminder.due_on}`);
+    })),
+  )));
+}
+
 // ---- 渲染 ----
 function render() {
   const c = bundle.case;
+  const isAdminCase = String(c.procedure || '').startsWith('行政') || c.case_type === '行政';
   document.title = `${c.name} · 案齐`;
   document.getElementById('title').textContent = c.name;
   document.getElementById('subtitle').textContent =
@@ -1206,15 +1567,34 @@ function render() {
   document.getElementById('stepper-box').replaceChildren(stageStepper);
   document.getElementById('c-status').value = c.status;
   const sd = document.getElementById('c-stagedays');
-  sd.replaceChildren(`本阶段已停留 ${c.stage_days} 天`);
+  sd.replaceChildren(c.stage_days == null ? '阶段起算日待补' : `本阶段已停留 ${c.stage_days} 天`);
   if (c.stage_days > 30) sd.append(el('span', { class: 'chip c-amber' }, '偏久 · 考虑推进或核对状态'));
+  const sourceInfo = document.getElementById('case-source-info');
+  sourceInfo.hidden = !c.note;
+  document.getElementById('case-source-text').textContent = c.note || '';
 
   const ef = document.getElementById('edit-form');
-  for (const f of ['name', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent', 'accepted_at', 'note', 'legalrag_url']) {
+  for (const f of ['name', 'case_type', 'case_no', 'cause', 'court', 'client', 'client_role', 'opponent', 'accepted_at', 'note', 'legalrag_url', 'reconsideration_precondition']) {
     if (ef.elements[f]) ef.elements[f].value = c[f] || '';
   }
+  const preconditionField = document.getElementById('reconsideration-precondition-field');
+  preconditionField.hidden = !isAdminCase;
   efProc.value = c.procedure;
   syncEditStages(c.stage);
+  criminalForm.fill(c);
+  const warnings = document.getElementById('condition-warnings');
+  warnings.hidden = !(bundle.condition_warnings || []).length;
+  warnings.textContent = (bundle.condition_warnings || []).length ? `期限待补条件：${bundle.condition_warnings.map(w => w.label).join('、')}。请编辑案件信息；已有期限并不代表期限已齐全。` : '';
+  const preconditionWarning = document.getElementById('precondition-warning');
+  const preconditionHint = document.getElementById('precondition-hint');
+  preconditionWarning.hidden = !(isAdminCase && c.reconsideration_precondition === 'yes');
+  preconditionWarning.textContent = preconditionWarning.hidden ? '' : '⚠️ 复议前置：本案须先申请行政复议，对复议决定不服再起诉（行政复议法§23）。未经复议直接起诉的，人民法院裁定不予立案（法释〔2018〕1号§56）；已经立案的，裁定驳回起诉（同解释§69①(五)）。直接起诉期限已停用，起诉期限以复议决定送达/复议期满起算（行政诉讼法§45、行政复议法§34）。';
+  const hasDutyApplied = (bundle.events || []).some((event) => event.type === 'admin_duty_applied');
+  const PRECONDITION_YES_EVENT_TYPES = new Set(['admin_duty_applied','admin_penalty_on_spot','admin_natural_resource_decision','admin_gov_info_not_disclosed']);
+  const hasPreconditionCue = (bundle.events || []).some((ev) => PRECONDITION_YES_EVENT_TYPES.has(ev.type));
+  preconditionHint.hidden = !(isAdminCase && c.reconsideration_precondition === 'unknown' && hasPreconditionCue);
+  preconditionHint.textContent = preconditionHint.hidden ? '' : '⚠️ 本案记录了可能属于复议前置的事件（当场处罚／自然资源／履职申请／信息公开不予公开等），请确认「复议前置」是/否。';
+  renderElapsed(bundle.elapsed || []);
   document.getElementById('legalrag-slot').replaceChildren(
     c.legalrag_url
       ? el('a', { class: 'btn small', href: c.legalrag_url, target: '_blank', rel: 'noopener' }, 'LegalRAG 案件库 ↗')
@@ -1238,7 +1618,11 @@ function render() {
   // 本案期限跑道（母题）
   const today = todayStr();
   const pend = bundle.deadlines
-    .filter((x) => x.status === 'pending')
+    .filter((x) => x.status === 'pending' && !x.advisory)
+    .map((x) => ({ ...x, days_left: daysTo(x.due_on, today) }))
+    .sort((a, b) => a.days_left - b.days_left);
+  const advisoryPend = bundle.deadlines
+    .filter((x) => x.status === 'pending' && x.advisory)
     .map((x) => ({ ...x, days_left: daysTo(x.due_on, today) }))
     .sort((a, b) => a.days_left - b.days_left);
 
@@ -1257,9 +1641,11 @@ function render() {
     )
     : el('span', { class: 'is-clear' }, '当前无在追期限'));
 
-  document.getElementById('case-runway').replaceChildren(
-    pend.length ? caseRunway(pend) : el('div', { class: 'section-empty' }, '无在追死线——录入触发事件或手动记死线')
-  );
+  const runwayBlocks = [];
+  if (pend.length) runwayBlocks.push(caseRunway(pend));
+  if (advisoryPend.length) runwayBlocks.push(advisoryRunway(advisoryPend));
+  if (!runwayBlocks.length) runwayBlocks.push(el('div', { class: 'section-empty' }, '无在追死线——录入触发事件或手动记死线'));
+  document.getElementById('case-runway').replaceChildren(...runwayBlocks);
   document.getElementById('runway-legend').hidden = !pend.length;
   const rwMeta = document.getElementById('runway-meta');
   rwMeta.replaceChildren();
@@ -1286,7 +1672,7 @@ function render() {
     }, '记一条')
   ));
   document.getElementById('tasks-count').textContent = open.length ? `${open.length} 项` : '';
-  document.getElementById('case-action-badge').textContent = pend.length + open.length || '';
+  document.getElementById('case-action-badge').textContent = pend.length + advisoryPend.length + open.length || '';
 
   // 时间线合流：event / deadline / worklog
   const items = [
@@ -1336,28 +1722,36 @@ function render() {
       )
     ) })),
     ...bundle.deadlines.map((d) => {
+      const rule = ruleById.get(d.rule_id);
       const overdue = d.status === 'pending' && d.due_on < today;
-      const nodeCls = d.status !== 'pending' ? 'tl-node-muted'
+      const nodeCls = d.advisory || d.status !== 'pending' ? 'tl-node-muted'
         : d.severity === 'critical' ? 'tl-node-crit' : d.severity === 'high' ? 'tl-node-warn' : 'tl-node-ok';
-      const buildPill = () => d.status === 'pending'
+      const buildPill = () => d.advisory
+        ? el('span', { class: 'pill', title: rule?.advisory_note || '' }, '参考 · 非约束')
+        : d.status === 'pending'
         ? el('span', { class: `pill ${d.severity === 'critical' ? 'crit' : d.severity === 'high' ? 'warn' : 'ok'}` },
             `死线 · ${SEV_LABEL[d.severity]}${overdue ? ' · 已逾期' : ''}`)
         : el('span', { class: `pill ${d.status === 'done' ? 'ok' : ''}` }, `死线 · ${STATUS_LABEL[d.status]}`);
-      return { kind: 'deadline', date: d.due_on, sort2: 1, build: () => tlItem(d.due_on, nodeCls, buildPill(),
+      return { kind: 'deadline', date: d.due_on, sort2: 1, keepVisible: d.status === 'pending' && !!d.advisory, build: () => tlItem(d.due_on, nodeCls, buildPill(),
         [
           el('b', {}, d.name), ' ',
-          d.basis ? el('span', { class: 'tl-note' }, `依据：${d.basis} `) : null,
+          basisBtn(d),
           d.calc_note ? el('div', { class: 'tl-note' }, `算法：${d.calc_note}`) : null,
+          criminalRollBox(d),
+          d.suppressed_reason ? el('div', { class: 'tl-note' }, `已抑制：${d.suppressed_reason}`) : null,
+          d.advisory ? el('span', { class: 'pill', title: rule?.advisory_note || '' }, '参考 · 非约束') : null,
           d.is_manual_override ? el('span', { class: 'pill' }, '人工设定') : null,
           d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
+          d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
         ],
         d.status === 'pending' ? el('span', {},
           confirmReviewBtn(d),
-          editDueBtn(d),
-          el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
-          el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
+          d.advisory ? ignoreAdvisoryBtn(d) : editDueBtn(d),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
           el('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (!confirm('删除该期限？')) return; await api(`/deadlines/${d.id}`, { method: 'DELETE' }); toast('已删除'); load(); } }, '删')
-        ) : null
+        ) : null,
+        d.advisory ? 'deadline-advisory' : ''
       ) };
     }),
     ...bundle.worklog.map((w) => ({ kind: 'log', date: w.worked_on, sort2: 3, build: () => tlItem(w.worked_on, 'tl-node-log',
@@ -1895,7 +2289,7 @@ if (drop) {
 async function load() {
   [bundle, people] = await Promise.all([api(`/cases/${id}`), api('/people')]);
   render();
-  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker()]);
+  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker(), loadChanges()]);
   await Promise.all([loadFiles(), loadFileCandidates()]);
 }
 
