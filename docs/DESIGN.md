@@ -169,6 +169,12 @@ CREATE TABLE audit_log (
 
 **合作对象通讯录与案件参与人（020）**：`people` 是跨案件的轻量通讯录，只保存姓名、电话、单位和备注；`case_participants` 把通讯录对象加入具体案件，并在案件维度保存角色和备注。案件分成约定与已发生台账分别用可空 `person_id` 关联 `people`：选了本案参与人时以通讯录对象为身份主键，同时保留 `counterpart` 作为历史可读姓名；临时填写对象仍可只保存姓名，不强迫建立通讯录记录。020 只把存量 `contacts` 中的合作律师/对方律师回填到通讯录和案件参与人，不改写既有分成金额或约定身份。
 
+**刑事/行政维度与案件类型（021/022/025/027）**：`cases` 增加刑事期限匹配维度 `crime_type`、`trial_mode`、`case_nature`、`custody_status`（与刑事规则 `applies` 的中文维度一一对应，空值时条件型规则不派生并提示补填），业务字段 `case_side`（辩护/控告，与 `case_nature` 公诉/自诉异名）、`entrust_stage`、`co_counsel`、`contract_no`、`custody_place`、`handling_agency`，分类字段 `case_type ∈ {民事, 刑事, 行政, 非诉, 其他, 未分类}`（025 只按「刑事*/行政*」程序前缀回填，其余保持未分类），以及行政复议前置标记 `reconsideration_precondition ∈ {yes, no, unknown}`（默认 unknown，不替历史案件作法律判断）。
+
+**期限手动参数与刑事顺延选择（023/027/028）**：`deadlines` 增加 `manual_days`（NULL=沿用规则，0 合法）、`manual_unit`、`manual_count_from`、`manual_roll` 与调整理由 `override_reason`；任一参数非空即 `is_manual_override=1`，但重算与级联仍按参数执行，只有直接改 `due_on` 才退出计算。`advisory=1` 标记建议性期限，`suppressed_reason` 记录被抑制原因；`criminal_roll_choice ∈ {default, rolled}`（NULL=未选，按默认不顺延）记录逐条按刑诉法 §105 顺延的选择。
+
+**修改审计（024/026）**：`change_log` 是追加式底账（禁 UPDATE/DELETE 触发器），由数据库触发器在写入时记录 `entity`、`action`、`origin`、`actor` 与派生规则 `rule_id`。024 覆盖 cases/events/deadlines/tasks/worklog，按字段记旧值/新值；026 覆盖 contacts/people/case_participants 及费用与分成结算各表，只记对象、案件与动作，不复制姓名、电话、证件、金额或自由文本。单行表 `change_context` 由应用在同一事务内写入 actor/origin/rule_id 供触发器读取。它与 `audit_log` 并存：`audit_log` 记业务动作，`change_log` 记数据变化，只经 `/api/changes` 人面读取。
+
 **款项凭证（012）**：`fee_item_files` 只保存款项与案件夹原件之间的指针：`fee_item_id`、`case_id`、案件夹内 `rel_path`、`kind ∈ {receipt, invoice, share_sheet, other}`、`size` 与创建时间。文件本体固定写入 `<案件夹>/财务凭证/`，不进 SQLite；同一案件内 `rel_path` 唯一。挂接与解除均校验款项当前 `version` 并写审计，解除只删关联行，绝不物理删除案件夹原件。夹内文件被移动或改名时，读取投影返回 `missing=true`，不自动重建。凭证不进 OCR、LegalRAG、LLM、inbox 或 `/internal`。
 
 > 历史欠账（不复述 DDL，指向 migration 文件即可）：**002** 新增 `fee_items`（律师费款项）+ `sessions`（30 天滚动登录会话）；**016** 将 `sessions.created_at/last_seen` 统一为 UTC（保留存量 token，识别并保留运行期已写成 UTC 的续期值）；**003** 新增 `attachments`（案件夹文件**引用**表，§8.5）+ `cases.legalrag_url`（每案 LegalRAG 快捷链，§9.6-A）；**009** 新增 LegalRAG 案件映射、文件 revision/任务状态、提取运行与人工候选表（§8.7）；**011** 新增推荐反馈闭环字段与 `legalrag_candidate_facts` 逻辑事实层（§5、§8.7）；**012** 新增款项凭证指针（§8.5）；**017/018** 新增案件 workspace 与 Agent 直写来源/事实层；**019** 放开款项方案与收讫快照的双向分成方向，保留逐款显式关联。
@@ -191,7 +197,7 @@ CREATE TABLE audit_log (
 
 **007 迁移边界（已完成）**：007 只做增量建表/索引与 005 约定的等价初始 revision 回填；不改写 005 已生成的 `fee_shares`，不改变 006 修复队列筛选、状态机、乐观并发或逻辑作废语义。**008 迁移边界**：只新增同款义务冲突索引/触发器并重建 closed 校验触发器，不自动删除、作废、认领或重算既有坏数据；既有冲突必须经人工裁决或仓库外受控修复。**010 迁移边界**：只增加 `settlement_term`、`is_provisional`、`pending_deductions` 三个人类语义字段，并按通用备注语义识别旧暂定版本；不按案件名、合作人或比例特判，不改公式、不生成金额台账。暂定 revision 即使已经 sealed，也不能建立正式款项 assignment。**019 迁移边界**：只替换 assignment 与 snapshot 的方向守卫，允许显式纳入本款的 receivable；不回填 assignment、不生成新台账、不重算存量历史。**020 迁移边界**：只新增跨案件通讯录、案件参与人关联和可空 `person_id`，并把存量合作律师/对方律师联系人回填为可选身份；不改写既有分成金额、方向、比例或结算历史。
 
-阶段与规则不是表，是**数据文件**（版本进 git，改动可 review）：`rules/deadline_rules.json`、`rules/stage_templates.json`、`rules/holidays-<year>.json`。
+阶段与规则不是表，是**数据文件**（版本进 git，改动可 review）：`rules/deadline_rules.json`（民事）、`rules/deadline_rules_criminal.json`、`rules/deadline_rules_complaint.json`（刑事控告立案前）、`rules/deadline_rules_admin.json`（行政，`review: draft`）、`rules/stage_templates*.json`、`rules/holidays-<year>.json`（2020–2026，`verified.status` 非 verified 的年份启动时跳过并按未覆盖处理）。
 
 ## 3. 期限引擎（法律层核心，确定性纯函数）
 
