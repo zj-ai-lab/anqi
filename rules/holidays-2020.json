@@ -1,0 +1,205 @@
+{
+  "_comment": "2020 年法定节假日放假与调休补班。kind=holiday 放假；kind=workday 调休上班（周末上班，引擎视为工作日）。周末由引擎自动计算，不在此表。数据由 tools/update-holidays.js 从 NateScarlet/holiday-cn 镜像抓取，并逐日对照国务院办公厅通知原文（rules/holiday-notices/2020.txt，摘自下列 gov.cn 页面）校验一致后入库。",
+  "schema_version": 2,
+  "year": 2020,
+  "source": "国办发明电〔2019〕16号；国办发明电〔2020〕1号（延长春节假期）",
+  "source_urls": [
+    "http://www.gov.cn/zhengce/zhengceku/2019-11/21/content_5454164.htm",
+    "http://www.gov.cn/zhengce/zhengceku/2020-01/27/content_5472352.htm"
+  ],
+  "mirror": "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/2020.json",
+  "verified": {
+    "status": "verified",
+    "method": "逐日比对 gov.cn 通知原文（rules/holiday-notices/2020.txt）与镜像数据，放假日与调休上班日完全一致",
+    "at": "2026-10-09",
+    "by": "Grok Bot"
+  },
+  "days": [
+    {
+      "date": "2020-01-01",
+      "kind": "holiday",
+      "name": "元旦"
+    },
+    {
+      "date": "2020-01-19",
+      "kind": "workday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-24",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-25",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-26",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-27",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-28",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-29",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-30",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-01-31",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-02-01",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-02-02",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2020-04-04",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2020-04-05",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2020-04-06",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2020-04-26",
+      "kind": "workday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-05-01",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-05-02",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-05-03",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-05-04",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-05-05",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-05-09",
+      "kind": "workday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2020-06-25",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2020-06-26",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2020-06-27",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2020-06-28",
+      "kind": "workday",
+      "name": "端午节"
+    },
+    {
+      "date": "2020-09-27",
+      "kind": "workday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-01",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-02",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-03",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-04",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-05",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-06",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-07",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-08",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2020-10-10",
+      "kind": "workday",
+      "name": "国庆节、中秋节"
+    }
+  ],
+  "_dropped_from_mirror": {
+    "dates": [
+      "2020-02-03"
+    ],
+    "reason": "镜像把通知中「X月X日（星期一）起正常上班」的普通工作日也记为 workday；非周末，非调休，引擎本就视为工作日，故不入表。"
+  }
+}

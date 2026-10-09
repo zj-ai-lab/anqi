@@ -38,12 +38,30 @@ runMigrations(db);
 // 数据源纪律：文件只能从国务院办公厅当年通知逐日核对后灌入（见各文件 _comment）。
 const rulesDir = path.join(__dirname, '..', 'rules');
 const upsertHoliday = db.prepare('INSERT OR REPLACE INTO holidays (date, kind) VALUES (?, ?)');
+export const HOLIDAY_YEARS = new Set();
+const holidayDocs = [];
+// 规则文件是 holidays 表的唯一来源；清掉旧装载结果，避免某年从 verified
+// 变成 pending 后，旧行继续让引擎误以为该年有覆盖。
+db.prepare('DELETE FROM holidays').run();
 for (const f of fs.readdirSync(rulesDir).filter((x) => /^holidays-\d{4}\.json$/.test(x))) {
   const doc = JSON.parse(fs.readFileSync(path.join(rulesDir, f), 'utf8'));
+  if (doc?.verified?.status !== 'verified') {
+    console.warn(`跳过节假日文件 ${f}：verified.status=${doc?.verified?.status ?? 'missing'}`);
+    continue;
+  }
+  if (Number.isInteger(doc.year)) HOLIDAY_YEARS.add(doc.year);
+  holidayDocs.push(doc);
+}
+for (const doc of holidayDocs) {
   const load = db.transaction((days) => {
     for (const d of days) upsertHoliday.run(d.date, d.kind);
   });
   load(doc.days || []);
+}
+
+export function holidayYearInfo(year) {
+  const doc = holidayDocs.find((item) => item.year === Number(year));
+  return doc ? { source: doc.source, source_urls: doc.source_urls } : null;
 }
 
 let nestedTransactionSequence = 0;

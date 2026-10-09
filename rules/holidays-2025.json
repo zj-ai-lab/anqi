@@ -1,0 +1,183 @@
+{
+  "_comment": "2025 年法定节假日放假与调休补班。kind=holiday 放假；kind=workday 调休上班（周末上班，引擎视为工作日）。周末由引擎自动计算，不在此表。数据由 tools/update-holidays.js 从 NateScarlet/holiday-cn 镜像抓取，并逐日对照国务院办公厅通知原文（rules/holiday-notices/2025.txt，摘自下列 gov.cn 页面）校验一致后入库。",
+  "schema_version": 2,
+  "year": 2025,
+  "source": "国办发明电〔2024〕12号",
+  "source_urls": [
+    "https://www.gov.cn/zhengce/zhengceku/202411/content_6986383.htm"
+  ],
+  "mirror": "https://raw.githubusercontent.com/NateScarlet/holiday-cn/master/2025.json",
+  "verified": {
+    "status": "verified",
+    "method": "逐日比对 gov.cn 通知原文（rules/holiday-notices/2025.txt）与镜像数据，放假日与调休上班日完全一致",
+    "at": "2026-10-09",
+    "by": "Grok Bot"
+  },
+  "days": [
+    {
+      "date": "2025-01-01",
+      "kind": "holiday",
+      "name": "元旦"
+    },
+    {
+      "date": "2025-01-26",
+      "kind": "workday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-01-28",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-01-29",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-01-30",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-01-31",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-02-01",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-02-02",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-02-03",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-02-04",
+      "kind": "holiday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-02-08",
+      "kind": "workday",
+      "name": "春节"
+    },
+    {
+      "date": "2025-04-04",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2025-04-05",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2025-04-06",
+      "kind": "holiday",
+      "name": "清明节"
+    },
+    {
+      "date": "2025-04-27",
+      "kind": "workday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2025-05-01",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2025-05-02",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2025-05-03",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2025-05-04",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2025-05-05",
+      "kind": "holiday",
+      "name": "劳动节"
+    },
+    {
+      "date": "2025-05-31",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2025-06-01",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2025-06-02",
+      "kind": "holiday",
+      "name": "端午节"
+    },
+    {
+      "date": "2025-09-28",
+      "kind": "workday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-01",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-02",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-03",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-04",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-05",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-06",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-07",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-08",
+      "kind": "holiday",
+      "name": "国庆节、中秋节"
+    },
+    {
+      "date": "2025-10-11",
+      "kind": "workday",
+      "name": "国庆节、中秋节"
+    }
+  ]
+}
