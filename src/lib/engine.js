@@ -107,6 +107,8 @@ export function computeDue(rule, event) {
   return computeCalendarDue(rule, event, { isCovered, isNonWorking, kindOf });
 }
 
+const CRIMINAL_ROLL_SUFFIX = '按刑诉法§105顺延（用户选择）';
+
 // ── 手动参数（第一层：调参数 → 届满日自动重算）────────────────────────
 // 2026-09-12 用户裁定「四项全开」：天数数值 / 单位 / 起算方式 / 顺延规则。
 // 优先级：manual_* ＞ 规则默认值；改一个参数，日期自己跟着变，与法条依据的关联不丢。
@@ -126,6 +128,37 @@ export function applyManualParams(rule, dlRow) {
   return merged;
 }
 
+function computeForDeadline(dlRow, event) {
+  if (!dlRow?.rule_id || !event) return null;
+  const rule = ruleById(dlRow.rule_id);
+  if (!rule) return null;
+  const effective = applyManualParams(rule, dlRow);
+  // 显式 §105 选择优先于手动 roll；NULL 保留已有手动参数行为。
+  const choice = rule.scope === 'criminal' ? dlRow.criminal_roll_choice : null;
+  if (choice) effective.roll = choice === 'rolled' ? 'forward' : 'none';
+  const selected = computeDue(effective, event);
+  if (choice === 'rolled' && selected.holiday_roll_option?.applies) {
+    selected.calc_note += `；${CRIMINAL_ROLL_SUFFIX}`;
+  }
+  return {
+    ...selected,
+    calc_note: hasManualParams(dlRow)
+      ? selected.calc_note.replace('【引擎】', '【引擎 · 手动参数】')
+      : selected.calc_note,
+  };
+}
+
+// 案件详情读面使用同一确定性计算，避免把节假日提示持久化成会过期的 JSON。
+export function holidayRollOptionForDeadline(dlRow) {
+  if (!dlRow?.rule_id || !dlRow.trigger_event_id) return null;
+  const event = db.prepare('SELECT * FROM events WHERE id = ?').get(dlRow.trigger_event_id);
+  return computeForDeadline(dlRow, event)?.holiday_roll_option || null;
+}
+
+export function enrichDeadlineRow(dlRow) {
+  return { ...dlRow, holiday_roll_option: holidayRollOptionForDeadline(dlRow) };
+}
+
 // 手动调参后立即重算某条已存在期限；返回 null 表示该条不是引擎派生（无规则/无事件），
 // 由调用方决定保持原状（不臆造日期）。
 export function recomputeForDeadline(dlRow) {
@@ -134,15 +167,7 @@ export function recomputeForDeadline(dlRow) {
   if (!rule || !dlRow.trigger_event_id) return null;
   const event = db.prepare('SELECT * FROM events WHERE id = ?').get(dlRow.trigger_event_id);
   if (!event) return null;
-  const { due_on, calc_note, coverage_warning, coverage_missing_years } = computeDue(applyManualParams(rule, dlRow), event);
-  return {
-    due_on,
-    calc_note: hasManualParams(dlRow)
-      ? calc_note.replace('【引擎】', '【引擎 · 手动参数】')
-      : calc_note,
-    coverage_warning,
-    coverage_missing_years,
-  };
+  return computeForDeadline(dlRow, event);
 }
 
 const existsForEvent = db.prepare(
@@ -186,7 +211,7 @@ export function deriveForEvent(event, caseRow, actor) {
     }
 
     if (existsForEvent.get(event.id, rule.id)) continue; // 幂等：同事件同规则不重复派生
-    const { due_on, calc_note, coverage_warning, coverage_missing_years } = computeDue(rule, event);
+    const { due_on, calc_note, coverage_warning, coverage_missing_years, holiday_roll_option } = computeDue(rule, event);
     setChangeRuleId(rule.id);
     const info = db.prepare(
       `INSERT INTO deadlines (case_id, name, due_on, trigger_event_id, rule_id, basis, calc_note, is_manual_override, severity, advisory)
@@ -203,6 +228,8 @@ export function deriveForEvent(event, caseRow, actor) {
       advisory_note: rule.advisory_note || '',
       coverage_warning,
       coverage_missing_years,
+      holiday_roll_option,
+      criminal_roll_choice: null,
     });
   }
   return created;
@@ -223,7 +250,7 @@ export function recalcPreview(event, newDate) {
     if (d.is_manual_override && !hasManualParams(d)) { excluded.push({ id: d.id, name: d.name, due_on: d.due_on, reason: '人工设定/修正过（D4 保护）' }); continue; }
     if (d.status !== 'pending') { excluded.push({ id: d.id, name: d.name, due_on: d.due_on, reason: `状态=${d.status}` }); continue; }
     // 只调过参数（第一层）的仍按参数重算：否则改了锚点事件日期后，参数型期限会停在旧日期
-    const next = computeDue(applyManualParams(rule, d), { ...event, occurred_on: newDate });
+    const next = computeForDeadline(d, { ...event, occurred_on: newDate });
     recalc.push({ id: d.id, name: d.name, old_due: d.due_on, new_due: next.due_on, calc_note: next.calc_note });
   }
   return { recalc, excluded };

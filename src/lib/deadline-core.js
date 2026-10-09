@@ -65,7 +65,49 @@ function addMonths(dateStr, n) {
   return t.toISOString().slice(0, 10);
 }
 
-// 单条规则计算：返回 { due_on, calc_note, coverage_warning }
+function rollDate(dateStr, direction, isNonWorking) {
+  let due = dateStr;
+  let hops = 0;
+  while (isNonWorking(due) && hops < 15) {
+    due = addDays(due, direction === 'backward' ? -1 : 1);
+    hops++;
+  }
+  return { due, hops };
+}
+
+function spanDates(start, end) {
+  if (!start || !end || start > end) return [];
+  const out = [];
+  let cursor = start;
+  let guard = 0;
+  while (cursor <= end) {
+    out.push(cursor);
+    cursor = addDays(cursor, 1);
+    if (++guard > 10000) break;
+  }
+  return out;
+}
+
+function criminalHolidayOption(rule, { base, start, raw, back }, calendar) {
+  if (rule.scope !== 'criminal' || !raw) return null;
+  const kindOf = calendar.kindOf || (() => null);
+  // 自然日/工作日按实际计数跨度；倒推期限的期间是 raw 到锚点前一日。
+  const periodStart = back ? raw : start;
+  const periodEnd = back ? (base === raw ? raw : addDays(base, -1)) : raw;
+  const period = spanDates(periodStart, periodEnd);
+  const contains_holidays = period.filter((date) => kindOf(date) === 'holiday');
+  const rawKind = kindOf(raw);
+  const endWeekend = [0, 6].includes(weekdayOf(raw)) && rawKind !== 'workday';
+  if (!contains_holidays.length && rawKind !== 'holiday' && !endWeekend) return null;
+  return {
+    applies: true,
+    contains_holidays,
+    default_due: raw,
+    rolled_due: rollDate(raw, 'forward', calendar.isNonWorking).due,
+  };
+}
+
+// 单条规则计算：返回 { due_on, calc_note, coverage_warning, holiday_roll_option }
 export function computeDue(rule, event, calendar) {
   const { isCovered, isNonWorking, kindOf = () => null } = calendar;
   const notes = [];
@@ -178,14 +220,12 @@ export function computeDue(rule, event, calendar) {
       : `${base} 含当日起算 ${rule.days} 日 → ${raw}`);
   }
 
+  const holiday_roll_option = criminalHolidayOption(rule, { base, start, raw, back }, calendar);
   let due = raw;
   if (rule.roll && rule.roll !== 'none') {
-    const step = rule.roll === 'backward' ? -1 : 1;
-    let hops = 0;
-    while (isNonWorking(due) && hops < 15) {
-      due = addDays(due, step);
-      hops++;
-    }
+    const rolled = rollDate(raw, rule.roll, isNonWorking);
+    due = rolled.due;
+    const hops = rolled.hops;
     if (hops > 0) {
       notes.push(`届满日 ${raw}（周${WD[weekdayOf(raw)]}）为节假日/休息日 → ${rule.roll === 'backward' ? '前移' : '顺延'}至 ${due}（周${WD[weekdayOf(due)]}）`);
     } else {
@@ -213,5 +253,5 @@ export function computeDue(rule, event, calendar) {
   }
 
   const calc_note = `【引擎】${notes.join('；')}。依据：${rule.basis}`;
-  return { due_on: due, calc_note, coverage_warning: coverageWarning, coverage_missing_years };
+  return { due_on: due, calc_note, coverage_warning: coverageWarning, coverage_missing_years, holiday_roll_option };
 }

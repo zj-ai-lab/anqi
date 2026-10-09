@@ -645,6 +645,42 @@ function deadlineMeta(d) {
   ];
 }
 
+const CRIMINAL_ROLL_NOTE = '刑诉法§105②：期间的最后一日为节假日的，以节假日后的第一日为期满日期，但犯罪嫌疑人、被告人或者罪犯在押期间，应当至期满之日为止，不得因节假日而延长。本规则默认不顺延（2026-09-11 决定）；如当事人未在押，可选择按§105顺延。';
+
+function criminalRollBox(d) {
+  const option = d.holiday_roll_option;
+  if (!option?.applies) return null;
+  const infoOnly = option.default_due === option.rolled_due;
+  const current = d.criminal_roll_choice === 'rolled' ? 'rolled' : 'default';
+  const choose = async (choice) => {
+    if (choice === d.criminal_roll_choice && d.due_on === option[choice === 'rolled' ? 'rolled_due' : 'default_due']) return;
+    await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { criminal_roll_choice: choice } });
+    toast(choice === 'rolled' ? '已按刑诉法§105顺延 ✓' : '已恢复默认不顺延 ✓');
+    load();
+  };
+  const box = el('div', { class: 'criminal-roll-box', role: 'note' },
+    el('div', { class: 'criminal-roll-title' }, option.contains_holidays?.length ? '期间含法定节假日' : '届满日为休息日'),
+    infoOnly
+      ? el('div', { class: 'criminal-roll-info' }, '期间内含法定节假日，届满日为工作日，顺延与否结果相同')
+      : el('div', { class: 'criminal-roll-options', role: 'group', 'aria-label': '刑事期限节假日顺延选择' },
+        el('button', { class: `criminal-roll-option${current === 'default' ? ' is-current' : ''}`, type: 'button', 'aria-pressed': String(current === 'default'), onclick: () => choose('default') }, `默认不顺延：${option.default_due}`),
+        el('button', { class: `criminal-roll-option${current === 'rolled' ? ' is-current' : ''}`, type: 'button', 'aria-pressed': String(current === 'rolled'), onclick: () => choose('rolled') }, `按§105顺延：${option.rolled_due}`),
+      ),
+    el('details', { class: 'criminal-roll-note' },
+      el('summary', {}, '刑诉法§105说明'),
+      el('div', {}, CRIMINAL_ROLL_NOTE, ' ', el('a', { href: 'http://www.npc.gov.cn/npc/c2/c12435/201905/t20190521_276591.html', target: '_blank', rel: 'noopener' }, '来源')),
+    ),
+  );
+  return box;
+}
+
+function ignoreAdvisoryBtn(d) {
+  return el('button', {
+    class: 'btn small', type: 'button', title: '参考期限不具有约束力',
+    onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('参考期限已忽略'); load(); },
+  }, '忽略');
+}
+
 // 头条：本案最近的那条死线。只在「真该喊」时出现（逾期或 ≤7 日）——
 // 否则一条 60 天后的期限也顶着红色巨字，是虚假警报。
 function runwayLead(d) {
@@ -666,7 +702,8 @@ function runwayLead(d) {
         ...deadlineMeta(d),
         d.calc_note ? el('span', { class: 'sep' }, '·') : null,
         d.calc_note ? el('span', {}, d.calc_note) : null
-      )
+      ),
+      criminalRollBox(d)
     ),
     el('div', { class: 'rw-trk' }, track(d)),
     el('div', { class: 'rw-due' }, d.due_on.slice(5)),
@@ -688,12 +725,41 @@ function runwayRow(d, i) {
     ),
     el('div', { class: 'rw-main' },
       el('div', { class: 'm1' }, d.name),
-      el('div', { class: 'm2' }, ...deadlineMeta(d))
+      el('div', { class: 'm2' }, ...deadlineMeta(d)),
+      criminalRollBox(d)
     ),
     el('div', { class: 'rw-trk' }, track(d)),
     el('div', { class: 'rw-due' }, d.due_on.slice(5)),
     el('span', { class: 'rw-acts' }, confirmReviewBtn(d), editDueBtn(d), doneBtn(d))
   );
+}
+
+function advisoryRunwayRow(d, i) {
+  return el('div', { class: `rw-row advisory-row d${Math.min(i + 1, 3)}` },
+    el('div', { class: 'rw-days advisory-days' }, el('span', { class: 'pre' }, '参考')),
+    el('div', { class: 'rw-main' },
+      el('div', { class: 'm1' }, d.name),
+      el('div', { class: 'm2' }, el('span', { class: 'pill' }, '参考 · 非约束'),
+        el('span', { class: 'sep' }, '·'), el('span', {}, `到期 ${d.due_on}`)),
+      criminalRollBox(d),
+    ),
+    el('div', { class: 'rw-due' }, d.due_on.slice(5)),
+    el('span', { class: 'rw-acts' }, ignoreAdvisoryBtn(d)),
+  );
+}
+
+function advisoryRunway(items) {
+  const wrap = el('div', { class: 'runway runway-act advisory-runway' },
+    el('div', { class: 'rw-colhead' },
+      el('span', { class: 'h-days' }, '参考'),
+      el('span', { class: 'h-item' }, '参考期限 · 非约束'),
+      el('span', { class: 'h-trk' }, ''),
+      el('span', { class: 'h-due' }, '到期'),
+      el('span', { class: 'h-key' }, '操作'),
+    ),
+  );
+  items.forEach((d, i) => wrap.append(advisoryRunwayRow(d, i)));
+  return wrap;
 }
 
 function caseRunway(items) {
@@ -1235,7 +1301,9 @@ function drawTimeline(nextItems = timelineItems) {
   const total = filtered.length;
   if (total <= TIMELINE_PREVIEW_LIMIT) timelineExpanded = false;
 
-  const visible = timelineExpanded ? filtered : filtered.slice(0, TIMELINE_PREVIEW_LIMIT);
+  const visible = timelineExpanded ? filtered : (() => {
+    return filtered.filter((item, i) => i < TIMELINE_PREVIEW_LIMIT || item.keepVisible);
+  })();
   const tl = document.getElementById('timeline');
   tl.replaceChildren(...visible.map((item) => item.build()));
   if (!total) {
@@ -1263,11 +1331,11 @@ function drawTimeline(nextItems = timelineItems) {
     return;
   }
   toggle.textContent = timelineExpanded
-    ? `收起，仅看最近 ${TIMELINE_PREVIEW_LIMIT} 条`
+    ? `收起，仅看最近 ${TIMELINE_PREVIEW_LIMIT} 条及待处理参考期限`
     : `展开全部（${total} 条）`;
   state.textContent = timelineExpanded
     ? `已显示全部 ${total} 条`
-    : `已显示最近 ${TIMELINE_PREVIEW_LIMIT} / 共 ${total} 条`;
+    : `已显示 ${visible.length} / 共 ${total} 条（含待处理参考期限）`;
 }
 
 for (const button of document.querySelectorAll('[data-timeline-filter]')) {
@@ -1317,7 +1385,7 @@ const FIELD_CN = {
   calc_note: '算法说明', is_manual_override: '人工覆盖', severity: '紧急度', done_at: '完成于',
   review_status: '复核状态', manual_days: '手算天数', manual_unit: '手算单位',
   manual_count_from: '起算基准', manual_roll: '顺延方式', override_reason: '覆盖理由',
-  advisory: '参考期限', suppressed_reason: '抑制原因',
+  advisory: '参考期限', suppressed_reason: '抑制原因', criminal_roll_choice: '刑事节假日顺延选择',
   // tasks
   title: '标题', plan_date: '计划日', deadline_id: '关联期限', priority: '优先级', origin: '来源',
   due_time: '截止时刻',
@@ -1542,6 +1610,10 @@ function render() {
     .filter((x) => x.status === 'pending' && !x.advisory)
     .map((x) => ({ ...x, days_left: daysTo(x.due_on, today) }))
     .sort((a, b) => a.days_left - b.days_left);
+  const advisoryPend = bundle.deadlines
+    .filter((x) => x.status === 'pending' && x.advisory)
+    .map((x) => ({ ...x, days_left: daysTo(x.due_on, today) }))
+    .sort((a, b) => a.days_left - b.days_left);
 
   const nextDeadline = pend[0];
   const deadlineHead = document.getElementById('case-head-deadline');
@@ -1558,9 +1630,11 @@ function render() {
     )
     : el('span', { class: 'is-clear' }, '当前无在追期限'));
 
-  document.getElementById('case-runway').replaceChildren(
-    pend.length ? caseRunway(pend) : el('div', { class: 'section-empty' }, '无在追死线——录入触发事件或手动记死线')
-  );
+  const runwayBlocks = [];
+  if (pend.length) runwayBlocks.push(caseRunway(pend));
+  if (advisoryPend.length) runwayBlocks.push(advisoryRunway(advisoryPend));
+  if (!runwayBlocks.length) runwayBlocks.push(el('div', { class: 'section-empty' }, '无在追死线——录入触发事件或手动记死线'));
+  document.getElementById('case-runway').replaceChildren(...runwayBlocks);
   document.getElementById('runway-legend').hidden = !pend.length;
   const rwMeta = document.getElementById('runway-meta');
   rwMeta.replaceChildren();
@@ -1587,7 +1661,7 @@ function render() {
     }, '记一条')
   ));
   document.getElementById('tasks-count').textContent = open.length ? `${open.length} 项` : '';
-  document.getElementById('case-action-badge').textContent = pend.length + open.length || '';
+  document.getElementById('case-action-badge').textContent = pend.length + advisoryPend.length + open.length || '';
 
   // 时间线合流：event / deadline / worklog
   const items = [
@@ -1639,7 +1713,7 @@ function render() {
     ...bundle.deadlines.map((d) => {
       const rule = ruleById.get(d.rule_id);
       const overdue = d.status === 'pending' && d.due_on < today;
-      const nodeCls = d.status !== 'pending' ? 'tl-node-muted'
+      const nodeCls = d.advisory || d.status !== 'pending' ? 'tl-node-muted'
         : d.severity === 'critical' ? 'tl-node-crit' : d.severity === 'high' ? 'tl-node-warn' : 'tl-node-ok';
       const buildPill = () => d.advisory
         ? el('span', { class: 'pill', title: rule?.advisory_note || '' }, '参考 · 非约束')
@@ -1647,11 +1721,12 @@ function render() {
         ? el('span', { class: `pill ${d.severity === 'critical' ? 'crit' : d.severity === 'high' ? 'warn' : 'ok'}` },
             `死线 · ${SEV_LABEL[d.severity]}${overdue ? ' · 已逾期' : ''}`)
         : el('span', { class: `pill ${d.status === 'done' ? 'ok' : ''}` }, `死线 · ${STATUS_LABEL[d.status]}`);
-      return { kind: 'deadline', date: d.due_on, sort2: 1, build: () => tlItem(d.due_on, nodeCls, buildPill(),
+      return { kind: 'deadline', date: d.due_on, sort2: 1, keepVisible: d.status === 'pending' && !!d.advisory, build: () => tlItem(d.due_on, nodeCls, buildPill(),
         [
           el('b', {}, d.name), ' ',
           basisBtn(d),
           d.calc_note ? el('div', { class: 'tl-note' }, `算法：${d.calc_note}`) : null,
+          criminalRollBox(d),
           d.suppressed_reason ? el('div', { class: 'tl-note' }, `已抑制：${d.suppressed_reason}`) : null,
           d.advisory ? el('span', { class: 'pill', title: rule?.advisory_note || '' }, '参考 · 非约束') : null,
           d.is_manual_override ? el('span', { class: 'pill' }, '人工设定') : null,
@@ -1660,7 +1735,7 @@ function render() {
         ],
         d.status === 'pending' ? el('span', {},
           confirmReviewBtn(d),
-          d.advisory ? el('button', { class: 'btn small', type: 'button', title: rule?.advisory_note || '', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('参考期限已忽略'); load(); } }, '忽略') : editDueBtn(d),
+          d.advisory ? ignoreAdvisoryBtn(d) : editDueBtn(d),
           d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
           d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
           el('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (!confirm('删除该期限？')) return; await api(`/deadlines/${d.id}`, { method: 'DELETE' }); toast('已删除'); load(); } }, '删')

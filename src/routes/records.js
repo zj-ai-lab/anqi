@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { db, audit, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
 import { isEventType } from '../lib/vocab.js';
-import { deriveForEvent, recalcPreview, applyRecalc, recomputeForDeadline, hasManualParams } from '../lib/engine.js';
+import { deriveForEvent, recalcPreview, applyRecalc, recomputeForDeadline, hasManualParams, enrichDeadlineRow } from '../lib/engine.js';
 import { parseQuick, llmReady } from '../lib/llm.js';
 
 const r = Router();
@@ -96,7 +96,7 @@ export function createDeadlineRecord({
       String(b.basis || ''), String(b.calc_note || ''), severity, normalizedReview, normalizedCreatedBy
     );
     audit(actor, 'create', 'deadline', info.lastInsertRowid, `${c.name} ${String(b.name).trim()} ${b.due_on}`);
-    return db.prepare('SELECT * FROM deadlines WHERE id = ?').get(info.lastInsertRowid);
+    return enrichDeadlineRow(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(info.lastInsertRowid));
   });
 }
 
@@ -226,7 +226,7 @@ r.post('/deadlines/:id/confirm-review', (req, res) => {
       audit(req.actor, 'confirm-review', 'deadline', row.id, `${row.name} ${row.due_on}`);
     });
   }
-  res.json(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id));
+  res.json(enrichDeadlineRow(db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id)));
 });
 
 // 手动调参（第一层）合法取值。允许空串＝清除该覆盖项，回归规则默认值。
@@ -241,6 +241,29 @@ r.patch('/deadlines/:id', (req, res) => {
   const b = req.body || {};
   const sets = [];
   const args = [];
+  if (Object.hasOwn(b, 'criminal_roll_choice')) {
+    if (Object.keys(b).length !== 1) return res.status(400).json({ error: '刑事节假日顺延选择请单独提交' });
+    const value = b.criminal_roll_choice;
+    if (value !== null && !['default', 'rolled'].includes(value)) {
+      return res.status(400).json({ error: 'criminal_roll_choice 须为 default / rolled，或 null 清除' });
+    }
+    // 选择 §105 就回到参数计算；既有数量/单位和人工参数仍保留。
+    const nextRow = { ...row, criminal_roll_choice: value };
+    const next = recomputeForDeadline(nextRow);
+    const option = next?.holiday_roll_option;
+    if (!option?.applies) {
+      return res.status(400).json({ error: '该期限不是当前适用的刑事节假日顺延期限' });
+    }
+    if (option.default_due === option.rolled_due) {
+      return res.status(400).json({ error: '该期限顺延与否结果相同，无需选择' });
+    }
+    withChangeContext({ actor: req.actor, rule_id: row.rule_id }, () => {
+      db.prepare(`UPDATE deadlines SET criminal_roll_choice=?, due_on=?, calc_note=? WHERE id=?`)
+        .run(value, next.due_on, next.calc_note, row.id);
+      audit(req.actor, 'criminal-roll-choice', 'deadline', row.id, `${value ?? 'undecided'} → ${next.due_on}`);
+    });
+    return res.json(enrichDeadlineRow(db.prepare('SELECT * FROM deadlines WHERE id=?').get(row.id)));
+  }
   for (const f of ['name', 'due_on', 'basis', 'calc_note', 'severity', 'status', 'override_reason']) {
     if (!(f in b)) continue;
     if (f === 'due_on' && !isDate(b.due_on)) return res.status(400).json({ error: '日期非法' });
@@ -275,11 +298,13 @@ r.patch('/deadlines/:id', (req, res) => {
   // 人工改动到期日 → 标记 override（D4：级联重算默认排除）
   if ('due_on' in b && b.due_on !== row.due_on) {
     sets.push('is_manual_override = 1');
+    sets.push('criminal_roll_choice = NULL');
     if (!touchedManual.length) {
       // 从参数计算转为直接指定日期：清掉参数，避免下次重算误当作参数型覆盖。
       sets.push('manual_days = NULL', "manual_unit = ''", "manual_count_from = ''", "manual_roll = ''");
     }
   }
+  if (touchedManual.includes('manual_roll')) sets.push('criminal_roll_choice = NULL');
   if ('status' in b && b.status === 'done' && row.status !== 'done') {
     sets.push("done_at = datetime('now','+8 hours')");
   }
@@ -305,7 +330,7 @@ r.patch('/deadlines/:id', (req, res) => {
     }
     audit(req.actor, 'update', 'deadline', row.id, Object.keys(b).join(','));
   });
-  res.json(updated);
+  res.json(enrichDeadlineRow(updated));
 });
 
 r.delete('/deadlines/:id', (req, res) => {
