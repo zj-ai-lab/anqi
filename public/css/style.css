@@ -1520,6 +1520,22 @@ details.adder[open] { border-style: solid; border-color: var(--green-line); }
     0 2px 3px -1px var(--span-sh), 0 8px 18px -8px var(--span-sh);
   z-index: 5;
 }
+.cal-quick-menu {
+  position: fixed; z-index: 95; display: flex; align-items: center; gap: 4px;
+  padding: 5px; border: 1px solid var(--border); border-radius: var(--r-btn);
+  background: var(--surface-pop); box-shadow: var(--sh-pop); white-space: nowrap;
+}
+.cal-quick-menu button { border: 0; border-radius: 5px; padding: 6px 8px; background: transparent; color: var(--ink); cursor: pointer; }
+.cal-quick-menu button:hover { background: var(--hover); }
+.cal-quick-menu-date { padding: 0 5px; color: var(--meta); font-size: 12px; }
+@media (max-width: 767px) {
+  .cal-weeks { --cal-lane-h: 22px; }
+  .cal-chip, .cal-span { font-size: 11px; }
+  .cal-chip { margin: 2px 1px; padding: 1px 4px; }
+  .cal-span { min-height: 20px; padding: 0 5px; }
+  .cal-daynum { padding-left: 5px; padding-right: 5px; }
+  .cal-day-chips { padding-left: 1px; padding-right: 1px; }
+}
 .cal-span.start { border-radius: var(--r-chip) 0 0 var(--r-chip); }
 .cal-span.end { border-radius: 0 var(--r-chip) var(--r-chip) 0; }
 .cal-span.start.end { border-radius: var(--r-chip); }

@@ -113,6 +113,12 @@ const meta = await api('/meta');
 const evTypeSel = document.getElementById('ev-type');
 for (const t of meta.event_types) evTypeSel.append(el('option', { value: t.id }, t.label));
 const evLabel = Object.fromEntries(meta.event_types.map((t) => [t.id, t.label]));
+const syncHearingFields = () => {
+  const show = evTypeSel.value === 'hearing';
+  document.querySelectorAll('.ev-hearing-field').forEach((field) => { field.hidden = !show; });
+};
+evTypeSel.addEventListener('change', syncHearingFields);
+syncHearingFields();
 
 // 期限「依据」浮层所需的本地法条库（Q10 裁定「丙」）：本页已取过 /meta，直接注入，避免二次请求。
 setLawTexts(meta.law_texts);
@@ -1680,6 +1686,8 @@ function render() {
       el('span', { class: 'pill acc' }, evLabel[e.type] || e.type),
       [
         ['llm', 'ai'].includes(e.created_by) ? el('span', { class: 'pill acc' }, 'AI 加的') : null,
+        e.occurred_time ? el('span', { class: 'pill' }, e.occurred_time) : null,
+        e.location ? el('span', { class: 'pill' }, e.location) : null,
         e.instrument ? el('span', {}, e.instrument, ' ') : null,
         e.service_method ? el('span', { class: 'pill' }, e.service_method) : null,
         e.note ? el('div', { class: 'tl-note' }, e.note) : null,

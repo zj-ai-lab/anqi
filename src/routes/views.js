@@ -235,8 +235,8 @@ r.get('/calendar', (req, res) => {
        FROM deadlines d JOIN cases c ON c.id = d.case_id WHERE d.due_on LIKE ? AND d.advisory = 0 ORDER BY d.due_on`
     ).all(like),
     hearings: db.prepare(
-      `SELECT e.id, e.occurred_on, e.note, e.case_id, c.name AS case_name
-       FROM events e JOIN cases c ON c.id = e.case_id WHERE e.type = 'hearing' AND e.occurred_on LIKE ? ORDER BY e.occurred_on`
+      `SELECT e.id, e.occurred_on, e.occurred_time, e.location, e.note, e.case_id, c.name AS case_name
+       FROM events e JOIN cases c ON c.id = e.case_id WHERE e.type = 'hearing' AND e.occurred_on LIKE ? ORDER BY e.occurred_on, CASE WHEN e.occurred_time='' THEN 1 ELSE 0 END, e.occurred_time, e.id`
     ).all(like),
     // status 不过滤 —— 全状态返回（open/done/dropped），前端按筛选器决定画不画、
     // done/dropped 叠 .cal-chip.done 灰显划线（与 deadlines 同一套 chipClass 模式）。

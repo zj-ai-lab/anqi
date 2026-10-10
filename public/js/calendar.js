@@ -36,6 +36,29 @@ let revealTaskId = null;
 let pickedTaskId = null;
 let flipT = null;
 const expanded = new Set(); // 周行序号；翻月时由导航动作清空，普通重绘保留
+let quickMenu = null;
+
+function closeQuickMenu() {
+  quickMenu?.remove();
+  quickMenu = null;
+}
+
+function showQuickMenu(anchor, date) {
+  closeQuickMenu();
+  quickMenu = el('div', { class: 'cal-quick-menu', role: 'menu' },
+    el('button', { type: 'button', role: 'menuitem', onclick: () => { closeQuickMenu(); document.dispatchEvent(new CustomEvent('anjian:quick-prefill', { detail: { kind: 'task', date } })); } }, '记待办'),
+    el('button', { type: 'button', role: 'menuitem', onclick: () => { closeQuickMenu(); document.dispatchEvent(new CustomEvent('anjian:quick-prefill', { detail: { kind: 'hearing', date } })); } }, '记开庭'),
+    el('button', { type: 'button', role: 'menuitem', onclick: () => { closeQuickMenu(); document.dispatchEvent(new CustomEvent('anjian:quick-prefill', { detail: { kind: 'log', date } })); } }, '记日志'),
+    el('span', { class: 'cal-quick-menu-date' }, `· ${date}`),
+  );
+  document.body.appendChild(quickMenu);
+  const box = anchor.getBoundingClientRect();
+  quickMenu.style.left = `${Math.min(window.innerWidth - quickMenu.offsetWidth - 8, Math.max(8, box.left))}px`;
+  quickMenu.style.top = `${Math.min(window.innerHeight - quickMenu.offsetHeight - 8, box.bottom + 4)}px`;
+  setTimeout(() => document.addEventListener('pointerdown', (event) => {
+    if (quickMenu && !quickMenu.contains(event.target)) closeQuickMenu();
+  }, { once: true }), 0);
+}
 
 const PRIORITY_LABEL = { high: '高优先', normal: '一般', low: '低优先' };
 
@@ -575,7 +598,7 @@ async function load({ refresh = true } = {}) {
       seg.lane = lane;
     }
     const total = laneEnd.length;
-    const cap = window.matchMedia('(max-width: 767px)').matches ? 2 : 3;
+    const cap = window.matchMedia('(max-width: 767px)').matches ? 4 : 3;
     const open = expanded.has(w);
     const overflow = !open && total > cap;
     const visLanes = overflow ? cap - 1 : total;
@@ -613,7 +636,7 @@ async function load({ refresh = true } = {}) {
       row.append(el('div', {
         class: cls.join(' '), 'data-date': date, style: `grid-column:${i + 1}`,
         onclick: (e) => {
-          if (!isNarrow() || !pickedTaskId) return;
+          if (!pickedTaskId) { showQuickMenu(e.currentTarget, date); return; }
           if (e.target.closest('.cal-span, .cal-chip, .cal-more')) return;
           const task = allTasks.find((item) => String(item.id) === pickedTaskId);
           if (!task || task.status !== 'open') { clearPickedTask(); return; }
@@ -630,6 +653,7 @@ async function load({ refresh = true } = {}) {
       row.append(el('div', {
         class: `cal-daynum${date.slice(0, 7) !== current ? ' other' : ''}${date === today ? ' is-today' : ''}`,
         style: `grid-column:${i + 1};grid-row:1`,
+        onclick: (e) => { e.stopPropagation(); if (!pickedTaskId) showQuickMenu(e.currentTarget, date); },
       },
         el('span', {}, String(Number(date.slice(8)))),
         hk ? el('span', { class: 'hmark' }, hk === 'holiday' ? '休' : '班') : null
@@ -682,7 +706,7 @@ document.getElementById('today-btn').addEventListener('click', () => { expanded.
 document.addEventListener('pointermove', onPointerMove);
 document.addEventListener('pointerup', (e) => finishDrag(e, true));
 document.addEventListener('pointercancel', (e) => finishDrag(e, false));
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drag) finishDrag(e, false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeQuickMenu(); if (drag) finishDrag(e, false); } });
 window.addEventListener('resize', syncResponsiveCopy, { passive: true });
 
 // 图例即筛选开关：点击切 .off → 写 localStorage → 重渲染。

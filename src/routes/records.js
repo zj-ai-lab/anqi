@@ -43,15 +43,18 @@ export function createEventRecord({ caseId, payload, actor = 'web', createdBy = 
   const b = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
   if (!isEventType(b.type)) throw recordError('type 非法（见 /api/meta 词表）');
   if (!isDate(b.occurred_on)) throw recordError('occurred_on 须为 YYYY-MM-DD');
+  const occurredTime = b.occurred_time === undefined || b.occurred_time === null ? '' : String(b.occurred_time);
+  if (occurredTime && !isTime(occurredTime)) throw recordError('occurred_time 须为 HH:MM');
+  const location = String(b.location || '').trim().slice(0, 120);
   const normalizedCreatedBy = ['manual', 'llm', 'import'].includes(createdBy) ? createdBy : 'manual';
   // 身份上下文与业务写同事务（024）：事件、引擎派生出的期限/待办一起记到同一个 actor 名下。
   // 本函数被 HTTP 路由与 agent 直写共用，包在这里两边都覆盖，不必各自记得包一次。
   return withChangeContext({ actor }, () => {
     const info = db.prepare(
-      `INSERT INTO events (case_id, type, occurred_on, service_method, instrument, note, created_by)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO events (case_id, type, occurred_on, occurred_time, location, service_method, instrument, note, created_by)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
-      c.id, b.type, b.occurred_on, String(b.service_method || ''), String(b.instrument || ''),
+      c.id, b.type, b.occurred_on, occurredTime, location, String(b.service_method || ''), String(b.instrument || ''),
       String(b.note || ''), normalizedCreatedBy
     );
     audit(actor, 'create', 'event', info.lastInsertRowid, `${c.name} ${b.type} ${b.occurred_on}`);
@@ -177,12 +180,13 @@ r.patch('/events/:id', (req, res) => {
 
   const sets = [];
   const args = [];
-  for (const f of ['type', 'occurred_on', 'service_method', 'instrument', 'note']) {
+  for (const f of ['type', 'occurred_on', 'occurred_time', 'location', 'service_method', 'instrument', 'note']) {
     if (!(f in b)) continue;
     if (f === 'type' && !isEventType(b.type)) return res.status(400).json({ error: 'type 非法' });
     if (f === 'occurred_on' && !isDate(b.occurred_on)) return res.status(400).json({ error: '日期非法' });
+    if (f === 'occurred_time' && b.occurred_time !== '' && !isTime(b.occurred_time)) return res.status(400).json({ error: '时刻须为 HH:MM' });
     sets.push(`${f} = ?`);
-    args.push(b[f] ?? '');
+    args.push(f === 'location' ? String(b[f] || '').trim().slice(0, 120) : (b[f] ?? ''));
   }
   if (!sets.length) return res.status(400).json({ error: '无可更新字段' });
   withChangeContext({ actor: req.actor }, () => {
@@ -495,7 +499,7 @@ r.delete('/worklog/:id', (req, res) => {
 // ---------- 快录（P3/P5：方律本人直录不过收件箱）----------
 r.post('/quick', (req, res) => {
   const b = req.body || {};
-  const kind = b.kind === 'log' ? 'log' : 'task';
+  const kind = ['task', 'log', 'hearing'].includes(b.kind) ? b.kind : 'task';
   if (!b.text || !b.text.trim()) return res.status(400).json({ error: 'text 必填' });
   if (b.date && !isDate(b.date)) return res.status(400).json({ error: 'date 须为 YYYY-MM-DD' });
   if (b.case_id && !db.prepare('SELECT id FROM cases WHERE id = ?').get(b.case_id)) {
@@ -509,6 +513,26 @@ r.post('/quick', (req, res) => {
       return db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
     });
     return res.json({ kind: 'log', row });
+  }
+  if (kind === 'hearing') {
+    if (!b.case_id) return res.status(400).json({ error: '开庭必须挂案件' });
+    if (!b.date || !isDate(b.date)) return res.status(400).json({ error: '开庭必须有合法日期' });
+    try {
+      const result = createEventRecord({
+        caseId: Number(b.case_id),
+        actor: req.actor,
+        payload: {
+          type: 'hearing',
+          occurred_on: b.date,
+          occurred_time: b.time ?? b.occurred_time ?? '',
+          location: b.location ?? '',
+          note: b.text.trim(),
+        },
+      });
+      return res.json({ kind: 'hearing', row: result.row, derived: result.derived });
+    } catch (error) {
+      return responseError(res, error);
+    }
   }
   const row = withChangeContext({ actor: req.actor }, () => {
     const info = db.prepare('INSERT INTO tasks (case_id, title, plan_date) VALUES (?, ?, ?)')
@@ -552,21 +576,29 @@ r.post('/quick/parse', async (req, res) => {
   }
 
   // ── 一个字都不信 LLM：逐字段白名单校验，越界一律降级为空，绝不透传 ──
-  const kind = out.kind === 'log' ? 'log' : 'task';       // 白名单闭合：结构上不可能产出 deadline（铁律①）
+  const parsedKind = ['task', 'log', 'hearing'].includes(out.kind) ? out.kind : 'task';
+  const hasDate = isDate(out.date);
+  const downgraded = parsedKind === 'hearing' && !hasDate;
+  const kind = downgraded ? 'task' : parsedKind;       // 白名单闭合：结构上不可能产出 deadline（铁律①）
   let title = String(out.title || '').trim().slice(0, 200);
   if (!title) title = text;                               // LLM 没给标题就退回原文，不能把人的输入弄丢
-  const date = isDate(out.date) ? out.date : '';          // 非法/瞎猜的日期直接丢掉，让人自己填
+  const date = hasDate ? out.date : '';          // 非法/瞎猜的日期直接丢掉，让人自己填
+  const time = isTime(String(out.time || '')) ? String(out.time) : '';
+  const location = String(out.location || '').trim().slice(0, 120);
   const c = matchCase(out.case_hint);
 
-  audit(req.actor, 'parse', 'quick', null, `llm:${kind}${c ? ' →' + c.name : ''}`);
+  // 解析只回填建议，绝不写任何业务或审计表；人按「记」才进入正式写入路径。
   res.json({
     kind,
     title,
     date,
+    time,
+    location,
     case_id: c ? c.id : null,
     case_name: c ? c.name : '',
     case_hint: String(out.case_hint || '').slice(0, 60),  // 没匹配上时回显线索，让人知道它「以为」是哪个案子
     source_text: text,
+    ...(downgraded ? { downgraded: '开庭没有明确日期，已按待办整理' } : {}),
   });
 });
 

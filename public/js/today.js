@@ -331,6 +331,8 @@ function hearRow(h, today) {
       )
     ),
     el('div', { class: 'hear-name' }, caseLink(h.case_id, h.case_name)),
+    h.occurred_time ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip c-blue' }, h.occurred_time)) : null,
+    h.location ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip' }, h.location)) : null,
     h.instrument ? el('div', { class: 'hear-no' }, h.instrument) : null,
     h.note ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip' }, h.note)) : null
   );
