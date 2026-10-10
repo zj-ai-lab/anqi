@@ -45,14 +45,16 @@ function compressedPdf(text) {
   chunks.push(Buffer.from(xref.join('')));
   return Buffer.concat(chunks);
 }
-let modelCalls = 0; let imageCalls = 0;
+let modelCalls = 0; let imageCalls = 0; let returnChineseFields = false;
 const upstream = http.createServer((req, res) => {
   let body = ''; req.on('data', (chunk) => { body += chunk; }); req.on('end', () => {
     modelCalls++;
     const parsed = JSON.parse(body); const user = parsed.messages?.at(-1)?.content;
     const image = Array.isArray(user);
     if (image) imageCalls++;
-    const fields = { doc_kind: 'summons', date: '2099-11-03', time: '09:30', location: '第五法庭', court: '示例法院', case_no: '(2099)测0000民初1号', parties: ['张三', '李四'], summary: '张三案开庭' };
+    const fields = returnChineseFields
+      ? { doc_kind: 'summons', date: '2099年11月3日', time: '上午9时30分', location: '本院第五法庭', court: '示例法院', case_no: '(2099)测0000民初1号', parties: ['张三', '李四'], summary: '张三案开庭' }
+      : { doc_kind: 'summons', date: '2099-11-03', time: '09:30', location: '第五法庭', court: '示例法院', case_no: '(2099)测0000民初1号', parties: ['张三', '李四'], summary: '张三案开庭' };
     res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(fields) } }] }));
   });
 });
@@ -78,6 +80,11 @@ try {
   // macOS 12/错误架构的 helper 会在 execFile 启动阶段失败；必须继续走视觉模型而不是 500。
   fs.writeFileSync(helper, Buffer.from([0, 1, 2, 3])); await chmod(helper, 0o755);
   const startupFallback = await postExtract(png, 'startup-error.png'); assert.equal(startupFallback.response.status, 200); assert.equal(startupFallback.json.source, 'vision-llm'); assert.ok(imageCalls > beforeImageCalls + 1);
+  returnChineseFields = true;
+  const chineseFields = await postExtract(png, '中文日期.png');
+  returnChineseFields = false;
+  assert.equal(chineseFields.json.kind, 'hearing'); assert.equal(chineseFields.json.date, '2099-11-03');
+  assert.equal(chineseFields.json.time, '09:30'); assert.equal(chineseFields.json.location, '示例法院第五法庭');
   const unknown = await postExtract(Buffer.from('nope')); assert.equal(unknown.response.status, 415);
   const tooBig = await postExtract(Buffer.concat([Buffer.from('%PDF'), Buffer.alloc(20 * 1024 * 1024)])); assert.equal(tooBig.response.status, 413);
   const manual = await request('/api/quick/extract?name=x.png', { method: 'POST', headers: { 'content-type': 'application/octet-stream' }, body: png }); assert.equal(manual.response.status, 200);

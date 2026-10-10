@@ -8,6 +8,7 @@ import { isEventType } from '../lib/vocab.js';
 import { deriveForEvent, recalcPreview, applyRecalc, recomputeForDeadline, hasManualParams, enrichDeadlineRow } from '../lib/engine.js';
 import { suggestPrecondition, PRECONDITION_SUGGESTION_REASON } from '../lib/precondition-suggest.js';
 import { parseQuick, llmReady } from '../lib/llm.js';
+import { normalizeDate, normalizeTime } from '../lib/cn-datetime.js';
 import {
   MAX_STAGING_BYTES, STAGING_DIR, cleanupStaging, detectMime, extractDocument, readStaged, stageBuffer,
 } from '../lib/doc-intake.js';
@@ -715,13 +716,14 @@ r.post('/quick/parse', async (req, res) => {
 
   // ── 一个字都不信 LLM：逐字段白名单校验，越界一律降级为空，绝不透传 ──
   const parsedKind = ['task', 'log', 'hearing'].includes(out.kind) ? out.kind : 'task';
-  const hasDate = isDate(out.date);
+  const date = normalizeDate(out.date);
+  const hasDate = isDate(date);
   const downgraded = parsedKind === 'hearing' && !hasDate;
   const kind = downgraded ? 'task' : parsedKind;       // 白名单闭合：结构上不可能产出 deadline（铁律①）
   let title = String(out.title || '').trim().slice(0, 200);
   if (!title) title = text;                               // LLM 没给标题就退回原文，不能把人的输入弄丢
-  const date = hasDate ? out.date : '';          // 非法/瞎猜的日期直接丢掉，让人自己填
-  const time = isTime(String(out.time || '')) ? String(out.time) : '';
+  const dateValue = hasDate ? date : '';         // 非法/瞎猜的日期直接丢掉，让人自己填
+  const time = normalizeTime(out.time);
   const location = String(out.location || '').trim().slice(0, 120);
   const c = matchCase(out.case_hint);
 
@@ -729,7 +731,7 @@ r.post('/quick/parse', async (req, res) => {
   res.json({
     kind,
     title,
-    date,
+    date: dateValue,
     time,
     location,
     case_id: c ? c.id : null,

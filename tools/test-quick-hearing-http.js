@@ -18,7 +18,7 @@ const upstream = http.createServer((req, res) => {
     const prompt = JSON.parse(body).messages?.at(-1)?.content || '';
     const value = /无日期/.test(prompt)
       ? { kind: 'hearing', title: '开庭', date: '', time: '09:99', location: '第五法庭', case_hint: '张三' }
-      : { kind: 'hearing', title: '开庭', date: '2099-11-03', time: '09:30', location: '第五法庭', case_hint: '张三', case_id: 99999 };
+      : { kind: 'hearing', title: '开庭', date: '2099年11月3日', time: '上午9点半', location: '第五法庭', case_hint: '张三', case_id: 99999 };
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ choices: [{ message: { content: JSON.stringify(value) } }] }));
   });

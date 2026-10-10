@@ -8,6 +8,7 @@ import { promisify } from 'node:util';
 import { extractText, getDocumentProxy } from 'unpdf';
 import { llmReady } from './llm.js';
 import { isDate } from './dates.js';
+import { normalizeDate, normalizeTime } from './cn-datetime.js';
 
 const execFileAsync = promisify(execFile);
 export const MAX_STAGING_BYTES = 20 * 1024 * 1024;
@@ -114,7 +115,7 @@ async function callModel({ model, messages, timeout = 30_000 }) {
 }
 
 function extractionPrompt(text) {
-  return `从以下法院传票或文书文字中提取结构化字段，只输出 JSON：{"doc_kind":"summons","date":"","time":"","location":"","court":"","case_no":"","parties":[],"summary":""}。没有明确写出的字段留空，不推算日期或期限。\n${text.slice(0, 8000)}`;
+  return `从以下法院传票或文书文字中提取结构化字段，只输出 JSON：{"doc_kind":"summons","date":"","time":"","location":"","court":"","case_no":"","parties":[],"summary":""}。date 一律输出 YYYY-MM-DD；time 一律输出 24 小时制 HH:MM（例如“上午9时30分”写 09:30，“下午2时”写 14:00）。原文没有明确写出的日期或时刻留空，不推算日期或期限。\n${text.slice(0, 8000)}`;
 }
 
 async function extractTextFields(text) {
@@ -128,19 +129,23 @@ async function extractTextFields(text) {
 async function extractVisionFields(buffer, mime) {
   const image = `data:${mime};base64,${Buffer.from(buffer).toString('base64')}`;
   return callModel({ model: VISION_MODEL, messages: [
-    { role: 'system', content: '你是法院传票识别器。看图后严格只输出 JSON：{"doc_kind":"summons","date":"","time":"","location":"","court":"","case_no":"","parties":[],"summary":""}。没有明确字段留空，不计算期限。' },
+    { role: 'system', content: '你是法院传票识别器。看图后严格只输出 JSON：{"doc_kind":"summons","date":"","time":"","location":"","court":"","case_no":"","parties":[],"summary":""}。date 一律 YYYY-MM-DD；time 一律 24 小时制 HH:MM（例如“上午9时30分”写 09:30，“下午2时”写 14:00）。原文没有明确字段留空，不推算日期或期限。' },
     { role: 'user', content: [{ type: 'text', text: '读取这张传票并提取字段。' }, { type: 'image_url', image_url: { url: image } }] },
   ] });
 }
 
 export function sanitizeFields(value = {}) {
-  const date = isDate(value.date) ? value.date : '';
-  const time = TIME_RE.test(String(value.time || '')) ? String(value.time) : '';
+  const normalizedDate = normalizeDate(value.date);
+  const date = isDate(normalizedDate) ? normalizedDate : '';
+  const normalizedTime = normalizeTime(value.time);
+  const time = TIME_RE.test(normalizedTime) ? normalizedTime : '';
   const parties = Array.isArray(value.parties) ? value.parties.map((x) => String(x || '').trim().slice(0, 30)).filter(Boolean).slice(0, 6) : [];
+  const court = String(value.court || '').normalize('NFKC').trim().slice(0, 120);
+  let location = String(value.location || '').normalize('NFKC').trim();
+  if (court && location.startsWith('本院')) location = court + location.slice(2);
   return {
-    doc_kind: String(value.doc_kind || '').slice(0, 40), date, time,
-    location: String(value.location || '').trim().slice(0, 120),
-    court: String(value.court || '').trim().slice(0, 120),
+    doc_kind: String(value.doc_kind || '').normalize('NFKC').slice(0, 40), date, time,
+    location: location.slice(0, 120), court,
     case_no: String(value.case_no || '').trim().slice(0, 60),
     parties,
     summary: String(value.summary || '').trim().slice(0, 1000),
