@@ -1893,8 +1893,17 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .quickbar input[type=text] { flex: 1 1 220px; min-width: 160px; }
 .quickbar select, .quickbar input { min-height: 34px; }
 .quickbar .btn { min-height: 34px; }
+.quickbar .quick-attachment { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 220px; color: var(--meta); font-size: 12px; }
+.quickbar .quick-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quickbar .quick-attachment-clear { flex: none; border: 0; padding: 2px 4px; background: transparent; color: var(--meta); cursor: pointer; }
 .quickbar .hint { display: none; font-size: 12px; color: var(--meta); white-space: nowrap; }
 @media (min-width: 1100px) { .quickbar .hint { display: inline; margin-left: 4px; } }
+@media (max-width: 767px) {
+  .quickbar > form, .quickbar .qbin { gap: 6px; padding-left: 8px; padding-right: 8px; }
+  .quickbar input[type=text] { min-width: 0; flex-basis: 160px; max-width: 100%; }
+  .quickbar select, .quickbar input { max-width: 100%; min-width: 0; }
+  .quickbar .quick-attachment { max-width: min(100%, 180px); }
+}
 
 /* ── A-23 toast ── */
 #toast {

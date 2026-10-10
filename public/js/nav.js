@@ -139,6 +139,21 @@ function mountQuickbar() {
   const time = el('input', { type: 'time', 'aria-label': '开庭时刻', hidden: '' });
   const location = el('input', { type: 'text', 'aria-label': '开庭地点', placeholder: '地点', hidden: '' });
   const hearingFields = [time, location];
+  const fileInput = el('input', {
+    type: 'file', accept: '.pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp', hidden: '',
+    'aria-label': '上传传票或文书',
+  });
+  const attachBtn = el('button', {
+    class: 'btn ghost small quick-attach', type: 'button', title: '上传传票或文书（PDF/JPG/PNG/WebP）',
+    'aria-label': '上传传票或文书',
+  }, '📎');
+  const attachmentName = el('span', { class: 'quick-attachment-name' });
+  const attachmentClear = el('button', {
+    class: 'quick-attachment-clear', type: 'button', title: '去掉附件', 'aria-label': '去掉附件',
+  }, '✕');
+  const attachment = el('span', { class: 'quick-attachment', hidden: '' }, attachmentName, attachmentClear);
+  let stagedToken = '';
+  const SOURCE_LABEL = { 'pdf-text': '文字层', 'system-ocr': '系统 OCR', 'vision-llm': 'AI 看图', manual: '需要手填' };
   const syncKindFields = () => {
     const hearing = kind.value === 'hearing';
     for (const field of hearingFields) field.hidden = !hearing;
@@ -150,6 +165,53 @@ function mountQuickbar() {
   }, '整理');
   const HINT_DEFAULT = '捕捉零摩擦：先记下，晚点再整理';
   const hint = el('span', { class: 'hint' }, HINT_DEFAULT);
+  const clearAttachment = () => {
+    stagedToken = '';
+    fileInput.value = '';
+    attachmentName.textContent = '';
+    attachment.hidden = true;
+  };
+  attachmentClear.addEventListener('click', clearAttachment);
+  attachBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    stagedToken = '';
+    attachmentName.textContent = file.name;
+    attachment.hidden = false;
+    hint.textContent = '识别中…';
+    hint.classList.add('hint-ai');
+    try {
+      const response = await fetch(`/api/quick/extract?name=${encodeURIComponent(file.name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      });
+      let data = null;
+      try { data = await response.json(); } catch { /* 统一走下方错误提示 */ }
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      stagedToken = data?.staged?.token || '';
+      attachmentName.textContent = data?.staged?.filename || file.name;
+      if (!data?.needs_manual) {
+        if (['task', 'log', 'hearing'].includes(data?.kind)) kind.value = data.kind;
+        if (data?.title) text.value = data.title;
+        if (data?.case_id) caseSel.value = String(data.case_id);
+        if ('date' in (data || {})) date.value = data.date || '';
+        if ('time' in (data || {})) time.value = data.time || '';
+        if ('location' in (data || {})) location.value = data.location || '';
+        syncKindFields();
+      }
+      const source = SOURCE_LABEL[data?.source] || '需要手填';
+      const caseText = data?.case_name ? ` · ${data.case_name}` : data?.case_hint ? ` · 请选案件（${data.case_hint}）` : '';
+      const manualText = data?.needs_manual ? ` · ${data.reason || '请手填'}` : '';
+      hint.textContent = `已识别（${source}）${caseText}${manualText} —— 核对后按「记」`;
+    } catch (error) {
+      // 服务端在字段抽取失败时仍返回 staged token；网络/格式错误才会走这里。
+      stagedToken = '';
+      hint.textContent = `识别失败：${error.message}；请手填后重试`;
+      hint.classList.remove('hint-ai');
+    }
+  });
   const bar = el('div', { class: 'quickbar' },
     el('form', {
       class: 'qbin',   // CSS 同时匹配 .quickbar > form 与 .quickbar .qbin
@@ -163,16 +225,18 @@ function mountQuickbar() {
           if (time.value) body.time = time.value;
           if (location.value.trim()) body.location = location.value.trim();
         }
+        if (stagedToken) body.staged_token = stagedToken;
         const r = await api('/quick', { body });
         toast(r.kind === 'task' ? '已记待办 ✓' : r.kind === 'hearing' ? '已记开庭 ✓' : '已记日志 ✓');
         text.value = '';
         time.value = ''; location.value = '';
+        clearAttachment();
         // 记完了：AI 那条「已整理」提示随之作废——别把旧结论留在空白输入框旁边
         hint.textContent = HINT_DEFAULT;
         hint.classList.remove('hint-ai');
         document.dispatchEvent(new CustomEvent('anjian:changed'));
       },
-    }, kind, caseSel, text, date, time, location, tidyBtn,
+    }, kind, caseSel, text, date, time, location, attachBtn, attachment, tidyBtn, fileInput,
       el('button', { class: 'btn primary', type: 'submit' }, '记'),
       hint
     )
