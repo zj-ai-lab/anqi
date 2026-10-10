@@ -109,6 +109,13 @@
 
 ---
 
+## 未发布 — 依赖安全补丁
+
+- 根依赖：proxy-addr 2.0.7 → 2.0.8（IPv4-mapped IPv6 短前缀信任网段会匹配全部 IPv4；默认 `ANJIAN_TRUST_PROXY` 不受影响）；Electron 43.4.0 → 43.7.5（同一大版本，`allowScripts` 钉版键同步；Electron 43 已无安装脚本，二进制首次运行时下载）；仅构建期使用的 undici、brace-expansion 升到修复版。
+- AI 助理 runtime：`@modelcontextprotocol/sdk` 1.30.0 → 1.31.0、sharp 0.35.4 → 0.35.5（librsvg 修复，影响 glibc Linux 即 Docker 镜像）、proxy-addr、ip-address、fast-uri 升到修复版；DSH 钉版仍为 `0.1.1-rc.2`。
+- 暂留：DSH GHSA-8m2g-8cgm-3vcp 位于 HTTP 控制面 `dsh-api-gateway`，案齐 Cordis 配置不挂载该插件、与 DSH 只走 stdio JSON-RPC；修复版 DSH（≥ 0.1.2）缺少本仓依赖的 `dsh-sdk-jsonrpc-demo`、`dsh-tool-subagent-report` 等包，需单独适配。http-cache-semantics、sprintf-js 只在 electron-builder 下载 Electron 时使用，不进 DMG 与 Docker，上游暂无公认修复版。
+- 均为 semver 范围内升级，版本选取发布满两周者（sharp 与 MCP SDK 的修复版本身不足两周，取最早修复版）；`update-dsh-runtime` 兼容门禁与 `tools/check.sh` 全绿。
+
 ## 未发布 — AI 助理图片输入
 
 **状态：开发分支 `feat/agent-image`，尚未合并 `main`。**
