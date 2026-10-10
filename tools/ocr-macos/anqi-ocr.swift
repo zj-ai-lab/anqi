@@ -24,19 +24,24 @@ let args = CommandLine.arguments
 if args.count != 2 { fail("usage: anqi-ocr <file>") }
 let url = URL(fileURLWithPath: args[1])
 if let pdf = PDFDocument(url: url) {
-    var pages: [String] = []
+    var pages: [(number: Int, text: String)] = []
+    var engines = Set<String>()
     let count = min(pdf.pageCount, 5)
     for index in 0..<count {
         guard let page = pdf.page(at: index) else { continue }
         if let text = page.string, text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 30 {
-            pages.append(text)
-        } else if let image = page.thumbnail(of: CGSize(width: 1700, height: 2400), for: .mediaBox).cgImage {
-            pages.append(recognize(image))
+            pages.append((number: index + 1, text: text))
+            engines.insert("pdfkit-text")
+        } else if let image = page.thumbnail(of: CGSize(width: 1700, height: 2400), for: .mediaBox)
+            .cgImage(forProposedRect: nil, context: nil, hints: nil) {
+            pages.append((number: index + 1, text: recognize(image)))
+            engines.insert("vision")
         }
     }
-    let text = pages.joined(separator: "\n--- 第 N 页 ---\n")
+    let text = pages.map { "--- 第 \($0.number) 页 ---\n\($0.text)" }.joined(separator: "\n")
     if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { fail("PDF 无法识别") }
-    let out: [String: Any] = ["ok": true, "text": text, "pages": count, "engine": "pdfkit-text"]
+    let engine = engines.contains("pdfkit-text") && engines.contains("vision") ? "pdfkit-text+vision" : (engines.first ?? "vision")
+    let out: [String: Any] = ["ok": true, "text": text, "pages": count, "engine": engine]
     print(String(data: try! JSONSerialization.data(withJSONObject: out), encoding: .utf8)!)
     exit(0)
 }

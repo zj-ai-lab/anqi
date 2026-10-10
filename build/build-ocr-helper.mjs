@@ -10,7 +10,7 @@ fs.mkdirSync('build/bin', { recursive: true });
 const outputs = [];
 for (const arch of ['arm64', 'x86_64']) {
   const output = path.join('build/bin', `anqi-ocr-${arch}`);
-  const result = spawnSync('swiftc', ['-O', '-target', `${arch}-apple-macos12`, 'tools/ocr-macos/anqi-ocr.swift', '-o', output], { stdio: 'inherit' });
+  const result = spawnSync('swiftc', ['-O', '-target', `${arch}-apple-macos13`, 'tools/ocr-macos/anqi-ocr.swift', '-o', output], { stdio: 'inherit' });
   if (result.status !== 0) process.exit(result.status || 1);
   outputs.push(output);
 }
