@@ -101,8 +101,8 @@
 
 | 你的 Mac | 下载 |
 |---|---|
-| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.8.0-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.8.0/anqi-2.8.0-arm64.dmg)** |
-| Intel 芯片 | **[anqi-2.8.0-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.8.0/anqi-2.8.0-x64.dmg)** |
+| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.9.0-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.9.0/anqi-2.9.0-arm64.dmg)** |
+| Intel 芯片 | **[anqi-2.9.0-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.9.0/anqi-2.9.0-x64.dmg)** |
 
 > 不确定是哪种芯片：点左上角  → 「关于本机」，「芯片」一栏写 Apple M 开头的选 arm64，写 Intel 的选 x64。历史版本与校验文件在 [Releases 页面](https://github.com/zj-ai-lab/anqi/releases)。
 
@@ -281,10 +281,10 @@ flowchart LR
 
 ## 服务器 / Docker 部署
 
-推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.8.0`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.8.0 新增刑事与行政期限规则、2020–2026 节假日与工作日计算、案件类型和修改审计，含 migration 021–028；升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
+推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.9.0`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.9.0 新增开庭时刻与地点、快录直接记开庭、传票上传识别（PDF 文字层 / 系统 OCR / 视觉模型，识别结果只回填表单）、手机日历优化与节前顺延提示，含 migration 029；升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
 
 ```sh
-IMAGE=ghcr.io/zj-ai-lab/anqi:2.8.0
+IMAGE=ghcr.io/zj-ai-lab/anqi:2.9.0
 mkdir -p anqi/data anqi/case-files
 cd anqi
 docker pull "$IMAGE"

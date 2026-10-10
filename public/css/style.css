@@ -1424,7 +1424,7 @@ details.adder[open] { border-style: solid; border-color: var(--green-line); }
 /* 日期数字与 chip 堆是周行的同级网格项（不再嵌在格内）——格子的 padding 因此搬到这两者身上。 */
 .cal-daynum {
   display: flex; justify-content: space-between; padding: 6px 9px 0;
-  font: 590 11.5px/1.4 var(--f-num); color: var(--meta); pointer-events: none;
+  font: 590 11.5px/1.4 var(--f-num); color: var(--meta); pointer-events: auto; cursor: pointer;
 }
 .cal-daynum .hmark { font-size: 10px; font-family: var(--sans); }
 .cal-daynum.is-today { color: var(--today-ink); font-weight: 700; }
@@ -1519,6 +1519,22 @@ details.adder[open] { border-style: solid; border-color: var(--green-line); }
     inset 0 0 0 1px color-mix(in srgb, var(--case-color, var(--gray-dot)) 46%, var(--surface-solid)),
     0 2px 3px -1px var(--span-sh), 0 8px 18px -8px var(--span-sh);
   z-index: 5;
+}
+.cal-quick-menu {
+  position: fixed; z-index: 95; display: flex; align-items: center; gap: 4px;
+  padding: 5px; border: 1px solid var(--border); border-radius: var(--r-btn);
+  background: var(--surface-pop); box-shadow: var(--sh-pop); white-space: nowrap;
+}
+.cal-quick-menu button { border: 0; border-radius: 5px; padding: 6px 8px; background: transparent; color: var(--ink); cursor: pointer; }
+.cal-quick-menu button:hover { background: var(--hover); }
+.cal-quick-menu-date { padding: 0 5px; color: var(--meta); font-size: 12px; }
+@media (max-width: 767px) {
+  .cal-weeks { --cal-lane-h: 22px; }
+  .cal-chip, .cal-span { font-size: 11px; }
+  .cal-chip { margin: 2px 1px; padding: 1px 4px; }
+  .cal-span { min-height: 20px; padding: 0 5px; }
+  .cal-daynum { padding-left: 5px; padding-right: 5px; }
+  .cal-day-chips { padding-left: 1px; padding-right: 1px; }
 }
 .cal-span.start { border-radius: var(--r-chip) 0 0 var(--r-chip); }
 .cal-span.end { border-radius: 0 var(--r-chip) var(--r-chip) 0; }
@@ -1877,8 +1893,17 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .quickbar input[type=text] { flex: 1 1 220px; min-width: 160px; }
 .quickbar select, .quickbar input { min-height: 34px; }
 .quickbar .btn { min-height: 34px; }
+.quickbar .quick-attachment { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 220px; color: var(--meta); font-size: 12px; }
+.quickbar .quick-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quickbar .quick-attachment-clear { flex: none; border: 0; padding: 2px 4px; background: transparent; color: var(--meta); cursor: pointer; }
 .quickbar .hint { display: none; font-size: 12px; color: var(--meta); white-space: nowrap; }
 @media (min-width: 1100px) { .quickbar .hint { display: inline; margin-left: 4px; } }
+@media (max-width: 767px) {
+  .quickbar > form, .quickbar .qbin { gap: 6px; padding-left: 8px; padding-right: 8px; }
+  .quickbar input[type=text] { min-width: 0; flex-basis: 160px; max-width: 100%; }
+  .quickbar select, .quickbar input { max-width: 100%; min-width: 0; }
+  .quickbar .quick-attachment { max-width: min(100%, 180px); }
+}
 
 /* ── A-23 toast ── */
 #toast {

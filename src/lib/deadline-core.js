@@ -107,7 +107,7 @@ function criminalHolidayOption(rule, { base, start, raw, back }, calendar) {
   };
 }
 
-// 单条规则计算：返回 { due_on, calc_note, coverage_warning, holiday_roll_option }
+// 单条规则计算：返回 { due_on, rolled_from, calc_note, coverage_warning, holiday_roll_option }
 export function computeDue(rule, event, calendar) {
   const { isCovered, isNonWorking, kindOf = () => null } = calendar;
   const notes = [];
@@ -253,5 +253,5 @@ export function computeDue(rule, event, calendar) {
   }
 
   const calc_note = `【引擎】${notes.join('；')}。依据：${rule.basis}`;
-  return { due_on: due, calc_note, coverage_warning: coverageWarning, coverage_missing_years, holiday_roll_option };
+  return { due_on: due, rolled_from: due !== raw ? raw : '', calc_note, coverage_warning: coverageWarning, coverage_missing_years, holiday_roll_option };
 }

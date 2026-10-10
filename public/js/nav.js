@@ -130,16 +130,88 @@ function initHamburger(hamburger, dropdown) {
 function mountQuickbar() {
   const kind = el('select', { 'aria-label': '快录类型' },
     el('option', { value: 'task' }, '记待办'),
-    el('option', { value: 'log' }, '记日志')
+    el('option', { value: 'log' }, '记日志'),
+    el('option', { value: 'hearing' }, '记开庭')
   );
   const caseSel = el('select', { 'aria-label': '挂到案件' }, el('option', { value: '' }, '（不挂案件）'));
   const text = el('input', { type: 'text', placeholder: '一句话快录……', required: '', 'aria-label': '快录内容' });
   const date = el('input', { type: 'date', 'aria-label': '日期（可选）' });
+  const time = el('input', { type: 'time', 'aria-label': '开庭时刻', hidden: '' });
+  const location = el('input', { type: 'text', 'aria-label': '开庭地点', placeholder: '地点', hidden: '' });
+  const hearingFields = [time, location];
+  const fileInput = el('input', {
+    type: 'file', accept: '.pdf,.jpg,.jpeg,.png,.webp,application/pdf,image/jpeg,image/png,image/webp', hidden: '',
+    'aria-label': '上传传票或文书',
+  });
+  const attachBtn = el('button', {
+    class: 'btn ghost small quick-attach', type: 'button', title: '上传传票或文书（PDF/JPG/PNG/WebP）',
+    'aria-label': '上传传票或文书',
+  }, '📎');
+  const attachmentName = el('span', { class: 'quick-attachment-name' });
+  const attachmentClear = el('button', {
+    class: 'quick-attachment-clear', type: 'button', title: '去掉附件', 'aria-label': '去掉附件',
+  }, '✕');
+  const attachment = el('span', { class: 'quick-attachment', hidden: '' }, attachmentName, attachmentClear);
+  let stagedToken = '';
+  const SOURCE_LABEL = { 'pdf-text': '文字层', 'system-ocr': '系统 OCR', 'vision-llm': 'AI 看图', manual: '需要手填' };
+  const syncKindFields = () => {
+    const hearing = kind.value === 'hearing';
+    for (const field of hearingFields) field.hidden = !hearing;
+    caseSel.required = hearing;
+    date.required = hearing;
+  };
   const tidyBtn = el('button', {
     class: 'btn ghost small', type: 'button', title: '让 LLM 把这句话整理成类型/案件/日期（只填表，不入库）',
   }, '整理');
   const HINT_DEFAULT = '捕捉零摩擦：先记下，晚点再整理';
   const hint = el('span', { class: 'hint' }, HINT_DEFAULT);
+  const clearAttachment = () => {
+    stagedToken = '';
+    fileInput.value = '';
+    attachmentName.textContent = '';
+    attachment.hidden = true;
+  };
+  attachmentClear.addEventListener('click', clearAttachment);
+  attachBtn.addEventListener('click', () => fileInput.click());
+  fileInput.addEventListener('change', async () => {
+    const file = fileInput.files?.[0];
+    if (!file) return;
+    stagedToken = '';
+    attachmentName.textContent = file.name;
+    attachment.hidden = false;
+    hint.textContent = '识别中…';
+    hint.classList.add('hint-ai');
+    try {
+      const response = await fetch(`/api/quick/extract?name=${encodeURIComponent(file.name)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': file.type || 'application/octet-stream' },
+        body: file,
+      });
+      let data = null;
+      try { data = await response.json(); } catch { /* 统一走下方错误提示 */ }
+      if (!response.ok) throw new Error(data?.error || `HTTP ${response.status}`);
+      stagedToken = data?.staged?.token || '';
+      attachmentName.textContent = data?.staged?.filename || file.name;
+      if (!data?.needs_manual) {
+        if (['task', 'log', 'hearing'].includes(data?.kind)) kind.value = data.kind;
+        if (data?.title) text.value = data.title;
+        if (data?.case_id) caseSel.value = String(data.case_id);
+        if ('date' in (data || {})) date.value = data.date || '';
+        if ('time' in (data || {})) time.value = data.time || '';
+        if ('location' in (data || {})) location.value = data.location || '';
+        syncKindFields();
+      }
+      const source = SOURCE_LABEL[data?.source] || '需要手填';
+      const caseText = data?.case_name ? ` · ${data.case_name}` : data?.case_hint ? ` · 请选案件（${data.case_hint}）` : '';
+      const manualText = data?.needs_manual ? ` · ${data.reason || '请手填'}` : '';
+      hint.textContent = `已识别（${source}）${caseText}${manualText} —— 核对后按「记」`;
+    } catch (error) {
+      // 服务端在字段抽取失败时仍返回 staged token；网络/格式错误才会走这里。
+      stagedToken = '';
+      hint.textContent = `识别失败：${error.message}；请手填后重试`;
+      hint.classList.remove('hint-ai');
+    }
+  });
   const bar = el('div', { class: 'quickbar' },
     el('form', {
       class: 'qbin',   // CSS 同时匹配 .quickbar > form 与 .quickbar .qbin
@@ -149,20 +221,37 @@ function mountQuickbar() {
         const body = { kind: kind.value, text: text.value.trim() };
         if (caseSel.value) body.case_id = Number(caseSel.value);
         if (date.value) body.date = date.value;
+        if (kind.value === 'hearing') {
+          if (time.value) body.time = time.value;
+          if (location.value.trim()) body.location = location.value.trim();
+        }
+        if (stagedToken) body.staged_token = stagedToken;
         const r = await api('/quick', { body });
-        toast(r.kind === 'task' ? '已记待办 ✓' : '已记日志 ✓');
+        toast(r.kind === 'task' ? '已记待办 ✓' : r.kind === 'hearing' ? '已记开庭 ✓' : '已记日志 ✓');
         text.value = '';
+        time.value = ''; location.value = '';
+        clearAttachment();
         // 记完了：AI 那条「已整理」提示随之作废——别把旧结论留在空白输入框旁边
         hint.textContent = HINT_DEFAULT;
         hint.classList.remove('hint-ai');
         document.dispatchEvent(new CustomEvent('anjian:changed'));
       },
-    }, kind, caseSel, text, date, tidyBtn,
+    }, kind, caseSel, text, date, time, location, attachBtn, attachment, tidyBtn, fileInput,
       el('button', { class: 'btn primary', type: 'submit' }, '记'),
       hint
     )
   );
   document.body.appendChild(bar);
+  kind.addEventListener('change', syncKindFields);
+  syncKindFields();
+  document.addEventListener('anjian:quick-prefill', (event) => {
+    const value = event.detail || {};
+    if (['task', 'log', 'hearing'].includes(value.kind)) kind.value = value.kind;
+    if (value.date) date.value = value.date;
+    syncKindFields();
+    bar.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    text.focus();
+  });
 
   // ── LLM 整理（1.1.0）：把一句话填进上面这几个框，**不写库**——人按「记」才入表 ──
   // 未配 key 时不渲染按钮（下面 /counts 的 llm 标志决定），所以这里默认先藏着。
@@ -178,13 +267,19 @@ function mountQuickbar() {
       kind.value = s.kind;
       text.value = s.title;
       if (s.date) date.value = s.date;
+      time.value = s.time || '';
+      location.value = s.location || '';
       if (s.case_id) caseSel.value = String(s.case_id);
       // 说清楚它做了什么、没做到什么——人要在按「记」之前一眼看出该不该改
-      const bits = [s.kind === 'log' ? '日志' : '待办'];
+      const bits = [s.kind === 'hearing' ? '开庭' : s.kind === 'log' ? '日志' : '待办'];
       if (s.case_name) bits.push(s.case_name);
       else if (s.case_hint) bits.push(`案件没认出「${s.case_hint}」，请自己选`);
       if (s.date) bits.push(s.date);
       else bits.push('未提日期');
+      if (s.time) bits.push(s.time);
+      if (s.location) bits.push(s.location);
+      if (s.downgraded) bits.push(s.downgraded);
+      syncKindFields();
       hint.textContent = `已整理：${bits.join(' · ')} —— 核对无误按「记」`;
       hint.classList.add('hint-ai');
     } catch (e) {
@@ -198,7 +293,7 @@ function mountQuickbar() {
     }
   });
   // 人一改内容，AI 那句提示就作废——别让旧结论挂在新输入旁边
-  for (const f of [text, kind, caseSel, date]) {
+  for (const f of [text, kind, caseSel, date, time, location]) {
     f.addEventListener('input', () => {
       if (!hint.classList.contains('hint-ai')) return;
       hint.textContent = HINT_DEFAULT;

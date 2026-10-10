@@ -149,6 +149,8 @@
             <div class="formrow">
               <label class="f">事件<select name="type" id="ev-type"></select></label>
               <label class="f">日期<input type="date" name="occurred_on" required></label>
+              <label class="f ev-hearing-field" hidden>时刻<input type="time" name="occurred_time"></label>
+              <label class="f grow ev-hearing-field" hidden>地点<input name="location" maxlength="120" placeholder="法院/法庭"></label>
               <label class="f">送达方式<select name="service_method">
                 <option value="">（不适用）</option>
                 <option>直接送达</option><option>邮寄送达</option><option>电子送达</option>

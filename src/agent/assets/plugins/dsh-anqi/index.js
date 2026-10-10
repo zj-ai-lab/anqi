@@ -50,7 +50,7 @@ const CASE_FIELDS = [
 const CONTACT_FIELDS = ['id', 'role', 'name', 'phone', 'id_no', 'org', 'note', 'created_by'];
 const FACT_FIELDS = ['id', 'content', 'occurred_on', 'source', 'note', 'created_by', 'created_at', 'updated_at'];
 const EVENT_FIELDS = [
-  'id', 'type', 'occurred_on', 'service_method', 'instrument', 'note', 'created_by',
+  'id', 'type', 'occurred_on', 'occurred_time', 'location', 'service_method', 'instrument', 'note', 'created_by',
 ];
 const DEADLINE_FIELDS = [
   'id', 'name', 'due_on', 'basis', 'calc_note', 'severity', 'status', 'done_at',
@@ -434,12 +434,14 @@ export function apply(ctx, config = {}) {
       service_method: { type: 'string' },
       instrument: { type: 'string' },
       note: { type: 'string' },
+      occurred_time: { type: 'string', description: 'Optional HH:MM for hearings.' },
+      location: { type: 'string', description: 'Optional hearing location.' },
     },
     output: directOutput,
     async execute(args, exec) {
       return directWrite('event', directPayload(
-        args, ['type', 'occurred_on', 'service_method', 'instrument', 'note'],
-        { type: 100, occurred_on: 10, service_method: 200, instrument: 1000, note: 3000 }
+        args, ['type', 'occurred_on', 'occurred_time', 'location', 'service_method', 'instrument', 'note'],
+        { type: 100, occurred_on: 10, occurred_time: 5, location: 120, service_method: 200, instrument: 1000, note: 3000 }
       ), exec, EVENT_FIELDS);
     },
   }));

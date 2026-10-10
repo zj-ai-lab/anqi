@@ -113,6 +113,12 @@ const meta = await api('/meta');
 const evTypeSel = document.getElementById('ev-type');
 for (const t of meta.event_types) evTypeSel.append(el('option', { value: t.id }, t.label));
 const evLabel = Object.fromEntries(meta.event_types.map((t) => [t.id, t.label]));
+const syncHearingFields = () => {
+  const show = evTypeSel.value === 'hearing';
+  document.querySelectorAll('.ev-hearing-field').forEach((field) => { field.hidden = !show; });
+};
+evTypeSel.addEventListener('change', syncHearingFields);
+syncHearingFields();
 
 // 期限「依据」浮层所需的本地法条库（Q10 裁定「丙」）：本页已取过 /meta，直接注入，避免二次请求。
 setLawTexts(meta.law_texts);
@@ -642,6 +648,7 @@ function confirmReviewBtn(d, cls = 'btn small primary') {
 // 依据 / 算法 / 人工设定 —— 跑道行与头条共用的小字尾
 // 依据改为问号按钮（点开看法条原文），长文本不再直铺行内。
 function deadlineMeta(d) {
+  const rolled = d.rolled_from && d.rolled_from < d.due_on;
   return [
     el('span', {}, SEV_LABEL[d.severity] || '一般'),
     d.basis ? el('span', { class: 'sep' }, '·') : null,
@@ -651,6 +658,7 @@ function deadlineMeta(d) {
     d.review_status === 'pending_review' ? el('span', { class: 'sep' }, '·') : null,
     d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
     d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
+    rolled ? el('span', { class: 'pill warn' }, `原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办`) : null,
   ];
 }
 
@@ -1680,6 +1688,8 @@ function render() {
       el('span', { class: 'pill acc' }, evLabel[e.type] || e.type),
       [
         ['llm', 'ai'].includes(e.created_by) ? el('span', { class: 'pill acc' }, 'AI 加的') : null,
+        (e.occurred_time || e.location) ? el('span', { class: 'pill' },
+          [e.occurred_time, e.location].filter(Boolean).join(' · ')) : null,
         e.instrument ? el('span', {}, e.instrument, ' ') : null,
         e.service_method ? el('span', { class: 'pill' }, e.service_method) : null,
         e.note ? el('div', { class: 'tl-note' }, e.note) : null,

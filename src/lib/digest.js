@@ -62,7 +62,7 @@ export function buildDigest(caseId = null) {
     .prepare(
       `SELECT e.*, c.name AS case_name FROM events e JOIN cases c ON c.id = e.case_id
        WHERE e.type = 'hearing' AND c.status = 'active' AND e.occurred_on >= ? AND e.occurred_on <= ?
-       ORDER BY e.occurred_on`
+       ORDER BY e.occurred_on, CASE WHEN e.occurred_time='' THEN 1 ELSE 0 END, e.occurred_time, e.id`
     )
     .all(today, d7)
     .map((r) => ({ ...r, is_today: r.occurred_on === today }));

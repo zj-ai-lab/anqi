@@ -1,6 +1,6 @@
 {
   "name": "anjian",
-  "version": "2.8.0",
+  "version": "2.9.0",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",
@@ -19,7 +19,7 @@
     "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
     "icon:build": "bash tools/build-icon.sh",
     "electron:dev": "npm run electron:rebuild && electron .",
-    "dist": "npm run electron:rebuild && node build/ensure-cross-arch-optional-deps.mjs && electron-builder --mac"
+    "dist": "node build/build-ocr-helper.mjs && npm run electron:rebuild && node build/ensure-cross-arch-optional-deps.mjs && electron-builder --mac"
   },
   "build": {
     "appId": "asia.fdonglawyer.anjian",
@@ -58,6 +58,10 @@
           "assets{,/**/*}",
           "!assets/node_modules{,/**/*}"
         ]
+      },
+      {
+        "from": "build/bin/anqi-ocr",
+        "to": "bin/anqi-ocr"
       }
     ],
     "afterPack": "build/afterpack-agent-runtime-link.cjs",
@@ -103,7 +107,8 @@
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "electron-updater": "^6.8.9",
-    "express": "^5.2.1"
+    "express": "^5.2.1",
+    "unpdf": "1.8.1"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",

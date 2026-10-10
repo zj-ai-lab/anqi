@@ -124,7 +124,7 @@ function deadlineActions(d, lead = false) {
   );
 }
 
-const rowTitle = (d) => `${d.case_name}｜${d.name}｜${d.due_on}${d.basis ? '｜' + d.basis : ''}`;
+const rowTitle = (d) => `${d.case_name}｜${d.name}｜${d.due_on}${d.basis ? '｜' + d.basis : ''}${d.rolled_from && d.rolled_from < d.due_on ? `\n原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办` : ''}`;
 
 // 头条：最近的一条死线 = 全页最大的数字（SPEC 层级要求 ≥48px）
 function leadRow(d) {
@@ -146,7 +146,8 @@ function leadRow(d) {
         el('span', { class: 'case' }, `到期 ${d.due_on}（周${wd(d.due_on)}）`),
         d.basis ? el('span', { class: 'sep' }, '·') : null,
         basisBtn(d),
-        d.severity === 'critical' ? el('span', { class: 'chip c-red' }, '致命期限') : null
+        d.severity === 'critical' ? el('span', { class: 'chip c-red' }, '致命期限') : null,
+        d.rolled_from && d.rolled_from < d.due_on ? el('span', { class: 'chip c-amber' }, `原届满 ${d.rolled_from}，已顺延至 ${d.due_on} · 建议节前办`) : null
       )
     ),
     trkBar(d, band),
@@ -331,6 +332,8 @@ function hearRow(h, today) {
       )
     ),
     el('div', { class: 'hear-name' }, caseLink(h.case_id, h.case_name)),
+    h.occurred_time ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip c-blue' }, h.occurred_time)) : null,
+    h.location ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip' }, h.location)) : null,
     h.instrument ? el('div', { class: 'hear-no' }, h.instrument) : null,
     h.note ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip' }, h.note)) : null
   );

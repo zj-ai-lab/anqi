@@ -36,6 +36,29 @@ let revealTaskId = null;
 let pickedTaskId = null;
 let flipT = null;
 const expanded = new Set(); // 周行序号；翻月时由导航动作清空，普通重绘保留
+let quickMenu = null;
+
+function closeQuickMenu() {
+  quickMenu?.remove();
+  quickMenu = null;
+}
+
+function showQuickMenu(anchor, date) {
+  closeQuickMenu();
+  quickMenu = el('div', { class: 'cal-quick-menu', role: 'menu' },
+    el('button', { type: 'button', role: 'menuitem', onclick: () => { closeQuickMenu(); document.dispatchEvent(new CustomEvent('anjian:quick-prefill', { detail: { kind: 'task', date } })); } }, '记待办'),
+    el('button', { type: 'button', role: 'menuitem', onclick: () => { closeQuickMenu(); document.dispatchEvent(new CustomEvent('anjian:quick-prefill', { detail: { kind: 'hearing', date } })); } }, '记开庭'),
+    el('button', { type: 'button', role: 'menuitem', onclick: () => { closeQuickMenu(); document.dispatchEvent(new CustomEvent('anjian:quick-prefill', { detail: { kind: 'log', date } })); } }, '记日志'),
+    el('span', { class: 'cal-quick-menu-date' }, `· ${date}`),
+  );
+  document.body.appendChild(quickMenu);
+  const box = anchor.getBoundingClientRect();
+  quickMenu.style.left = `${Math.min(window.innerWidth - quickMenu.offsetWidth - 8, Math.max(8, box.left))}px`;
+  quickMenu.style.top = `${Math.min(window.innerHeight - quickMenu.offsetHeight - 8, box.bottom + 4)}px`;
+  setTimeout(() => document.addEventListener('pointerdown', (event) => {
+    if (quickMenu && !quickMenu.contains(event.target)) closeQuickMenu();
+  }, { once: true }), 0);
+}
 
 const PRIORITY_LABEL = { high: '高优先', normal: '一般', low: '低优先' };
 
@@ -74,6 +97,17 @@ function clearPickedTask() {
     item.classList.remove('is-picked');
     item.setAttribute('aria-pressed', 'false');
   });
+}
+
+function handleDateClick(date, anchor) {
+  if (pickedTaskId) {
+    const task = allTasks.find((item) => String(item.id) === pickedTaskId);
+    if (!task || task.status !== 'open') { clearPickedTask(); return; }
+    clearPickedTask();
+    void moveTaskWhole(task, '', date);
+    return;
+  }
+  showQuickMenu(anchor, date);
 }
 
 function pickTask(task) {
@@ -496,17 +530,18 @@ async function load({ refresh = true } = {}) {
         class: chipClass(d.severity, d.status),
         href: `/case.html?id=${d.case_id}`,
         draggable: 'false',
-        title: `${sev}期限 · ${d.name} · ${d.case_name}${st}`,
+      title: `${sev}期限 · ${d.name} · ${d.case_name}${st}${d.rolled_from && d.rolled_from < d.due_on ? `\n原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办` : ''}`,
       }, el('span', { class: 'cal-chip-label' }, `${d.name}·${d.case_name}`)), 0);
   }
   for (const h of data.hearings) {
     if (!filters.hearing) continue;
+    const time = h.occurred_time ? `${h.occurred_time} ` : '';
     push(h.occurred_on, el('a', {
       class: 'cal-chip hearing',
       href: `/case.html?id=${h.case_id}`,
       draggable: 'false',
-      title: `开庭 · ${h.case_name}${h.note ? ' · ' + h.note : ''}`,
-    }, el('span', { class: 'cal-chip-label' }, `开庭·${h.case_name}`)), 1);
+      title: `开庭 · ${h.case_name}${h.location ? ' · ' + h.location : ''}${h.note ? ' · ' + h.note : ''}`,
+    }, el('span', { class: 'cal-chip-label' }, `${time}开庭·${h.case_name}`)), 1, h.occurred_time || '');
   }
   for (const t of monthTasks) {
     if (!visible('task', t)) continue;
@@ -525,7 +560,9 @@ async function load({ refresh = true } = {}) {
     }, el('span', { class: 'cal-chip-label' }, taskLabel(t))), taskOrder, t.due_time || '');
   }
   for (const entries of byDay.values()) {
-    entries.sort((a, b) => a.order - b.order || a.time.localeCompare(b.time) || a.seq - b.seq);
+    entries.sort((a, b) => a.order - b.order
+      || (a.time ? 0 : 1) - (b.time ? 0 : 1)
+      || a.time.localeCompare(b.time) || a.seq - b.seq);
   }
 
   // 跨天长条的本月可见区间；按起点排序，供每周行贪心分车道。
@@ -575,7 +612,7 @@ async function load({ refresh = true } = {}) {
       seg.lane = lane;
     }
     const total = laneEnd.length;
-    const cap = window.matchMedia('(max-width: 767px)').matches ? 2 : 3;
+    const cap = window.matchMedia('(max-width: 767px)').matches ? 4 : 3;
     const open = expanded.has(w);
     const overflow = !open && total > cap;
     const visLanes = overflow ? cap - 1 : total;
@@ -613,12 +650,8 @@ async function load({ refresh = true } = {}) {
       row.append(el('div', {
         class: cls.join(' '), 'data-date': date, style: `grid-column:${i + 1}`,
         onclick: (e) => {
-          if (!isNarrow() || !pickedTaskId) return;
           if (e.target.closest('.cal-span, .cal-chip, .cal-more')) return;
-          const task = allTasks.find((item) => String(item.id) === pickedTaskId);
-          if (!task || task.status !== 'open') { clearPickedTask(); return; }
-          clearPickedTask();
-          void moveTaskWhole(task, '', date);
+          handleDateClick(date, e.currentTarget);
         },
       }));
     });
@@ -630,6 +663,7 @@ async function load({ refresh = true } = {}) {
       row.append(el('div', {
         class: `cal-daynum${date.slice(0, 7) !== current ? ' other' : ''}${date === today ? ' is-today' : ''}`,
         style: `grid-column:${i + 1};grid-row:1`,
+        onclick: (e) => { e.stopPropagation(); handleDateClick(date, e.currentTarget); },
       },
         el('span', {}, String(Number(date.slice(8)))),
         hk ? el('span', { class: 'hmark' }, hk === 'holiday' ? '休' : '班') : null
@@ -682,7 +716,7 @@ document.getElementById('today-btn').addEventListener('click', () => { expanded.
 document.addEventListener('pointermove', onPointerMove);
 document.addEventListener('pointerup', (e) => finishDrag(e, true));
 document.addEventListener('pointercancel', (e) => finishDrag(e, false));
-document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && drag) finishDrag(e, false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { closeQuickMenu(); if (drag) finishDrag(e, false); } });
 window.addEventListener('resize', syncResponsiveCopy, { passive: true });
 
 // 图例即筛选开关：点击切 .off → 写 localStorage → 重渲染。

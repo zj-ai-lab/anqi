@@ -71,8 +71,8 @@ export function reconcilePrecondition(caseId, value, actor) {
       const next = recomputeForDeadline(row);
       setChangeRuleId(row.rule_id);
       if (next) {
-        db.prepare("UPDATE deadlines SET status='pending', suppressed_reason=NULL, due_on=?, calc_note=? WHERE id=?")
-          .run(next.due_on, next.calc_note, row.id);
+        db.prepare("UPDATE deadlines SET status='pending', suppressed_reason=NULL, due_on=?, rolled_from=?, calc_note=? WHERE id=?")
+          .run(next.due_on, next.rolled_from || '', next.calc_note, row.id);
       } else {
         db.prepare("UPDATE deadlines SET status='pending', suppressed_reason=NULL WHERE id=?").run(row.id);
       }
