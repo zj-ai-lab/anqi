@@ -1688,8 +1688,8 @@ function render() {
       el('span', { class: 'pill acc' }, evLabel[e.type] || e.type),
       [
         ['llm', 'ai'].includes(e.created_by) ? el('span', { class: 'pill acc' }, 'AI 加的') : null,
-        e.occurred_time ? el('span', { class: 'pill' }, e.occurred_time) : null,
-        e.location ? el('span', { class: 'pill' }, e.location) : null,
+        (e.occurred_time || e.location) ? el('span', { class: 'pill' },
+          [e.occurred_time, e.location].filter(Boolean).join(' · ')) : null,
         e.instrument ? el('span', {}, e.instrument, ' ') : null,
         e.service_method ? el('span', { class: 'pill' }, e.service_method) : null,
         e.note ? el('div', { class: 'tl-note' }, e.note) : null,
