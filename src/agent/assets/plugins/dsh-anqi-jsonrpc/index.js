@@ -168,6 +168,34 @@ export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
           if (liveAgent === undefined || request.agent !== liveAgent) return next();
           return this.relayApproval(sessionId, request, next);
         });
+        // 自 0.1.5 起 userQuestions 不再有全局单一 provider，改为同一套
+        // agent-scoped waterfall；只应答本 server 持有的 live root agent。
+        agentCtx.on('user-questions/request', (request, next) => {
+          if (liveAgent === undefined || request.agent !== liveAgent) return next();
+          return this.askUserQuestion(request);
+        });
+        // 自 0.1.5 起流式分片不再是 session event，只走 agent-scoped 的
+        // agent/assistant-stream 帧（start/chunk/end）；按旧 wire 形状
+        // assistant/chunk { turn, step, chunk } 转发，抽屉的流式渲染照旧。
+        const attemptPositions = new Map();
+        agentCtx.on('agent/assistant-stream', ({ frame }) => {
+          if (frame.type === 'start') {
+            attemptPositions.set(frame.attemptId, { turn: frame.turn, step: frame.step });
+            return;
+          }
+          if (frame.type === 'end') {
+            attemptPositions.delete(frame.attemptId);
+            return;
+          }
+          if (frame.type !== 'chunk') return;
+          this.transport.notify('session.event', {
+            sessionId,
+            event: {
+              type: 'assistant/chunk',
+              data: { ...attemptPositions.get(frame.attemptId), chunk: frame.chunk },
+            },
+          });
+        });
       },
     });
     liveAgent = handle.agent;
@@ -422,9 +450,10 @@ export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
 
   claimApprovalId(request) {
     const decided = new Set();
-    const events = request.agent.session.events;
-    for (let index = events.length - 1; index >= 0; index -= 1) {
-      const event = events[index];
+    // 自 0.1.5 起 Session 不再暴露 events 数组；按 seq 从尾部逐条读。
+    const session = request.agent.session;
+    for (let seq = session.seq - 1; seq >= 0; seq -= 1) {
+      const event = session.eventAt(seq);
       if (event.type === 'approval/decided') {
         decided.add(event.data.id);
         continue;
@@ -535,12 +564,8 @@ export function apply(ctx, config) {
   });
 
   ctx.effect(() => {
-    const disposeProvider = ctx.userQuestions.registerProvider({
-      ask: (request) => server.askUserQuestion(request),
-    });
     transport.start();
     return async () => {
-      disposeProvider();
       await server.shutdown();
       transport.close();
     };

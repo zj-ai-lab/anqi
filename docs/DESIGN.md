@@ -456,7 +456,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 - 上游 `dsh-fs-sandbox` 的 `workspace-write` 只约束写/改，官方文档明确读取不受该 mode 限制；因此案齐不能直接把它当成案件读取边界。`project` 档使用案齐自有的 filesystem provider 覆盖 `resolve/stat/read/readBytes/listDir/write/edit`，对 canonical target 做真实路径 containment，拒绝绝对路径、`..` 与符号链接逃逸；`full` 档也继续用该 provider 约束标准文件工具，只有显式开放的 shell 是更宽的宿主能力。
 - 期限、事件、收费与正式任务仍不是普通项目文件：DSH 无论处于哪一档都没有这些表的直接数据库写权。它只能读案齐白名单投影，并通过 `anqi_inbox_propose` 产生待人工裁决的 task 建议；确定性期限和财务计算边界不变。
 
-运行时随 App 分发一份统一钉版本、已验收的 bundled closure；当前基线为 `0.1.1-rc.2`。`npm run agent:update-runtime -- <exact-version>` 会一次修改全部 DSH direct/override pin、重新解析 lockfile，并依次运行 base-parity、workspace containment、project/full 真实 JSON-RPC boot 与插件热更新门禁；任一步失败会恢复旧 manifest/lock 并 `npm ci` 回旧闭包。上游 `dsh-base` 新增 row 若未挂载或未明确归类，parity 门直接失败，不能静默继续阉割。运行时二进制版本升级仍随案齐发版并重启 worker，不把未经兼容验证的 npm `next` 直接热替换进已签名 App。
+运行时随 App 分发一份统一钉版本、已验收的 bundled closure；当前基线为 `0.1.5-rc.3`。`npm run agent:update-runtime -- <exact-version>` 先向 registry 预检：案齐直接依赖的 DSH 包在目标版本未发布即停手、不动任何文件（上游改名/合并/撤包需先人工迁移）；随后一次修改全部 DSH direct pin、把 schemastery 对齐到 dsh-tools 钉的精确版本、把 overrides 重写为实际解析出的 DSH 闭包（撤掉的包移出、新引入的包补钉），重新解析 lockfile，并依次运行 base-parity、workspace containment、project/full 真实 JSON-RPC boot 与插件热更新门禁；任一步失败会恢复旧 manifest/lock 并 `npm ci` 回旧闭包。上游 `dsh-base` 新增 row 若未挂载或未明确归类，parity 门直接失败，不能静默继续阉割；lockfile 里任何 DSH 包偏离钉定版本或未被 overrides 覆盖，parity 门同样失败。运行时二进制版本升级仍随案齐发版并重启 worker，不把未经兼容验证的 npm `next` 直接热替换进已签名 App。
 
 社区插件在设置页高级项中填写一个已审查的绝对路径 `cordis.patch.yml`；仅 `full` 档把它作为案齐强制组合之上的上游 Cordis patch 加载，并用官方 HMR 监听文件，现有 worker 可原地挂载、卸载或更新插件。插件就是本机 Node 代码，必须视为与当前用户等权的可信扩展：它理论上能绕过应用级 provider，因此界面明确警告且拒绝相对路径、缺失文件、非普通文件与符号链接。依赖完整 DSH Web Client 插槽的 UI 插件不会自动出现在案齐对话抽屉里，除非另做前端适配；`project` 档完全不读取插件 patch。
 

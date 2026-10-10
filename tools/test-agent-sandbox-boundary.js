@@ -16,6 +16,7 @@ import LocalSubprocessRuntime from '../src/agent/runtime/node_modules/@deepseek-
 import LocalSandboxProvider from '../src/agent/runtime/node_modules/@deepseek-ai/dsh-sandbox-local/lib/index.js';
 import { installConfidentialSandbox } from '../src/agent/assets/plugins/dsh-anqi-workspace-guard/index.js';
 import SandboxPolicyService from '../src/agent/runtime/node_modules/@deepseek-ai/dsh-sandbox-policy/lib/index.js';
+import SessionProjectionRegistry from '../src/agent/runtime/node_modules/@deepseek-ai/dsh-session-projection/lib/index.js';
 import SandboxBashExecutor from '../src/agent/runtime/node_modules/@deepseek-ai/dsh-bash-sandbox/lib/index.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -178,6 +179,8 @@ try {
 
   sandboxCtx = new Context();
   await sandboxCtx.plugin(LocalSubprocessRuntime);
+  // DSH 0.1.5 起 sandbox-policy inject sessionProjections（anqi.cordis.yml 两档常挂）。
+  await sandboxCtx.plugin(SessionProjectionRegistry);
   await sandboxCtx.plugin(SandboxPolicyService, {
     mode: 'workspace-write',
     workspaceRoot: sandboxRoot,

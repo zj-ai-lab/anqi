@@ -27,8 +27,8 @@ RUN npm install --omit=dev --ignore-scripts && npm cache clean --force
 # 靠 electron-builder 的 build.extraResources 把这整棵目录（含 node_modules）
 # 随包分发解决；Docker 这条路径此前完全没处理过，COPY src ./src 只会把
 # src/agent 的源码带进镜像，supervisor.js 实际 spawn 的 DSH 子进程
-# （node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js）在干净镜像里
-# 从不存在，AI 助理必然启动失败。
+# （assets/bin.mjs 依赖的 node_modules/@deepseek-ai/dsh-app-boot 等）在干净
+# 镜像里从不存在，AI 助理必然启动失败。
 #
 # 单独成一层且放在 COPY src 之前：这棵依赖树（DeepSeek Agent SDK 全家桶，见
 # src/agent/runtime/package.json）只随 rc 版本号变化，比 src/**、public/** 稳定

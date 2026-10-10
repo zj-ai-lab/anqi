@@ -25,6 +25,14 @@
 - id: agent
   name: '@deepseek-ai/dsh-agent'
 
+# sessionProjections 注册表（不发布模型可见工具）：自 0.1.5 起 agent-presets、
+# agent-loop、agent-instructions、llm-retry、sandbox-policy 都 inject 它，
+# 两档都必须挂载，否则 project 档整棵插件树卡在 pending。
+- id: session-projection
+  name: '@deepseek-ai/dsh-session-projection'
+
+# 只暴露案齐自己的 anqi preset：上游包自带的 standard/minimal/cordis/ptc
+# preset（shipped root，默认开启）与 $DSH_HOME 用户 preset 都不进入名册。
 - id: agent-presets
   name: '@deepseek-ai/dsh-agent-presets'
   config:
@@ -32,6 +40,7 @@
     roots:
       - path: !!js process.cwd() + '/preset'
         trust: system
+    includeShippedRoot: false
     includeUserRoot: false
 
 - id: llm-retry
@@ -129,10 +138,6 @@
   name: '@deepseek-ai/dsh-command-compact'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
 
-- id: session-projection
-  name: '@deepseek-ai/dsh-session-projection'
-  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
-
 - id: subagent
   name: '@deepseek-ai/dsh-subagent'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
@@ -173,9 +178,8 @@
     toolName: subagent_fork
     backgroundMode: one-shot
 
-- id: tool-subagent-report
-  name: '@deepseek-ai/dsh-tool-subagent-report'
-  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
+# 上游已撤掉独立的子 Agent `report` 工具：continuable 子 Agent 改为在初始任务里
+# 收到父 Agent id，用上面 tool-subagent-control 发布的 send_message 回报结果。
 
 - id: workflow-worker-thread
   name: '@deepseek-ai/dsh-workflow-worker-thread'
@@ -224,6 +228,8 @@
     subagentProvider: spawn
     maxRounds: 64
 
+# 上游 dsh-base 自 0.1.5 起不再挂载/依赖它；案齐保留这一 full 档能力，
+# 包由 runtime/package.json 直接依赖。
 - id: tool-str-replace-editor
   name: '@deepseek-ai/dsh-tool-str-replace-editor'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
@@ -294,10 +300,14 @@
 - id: fs-observation-policy
   name: '@deepseek-ai/dsh-fs-observation-policy'
 
+# 项目根恒为案件夹：不向上逐级找 .git，也就不会加载案件夹之外的 AGENTS.md。
+# 上游默认 projectRootMarkers: ['.git'] 会经 ctx.fs 探测上级目录，自 0.1.5 起
+# 把 dsh-anqi-fs 的越界拒绝当错误抛出、直接打断 turn（旧版吞掉后同样落回案件夹）。
 - id: agent-instructions
   name: '@deepseek-ai/dsh-agent-instructions'
   config:
     maxBytes: 65536
+    projectRootMarkers: []
 
 - id: skill
   name: '@deepseek-ai/dsh-skill'

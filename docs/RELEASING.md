@@ -88,9 +88,9 @@ git push origin android-vX.Y.Z
 
 1. 校验 tag 与 `package.json.version` 一致。
 2. `npm ci`，按 Electron ABI 重建 `better-sqlite3`。
-3. 单独 `npm ci --ignore-scripts`（`src/agent/runtime` 目录内）装 AI 助理 runtime 依赖——根 `npm ci` 装不到这棵独立 npm 包根，不装这一步不报错，只会让发行版里的 DSH 子进程找不到 `bin.js` 而崩溃。
+3. 单独 `npm ci --ignore-scripts`（`src/agent/runtime` 目录内）装 AI 助理 runtime 依赖——根 `npm ci` 装不到这棵独立 npm 包根，不装这一步不报错，只会让发行版里的 DSH 子进程（`assets/bin.mjs`）找不到 `@deepseek-ai/dsh-app-boot` 而崩溃。
 4. `node build/ensure-cross-arch-optional-deps.mjs` 补装 sharp/koffi 缺失的另一侧 macOS 架构原生二进制——CI runner 是 arm64，`npm ci` 只装出 darwin-arm64 一份，不补这一步会让 x64 DMG 的 AI 助理在 Intel Mac 上因加载不到 sharp 而崩溃。
-5. 分别构建 arm64 与 x64 DMG（`npm run dist` 内部会自动重跑一次第 4 步的补装脚本，幂等，已装过的架构直接跳过）。electron-builder 的 `afterPack` 钩子（`build/afterpack-agent-runtime-link.cjs`）在签名前把 `agent-runtime/assets/node_modules` 符号链接建进两份打包产物；核验步骤确认两个架构的 DMG 里都真的含有 `agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js`、该符号链接，以及各自架构匹配的 `@img/sharp-darwin-<arch>`（`lib/sharp-darwin-<arch>-*.node`）、`@koromix/koffi-darwin-<arch>`（`darwin_<arch>/koffi.node`）、`@vscode/ripgrep-darwin-<arch>`（`bin/rg`）三个原生二进制文件本身——核验的是文件，不是目录存在，避免"目录还在、二进制没了"的半成品被判定为已装好。
+5. 分别构建 arm64 与 x64 DMG（`npm run dist` 内部会自动重跑一次第 4 步的补装脚本，幂等，已装过的架构直接跳过）。electron-builder 的 `afterPack` 钩子（`build/afterpack-agent-runtime-link.cjs`）在签名前把 `agent-runtime/assets/node_modules` 符号链接建进两份打包产物；核验步骤确认两个架构的 DMG 里都真的含有 `agent-runtime/runtime/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`、该符号链接，以及各自架构匹配的 `@img/sharp-darwin-<arch>`（`lib/sharp-darwin-<arch>-*.node`）、`@koromix/koffi-darwin-<arch>`（`darwin_<arch>/koffi.node`）、`@vscode/ripgrep-darwin-<arch>`（`bin/rg`）、`@deepseek-ai/node-addon-system-darwin-<arch>`（`bin/system.node`）四个原生二进制文件本身——核验的是文件，不是目录存在，避免"目录还在、二进制没了"的半成品被判定为已装好。
 6. 无 Developer ID 时运行 `build/adhoc-sign.cjs`，确保应用获得本项目自己的 ad-hoc 签名而非 Electron 出厂 linker 签名；配置正式证书时钩子自动跳过。
 7. 为每个 DMG 生成独立 `.sha256`，并校验名称、架构和版本。
 8. 先把 DMG、校验文件和必要的更新元数据上传为 workflow artifact。
@@ -162,7 +162,7 @@ migration 是自托管升级中风险最高的部分：
 - [ ] 公开发布步骤均有 `startsWith(github.ref, 'refs/tags/')` 门
 - [ ] workflow 没有 `pull_request` 或 `pull_request_target` 发布触发器
 - [ ] 手动演练没有创建 Release、推送 GHCR 或连接外部主机
-- [ ] macOS：双架构 DMG、签名状态、首次启动与版本检查通过；AI 助理 runtime 依赖已随包且**各自架构可跑**（`agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js`、`agent-runtime/assets/node_modules` 符号链接、以及对应架构的 `@img/sharp-darwin-<arch>/lib/sharp-darwin-<arch>-*.node`、`@koromix/koffi-darwin-<arch>/darwin_<arch>/koffi.node`、`@vscode/ripgrep-darwin-<arch>/bin/rg` 三个原生二进制文件本身均存在——release.yml 的 "Verify agent runtime bundled in DMG" 步骤已覆盖这五项，核验的都是文件而非目录，本地手动打包时需自行核对；只核验目录或 bin.js/符号链接存在**不能**证明该架构真的能跑起来，目录还在、二进制文件已被裁掉/复制中断的半成品不会让那两项断言失败）
+- [ ] macOS：双架构 DMG、签名状态、首次启动与版本检查通过；AI 助理 runtime 依赖已随包且**各自架构可跑**（`agent-runtime/runtime/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js`、`agent-runtime/assets/node_modules` 符号链接、以及对应架构的 `@img/sharp-darwin-<arch>/lib/sharp-darwin-<arch>-*.node`、`@koromix/koffi-darwin-<arch>/darwin_<arch>/koffi.node`、`@vscode/ripgrep-darwin-<arch>/bin/rg`、`@deepseek-ai/node-addon-system-darwin-<arch>/bin/system.node` 四个原生二进制文件本身均存在——release.yml 的 "Verify agent runtime bundled in DMG" 步骤已覆盖这六项，核验的都是文件而非目录，本地手动打包时需自行核对；只核验目录或入口文件/符号链接存在**不能**证明该架构真的能跑起来，目录还在、二进制文件已被裁掉/复制中断的半成品不会让那两项断言失败）
 - [ ] Docker：公开 manifest、版本 tag、digest 与隔离启动冒烟通过
 - [ ] Android（如发布）：APK 签名、包名、版本、深链与文件交互通过
 - [ ] Release 说明包含主要变更、升级注意、已知限制与校验方法
