@@ -112,12 +112,12 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
-    "electron": "^43.4.0",
+    "electron": "^43.7.5",
     "electron-builder": "^26.15.7",
     "minimatch": "^10.2.6"
   },
   "allowScripts": {
-    "electron@43.4.0": true,
+    "electron@43.7.5": true,
     "better-sqlite3@13.0.3": true,
     "electron-winstaller": false
   }
