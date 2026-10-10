@@ -531,7 +531,14 @@ r.post('/quick/extract', express.raw({ type: '*/*', limit: MAX_STAGING_BYTES }),
       staged: result.staged, source: result.source, ...(result.needs_manual ? { needs_manual: true, reason: result.reason } : {}),
     });
   } catch (error) {
-    if (staged) { try { fs.unlinkSync(staged.filePath); fs.unlinkSync(staged.metaPath); } catch {} }
+    // 抽取失败也要保留暂存原件，用户可以改为手填后直接把同一份附件挂到记录。
+    if (staged) {
+      return res.json({
+        kind: 'task', title: '', date: '', time: '', location: '', court: '', case_no: '', parties: [],
+        case_id: null, case_name: '', case_hint: '', staged: { token: staged.token, filename: staged.filename, size: staged.size },
+        source: 'manual', needs_manual: true, reason: error.message || '识别失败，请手填',
+      });
+    }
     return res.status(error.status || 502).json({ error: error.message, code: error.code || 'doc_extract_failed' });
   }
 });
@@ -575,7 +582,6 @@ r.post('/quick', (req, res) => {
       });
     } catch (error) {
       try { fs.unlinkSync(stagedPack.written.absolutePath || stagedPack.written.absolute); } catch {}
-      discardStagedFile(stagedPack.staged);
       return responseError(res, error);
     }
     discardStagedFile(stagedPack.staged);
