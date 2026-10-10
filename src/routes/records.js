@@ -1,10 +1,18 @@
 import { Router } from 'express';
+import express from 'express';
+import fs from 'node:fs';
+import path from 'node:path';
 import { db, audit, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
 import { isEventType } from '../lib/vocab.js';
 import { deriveForEvent, recalcPreview, applyRecalc, recomputeForDeadline, hasManualParams, enrichDeadlineRow } from '../lib/engine.js';
 import { suggestPrecondition, PRECONDITION_SUGGESTION_REASON } from '../lib/precondition-suggest.js';
 import { parseQuick, llmReady } from '../lib/llm.js';
+import {
+  MAX_STAGING_BYTES, STAGING_DIR, cleanupStaging, detectMime, extractDocument, readStaged, stageBuffer,
+} from '../lib/doc-intake.js';
+import { legalRagBridgeConfigured, queueCaseFile } from '../lib/legalrag-bridge.js';
+import { resolveCaseDirectoryForCase, writeUniqueSecureFile } from '../lib/secure-files.js';
 
 const r = Router();
 
@@ -37,6 +45,8 @@ function responseError(res, error) {
 function taskView(id) {
   return db.prepare('SELECT *, origin AS created_by FROM tasks WHERE id = ?').get(id);
 }
+
+const FILES_ROOT = process.env.ANJIAN_FILES_ROOT || '';
 
 export function createEventRecord({ caseId, payload, actor = 'web', createdBy = 'manual' }) {
   const c = caseForWrite(caseId);
@@ -259,8 +269,8 @@ r.patch('/deadlines/:id', (req, res) => {
       return res.status(400).json({ error: '该期限顺延与否结果相同，无需选择' });
     }
     withChangeContext({ actor: req.actor, rule_id: row.rule_id }, () => {
-      db.prepare(`UPDATE deadlines SET criminal_roll_choice=?, due_on=?, calc_note=? WHERE id=?`)
-        .run(value, next.due_on, next.calc_note, row.id);
+      db.prepare(`UPDATE deadlines SET criminal_roll_choice=?, due_on=?, rolled_from=?, calc_note=? WHERE id=?`)
+        .run(value, next.due_on, next.rolled_from || '', next.calc_note, row.id);
       audit(req.actor, 'criminal-roll-choice', 'deadline', row.id, `${value ?? 'undecided'} → ${next.due_on}`);
     });
     return res.json(enrichDeadlineRow(db.prepare('SELECT * FROM deadlines WHERE id=?').get(row.id)));
@@ -299,6 +309,7 @@ r.patch('/deadlines/:id', (req, res) => {
   // 人工改动到期日 → 标记 override（D4：级联重算默认排除）
   if ('due_on' in b && b.due_on !== row.due_on) {
     sets.push('is_manual_override = 1');
+    sets.push("rolled_from = ''");
     sets.push('criminal_roll_choice = NULL');
     if (!touchedManual.length) {
       // 从参数计算转为直接指定日期：清掉参数，避免下次重算误当作参数型覆盖。
@@ -322,8 +333,8 @@ r.patch('/deadlines/:id', (req, res) => {
       const next = recomputeForDeadline(updated);
       if (next) {
         const stillManual = hasManualParams(updated) ? 1 : 0; // 清空全部参数＝回归引擎纯算状态
-        db.prepare('UPDATE deadlines SET due_on = ?, calc_note = ?, is_manual_override = ? WHERE id = ?')
-          .run(next.due_on, next.calc_note, stillManual, row.id);
+        db.prepare('UPDATE deadlines SET due_on = ?, rolled_from = ?, calc_note = ?, is_manual_override = ? WHERE id = ?')
+          .run(next.due_on, next.rolled_from || '', next.calc_note, stillManual, row.id);
         updated = db.prepare('SELECT * FROM deadlines WHERE id = ?').get(row.id);
       }
       audit(req.actor, 'manual-params', 'deadline', row.id,
@@ -496,6 +507,35 @@ r.delete('/worklog/:id', (req, res) => {
   res.json({ ok: true });
 });
 
+// ---------- 传票识别：只暂存并回填表单，不写业务表 ----------
+r.post('/quick/extract', express.raw({ type: '*/*', limit: MAX_STAGING_BYTES }), async (req, res) => {
+  cleanupStaging();
+  const buffer = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+  if (buffer.length > MAX_STAGING_BYTES) return res.status(413).json({ error: '文件超过 20MB' });
+  const mime = detectMime(buffer);
+  if (!mime) return res.status(415).json({ error: '仅支持 PDF/JPG/PNG/WebP（iPhone 照片请选 JPG）' });
+  let staged;
+  try {
+    staged = stageBuffer(buffer, req.query?.name);
+    const result = await extractDocument({ buffer, filename: req.query?.name, staged });
+    const hints = [result.case_no, ...(result.parties || []), result.court].filter(Boolean);
+    const matches = matchExtractedCase({ case_no: result.case_no, parties: result.parties, case_hint: hints.join(' ') });
+    const caseRow = matches;
+    const caseHint = result.case_no || (result.parties || []).join('、') || result.court || '';
+    return res.json({
+      kind: result.kind || (result.date ? 'hearing' : 'task'),
+      title: result.summary || (result.date ? '开庭' : '传票待核'),
+      date: result.date || '', time: result.time || '', location: result.location || '',
+      court: result.court || '', case_no: result.case_no || '', parties: result.parties || [],
+      case_id: caseRow?.id || null, case_name: caseRow?.name || '', case_hint: caseHint,
+      staged: result.staged, source: result.source, ...(result.needs_manual ? { needs_manual: true, reason: result.reason } : {}),
+    });
+  } catch (error) {
+    if (staged) { try { fs.unlinkSync(staged.filePath); fs.unlinkSync(staged.metaPath); } catch {} }
+    return res.status(error.status || 502).json({ error: error.message, code: error.code || 'doc_extract_failed' });
+  }
+});
+
 // ---------- 快录（P3/P5：方律本人直录不过收件箱）----------
 r.post('/quick', (req, res) => {
   const b = req.body || {};
@@ -504,6 +544,43 @@ r.post('/quick', (req, res) => {
   if (b.date && !isDate(b.date)) return res.status(400).json({ error: 'date 须为 YYYY-MM-DD' });
   if (b.case_id && !db.prepare('SELECT id FROM cases WHERE id = ?').get(b.case_id)) {
     return res.status(404).json({ error: '案件不存在' });
+  }
+  let stagedPack = null;
+  try { stagedPack = stagedForQuick(b, kind); }
+  catch (error) { if (b.staged_token) return responseError(res, error); }
+  if (stagedPack) {
+    let result;
+    try {
+      result = withChangeContext({ actor: req.actor }, () => {
+        let row; let derived = null; let entityId;
+        if (kind === 'hearing') {
+          const created = createEventRecord({ caseId: stagedPack.c.id, actor: req.actor, payload: {
+            type: 'hearing', occurred_on: b.date, occurred_time: b.time ?? b.occurred_time ?? '', location: b.location ?? '', note: b.text.trim(),
+          } });
+          row = created.row; derived = created.derived; entityId = row.id;
+        } else if (kind === 'log') {
+          const info = db.prepare('INSERT INTO worklog (case_id, worked_on, content) VALUES (?, ?, ?)').run(stagedPack.c.id, b.date || todayCN(), b.text.trim());
+          row = db.prepare('SELECT * FROM worklog WHERE id=?').get(info.lastInsertRowid); entityId = row.id;
+          audit(req.actor, 'create', 'worklog', row.id, 'quick');
+        } else {
+          const info = db.prepare('INSERT INTO tasks (case_id, title, plan_date) VALUES (?, ?, ?)').run(stagedPack.c.id, b.text.trim(), b.date || '');
+          row = taskView(info.lastInsertRowid); entityId = row.id;
+          audit(req.actor, 'create', 'task', row.id, 'quick');
+        }
+        const info = db.prepare(
+          'INSERT INTO attachments (case_id, entity, entity_id, rel_path, filename, size, source) VALUES (?, ?, ?, ?, ?, ?, ?)'
+        ).run(stagedPack.c.id, stagedPack.entity, entityId, stagedPack.written.relativePath, stagedPack.written.filename, stagedPack.staged.size, 'upload');
+        const attachment = db.prepare('SELECT * FROM attachments WHERE id=?').get(info.lastInsertRowid);
+        return { row, derived, attachment };
+      });
+    } catch (error) {
+      try { fs.unlinkSync(stagedPack.written.absolutePath || stagedPack.written.absolute); } catch {}
+      discardStagedFile(stagedPack.staged);
+      return responseError(res, error);
+    }
+    discardStagedFile(stagedPack.staged);
+    const legalrag = queueStagedFile(stagedPack.c.id, stagedPack.written.relativePath, req.actor);
+    return res.json({ kind, row: result.row, ...(result.derived ? { derived: result.derived } : {}), attachment: result.attachment, ...(legalrag ? { legalrag } : {}) });
   }
   if (kind === 'log') {
     const row = withChangeContext({ actor: req.actor }, () => {
@@ -561,6 +638,61 @@ function matchCase(hint) {
   const found = rows.filter(hit);
   // 只认唯一命中。多个案件都沾边时宁可留空让人选，也不替人做二选一——挂错案件比没挂更糟。
   return found.length === 1 ? found[0] : null;
+}
+
+function normalizeCaseNo(value) {
+  return String(value || '').normalize('NFKC').replace(/[\s　]/g, '');
+}
+
+function matchExtractedCase({ case_no = '', parties = [], case_hint = '' } = {}) {
+  const rows = db.prepare(
+    "SELECT id, name, client, opponent, case_no FROM cases WHERE status = 'active'"
+  ).all();
+  const no = normalizeCaseNo(case_no);
+  if (no) {
+    const exact = rows.filter((row) => normalizeCaseNo(row.case_no) === no && no !== '');
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) return null;
+  }
+  const hints = [...parties, case_hint].map((x) => String(x || '').trim()).filter((x) => x.length >= 2);
+  const candidates = new Set();
+  for (const hint of hints) {
+    for (const row of rows) {
+      if ([row.name, row.client, row.opponent, row.case_no].filter(Boolean).some((field) => field.includes(hint) || hint.includes(field))) {
+        candidates.add(row.id);
+      }
+    }
+  }
+  const found = rows.filter((row) => candidates.has(row.id));
+  return found.length === 1 ? found[0] : null;
+}
+
+function stagedForQuick(payload, kind) {
+  if (!payload.staged_token) return null;
+  const staged = readStaged(payload.staged_token);
+  if (!staged) throw recordError('暂存文件无效或已过期', 400, 'staged_token_invalid');
+  if (!payload.case_id) throw recordError('带附件的快录必须选择案件', 400, 'case_required');
+  const c = db.prepare('SELECT * FROM cases WHERE id=?').get(payload.case_id);
+  if (!c) throw recordError('案件不存在', 404, 'case_not_found');
+  let context;
+  try { context = resolveCaseDirectoryForCase(FILES_ROOT, c); }
+  catch (error) { throw recordError(`案件夹不存在：${c.name}（先建案件夹，或去掉附件再记）`, 409, 'case_folder_missing'); }
+  if (!context.exists) throw recordError(`案件夹不存在：${c.name}（先建案件夹，或去掉附件再记）`, 409, 'case_folder_missing');
+  let written;
+  try { written = writeUniqueSecureFile(context, '法院文书', staged.filename, staged.buffer); }
+  catch (error) { throw recordError(error.message, 400, error.code || 'file_write_failed'); }
+  return { staged, c, written, entity: kind === 'hearing' ? 'event' : kind === 'log' ? 'worklog' : '' };
+}
+
+function discardStagedFile(staged) {
+  if (!staged) return;
+  for (const file of [staged.filePath, staged.metaPath]) { try { fs.unlinkSync(file); } catch {} }
+}
+
+function queueStagedFile(caseId, relativePath, actor) {
+  if (!legalRagBridgeConfigured()) return null;
+  try { return queueCaseFile(caseId, relativePath, { priority: 90, actor }); }
+  catch (error) { return { status: 'failed', error: error.message }; }
 }
 
 r.post('/quick/parse', async (req, res) => {

@@ -648,6 +648,7 @@ function confirmReviewBtn(d, cls = 'btn small primary') {
 // 依据 / 算法 / 人工设定 —— 跑道行与头条共用的小字尾
 // 依据改为问号按钮（点开看法条原文），长文本不再直铺行内。
 function deadlineMeta(d) {
+  const rolled = d.rolled_from && d.rolled_from < d.due_on;
   return [
     el('span', {}, SEV_LABEL[d.severity] || '一般'),
     d.basis ? el('span', { class: 'sep' }, '·') : null,
@@ -657,6 +658,7 @@ function deadlineMeta(d) {
     d.review_status === 'pending_review' ? el('span', { class: 'sep' }, '·') : null,
     d.review_status === 'pending_review' ? el('span', { class: 'pill review' }, 'AI 填 · 待核') : null,
     d.calc_note?.includes('节假日数据缺') ? el('span', { class: 'pill warn', title: d.calc_note }, '⚠️') : null,
+    rolled ? el('span', { class: 'pill warn' }, `原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办`) : null,
   ];
 }
 

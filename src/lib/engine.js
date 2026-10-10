@@ -211,17 +211,18 @@ export function deriveForEvent(event, caseRow, actor) {
     }
 
     if (existsForEvent.get(event.id, rule.id)) continue; // 幂等：同事件同规则不重复派生
-    const { due_on, calc_note, coverage_warning, coverage_missing_years, holiday_roll_option } = computeDue(rule, event);
+    const { due_on, rolled_from, calc_note, coverage_warning, coverage_missing_years, holiday_roll_option } = computeDue(rule, event);
     setChangeRuleId(rule.id);
     const info = db.prepare(
-      `INSERT INTO deadlines (case_id, name, due_on, trigger_event_id, rule_id, basis, calc_note, is_manual_override, severity, advisory)
-       VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
-    ).run(caseRow.id, rule.name, due_on, event.id, rule.id, rule.basis, calc_note, rule.severity, rule.kind === 'suggested' ? 1 : 0);
+      `INSERT INTO deadlines (case_id, name, due_on, rolled_from, trigger_event_id, rule_id, basis, calc_note, is_manual_override, severity, advisory)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`
+    ).run(caseRow.id, rule.name, due_on, rolled_from, event.id, rule.id, rule.basis, calc_note, rule.severity, rule.kind === 'suggested' ? 1 : 0);
     audit(actor, 'derive-deadline', 'deadline', info.lastInsertRowid, `rule=${rule.id} event=${event.id} due=${due_on}`);
     created.deadlines.push({
       id: info.lastInsertRowid,
       name: rule.name,
       due_on,
+      rolled_from,
       severity: rule.severity,
       rule_id: rule.id,
       advisory: rule.kind === 'suggested' ? 1 : 0,
@@ -251,20 +252,20 @@ export function recalcPreview(event, newDate) {
     if (d.status !== 'pending') { excluded.push({ id: d.id, name: d.name, due_on: d.due_on, reason: `状态=${d.status}` }); continue; }
     // 只调过参数（第一层）的仍按参数重算：否则改了锚点事件日期后，参数型期限会停在旧日期
     const next = computeForDeadline(d, { ...event, occurred_on: newDate });
-    recalc.push({ id: d.id, name: d.name, old_due: d.due_on, new_due: next.due_on, calc_note: next.calc_note });
+    recalc.push({ id: d.id, name: d.name, old_due: d.due_on, new_due: next.due_on, rolled_from: next.rolled_from, calc_note: next.calc_note });
   }
   return { recalc, excluded };
 }
 
 export function applyRecalc(preview, actor) {
   return withChangeContext({ actor }, () => {
-  const upd = db.prepare('UPDATE deadlines SET due_on = ?, calc_note = ? WHERE id = ?');
+  const upd = db.prepare('UPDATE deadlines SET due_on = ?, rolled_from = ?, calc_note = ? WHERE id = ?');
   // 逐条取回它自己的 rule_id 再写：变更记录里「这条期限为什么改了日期」要落到具体规则上，
   // 而 preview.recalc 的形状被测试盯着，不为了这个字段去动它的返回结构。
   const ruleIdOf = db.prepare('SELECT rule_id FROM deadlines WHERE id = ?');
   for (const r of preview.recalc) {
     setChangeRuleId(ruleIdOf.get(r.id)?.rule_id ?? null);
-    upd.run(r.new_due, r.calc_note, r.id);
+    upd.run(r.new_due, r.rolled_from || '', r.calc_note, r.id);
     audit(actor, 'recalc-deadline', 'deadline', r.id, `${r.old_due} → ${r.new_due}`);
   }
 

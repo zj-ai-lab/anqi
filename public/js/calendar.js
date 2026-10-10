@@ -99,6 +99,17 @@ function clearPickedTask() {
   });
 }
 
+function handleDateClick(date, anchor) {
+  if (pickedTaskId) {
+    const task = allTasks.find((item) => String(item.id) === pickedTaskId);
+    if (!task || task.status !== 'open') { clearPickedTask(); return; }
+    clearPickedTask();
+    void moveTaskWhole(task, '', date);
+    return;
+  }
+  showQuickMenu(anchor, date);
+}
+
 function pickTask(task) {
   pickedTaskId = String(task.id);
   trayList.querySelectorAll('.unplanned-item').forEach((item) => {
@@ -519,7 +530,7 @@ async function load({ refresh = true } = {}) {
         class: chipClass(d.severity, d.status),
         href: `/case.html?id=${d.case_id}`,
         draggable: 'false',
-        title: `${sev}期限 · ${d.name} · ${d.case_name}${st}`,
+      title: `${sev}期限 · ${d.name} · ${d.case_name}${st}${d.rolled_from && d.rolled_from < d.due_on ? `\n原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办` : ''}`,
       }, el('span', { class: 'cal-chip-label' }, `${d.name}·${d.case_name}`)), 0);
   }
   for (const h of data.hearings) {
@@ -636,12 +647,8 @@ async function load({ refresh = true } = {}) {
       row.append(el('div', {
         class: cls.join(' '), 'data-date': date, style: `grid-column:${i + 1}`,
         onclick: (e) => {
-          if (!pickedTaskId) { showQuickMenu(e.currentTarget, date); return; }
           if (e.target.closest('.cal-span, .cal-chip, .cal-more')) return;
-          const task = allTasks.find((item) => String(item.id) === pickedTaskId);
-          if (!task || task.status !== 'open') { clearPickedTask(); return; }
-          clearPickedTask();
-          void moveTaskWhole(task, '', date);
+          handleDateClick(date, e.currentTarget);
         },
       }));
     });
@@ -653,7 +660,7 @@ async function load({ refresh = true } = {}) {
       row.append(el('div', {
         class: `cal-daynum${date.slice(0, 7) !== current ? ' other' : ''}${date === today ? ' is-today' : ''}`,
         style: `grid-column:${i + 1};grid-row:1`,
-        onclick: (e) => { e.stopPropagation(); if (!pickedTaskId) showQuickMenu(e.currentTarget, date); },
+        onclick: (e) => { e.stopPropagation(); handleDateClick(date, e.currentTarget); },
       },
         el('span', {}, String(Number(date.slice(8)))),
         hk ? el('span', { class: 'hmark' }, hk === 'holiday' ? '休' : '班') : null

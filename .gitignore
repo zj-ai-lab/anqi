@@ -60,3 +60,5 @@ __pycache__/
 /build-local/
 /local-profile/
 /node_modules
+
+build/bin/

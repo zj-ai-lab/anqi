@@ -1,0 +1,48 @@
+import Foundation
+import Vision
+import PDFKit
+import CoreGraphics
+
+func fail(_ message: String) -> Never {
+    let data = try! JSONSerialization.data(withJSONObject: ["ok": false, "error": message])
+    print(String(data: data, encoding: .utf8)!)
+    exit(1)
+}
+
+func recognize(_ image: CGImage) -> String {
+    let request = VNRecognizeTextRequest()
+    request.recognitionLevel = .accurate
+    request.recognitionLanguages = ["zh-Hans", "en-US"]
+    request.usesLanguageCorrection = true
+    let handler = VNImageRequestHandler(cgImage: image)
+    do { try handler.perform([request]) }
+    catch { return "" }
+    return (request.results ?? []).compactMap { $0.topCandidates(1).first?.string }.joined(separator: "\n")
+}
+
+let args = CommandLine.arguments
+if args.count != 2 { fail("usage: anqi-ocr <file>") }
+let url = URL(fileURLWithPath: args[1])
+if let pdf = PDFDocument(url: url) {
+    var pages: [String] = []
+    let count = min(pdf.pageCount, 5)
+    for index in 0..<count {
+        guard let page = pdf.page(at: index) else { continue }
+        if let text = page.string, text.trimmingCharacters(in: .whitespacesAndNewlines).count >= 30 {
+            pages.append(text)
+        } else if let image = page.thumbnail(of: CGSize(width: 1700, height: 2400), for: .mediaBox).cgImage {
+            pages.append(recognize(image))
+        }
+    }
+    let text = pages.joined(separator: "\n--- 第 N 页 ---\n")
+    if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { fail("PDF 无法识别") }
+    let out: [String: Any] = ["ok": true, "text": text, "pages": count, "engine": "pdfkit-text"]
+    print(String(data: try! JSONSerialization.data(withJSONObject: out), encoding: .utf8)!)
+    exit(0)
+}
+
+guard let imageSource = CGImageSourceCreateWithURL(url as CFURL, nil), let image = CGImageSourceCreateImageAtIndex(imageSource, 0, nil) else { fail("无法读取图片") }
+let text = recognize(image)
+if text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { fail("图片无可识别文字") }
+let out: [String: Any] = ["ok": true, "text": text, "pages": 1, "engine": "vision"]
+print(String(data: try! JSONSerialization.data(withJSONObject: out), encoding: .utf8)!)

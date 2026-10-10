@@ -1424,7 +1424,7 @@ details.adder[open] { border-style: solid; border-color: var(--green-line); }
 /* 日期数字与 chip 堆是周行的同级网格项（不再嵌在格内）——格子的 padding 因此搬到这两者身上。 */
 .cal-daynum {
   display: flex; justify-content: space-between; padding: 6px 9px 0;
-  font: 590 11.5px/1.4 var(--f-num); color: var(--meta); pointer-events: none;
+  font: 590 11.5px/1.4 var(--f-num); color: var(--meta); pointer-events: auto; cursor: pointer;
 }
 .cal-daynum .hmark { font-size: 10px; font-family: var(--sans); }
 .cal-daynum.is-today { color: var(--today-ink); font-weight: 700; }

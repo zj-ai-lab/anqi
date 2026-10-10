@@ -76,6 +76,18 @@ try {
   assert.equal(db.prepare('SELECT COUNT(*) c FROM events WHERE case_id=?').get(caseId).c, 0);
   assert.equal(db.prepare('SELECT COUNT(*) c FROM deadlines WHERE case_id=?').get(caseId).c, 0);
 
+  // direct event write shares createEventRecord with the web route and must preserve
+  // the optional hearing time/location fields supplied by the trusted agent path.
+  const directEvent = await post(
+    {
+      mode: 'direct', session_id: sessionId, kind: 'event',
+      payload: { type: 'hearing', occurred_on: '2099-01-02', occurred_time: '09:30', location: 'XX法院第五法庭', note: '张三案' },
+    },
+    201
+  );
+  assert.equal(directEvent.item.occurred_time, '09:30');
+  assert.equal(directEvent.item.location, 'XX法院第五法庭');
+
   // ---- source 由服务端固定，body 伪造直接拒绝 ----
   await post({ session_id: sessionId, proposal_id: 'p-3', source: 'llm-suggest', payload: { title: 'x' }, source_ref: ref('c3') }, 400);
 
