@@ -535,12 +535,13 @@ async function load({ refresh = true } = {}) {
   }
   for (const h of data.hearings) {
     if (!filters.hearing) continue;
+    const time = h.occurred_time ? `${h.occurred_time} ` : '';
     push(h.occurred_on, el('a', {
       class: 'cal-chip hearing',
       href: `/case.html?id=${h.case_id}`,
       draggable: 'false',
-      title: `开庭 · ${h.case_name}${h.note ? ' · ' + h.note : ''}`,
-    }, el('span', { class: 'cal-chip-label' }, `开庭·${h.case_name}`)), 1);
+      title: `开庭 · ${h.case_name}${h.location ? ' · ' + h.location : ''}${h.note ? ' · ' + h.note : ''}`,
+    }, el('span', { class: 'cal-chip-label' }, `${time}开庭·${h.case_name}`)), 1, h.occurred_time || '');
   }
   for (const t of monthTasks) {
     if (!visible('task', t)) continue;
@@ -559,7 +560,9 @@ async function load({ refresh = true } = {}) {
     }, el('span', { class: 'cal-chip-label' }, taskLabel(t))), taskOrder, t.due_time || '');
   }
   for (const entries of byDay.values()) {
-    entries.sort((a, b) => a.order - b.order || a.time.localeCompare(b.time) || a.seq - b.seq);
+    entries.sort((a, b) => a.order - b.order
+      || (a.time ? 0 : 1) - (b.time ? 0 : 1)
+      || a.time.localeCompare(b.time) || a.seq - b.seq);
   }
 
   // 跨天长条的本月可见区间；按起点排序，供每周行贪心分车道。
