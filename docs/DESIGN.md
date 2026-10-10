@@ -65,7 +65,9 @@ CREATE TABLE events (
                                       -- evidence_notice 收到举证通知|summons 收到开庭传票|hearing 开庭|
                                       -- judgment_served 收到判决|ruling_served 收到裁定|mediation_served 调解书送达|
                                       -- judgment_effective 判决生效|preservation_order 保全裁定|execution_filed 申请执行…
-  occurred_on TEXT NOT NULL,          -- 事件日（触发日期，用户唯一要录的日期）
+  occurred_on TEXT NOT NULL,          -- 事件日（触发日期）
+  occurred_time TEXT NOT NULL DEFAULT '', -- 开庭时刻 HH:MM；空串=未记录
+  location TEXT NOT NULL DEFAULT '',  -- 开庭地点，最多 120 字
   service_method TEXT,                -- 直接送达|邮寄|公告…（一等计算参数，D2）
   instrument TEXT,                    -- 文书依据（「(2026)粤0305民初XXXX号判决」）
   note TEXT,
@@ -79,6 +81,7 @@ CREATE TABLE deadlines (
   case_id INTEGER NOT NULL REFERENCES cases(id),
   name TEXT NOT NULL,                 -- 「上诉期（判决）」
   due_on TEXT NOT NULL,
+  rolled_from TEXT NOT NULL DEFAULT '', -- 引擎因节假日/休息日挪动前的原届满日
   trigger_event_id INTEGER REFERENCES events(id),
   rule_id TEXT,                       -- deadline_rules.json 的 id；NULL=纯手动
   basis TEXT,                         -- 法律依据「民诉法 §171」
@@ -386,7 +389,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 - LegalRAG 用 `case + checksum` 识别与手动上传相同的内容：已有解析直接认领共享路径，不重复 OCR。同一路径内容变化追加 `source_revision`，旧 revision 保留但退出正常列表和检索；任何清理函数都不得删除共享案件根下的原件。
 - 状态机固定为 `observed → queued → registering → processing → ready → extracting → review`；网络/解析失败最多自动重试三次，之后显示 `failed` 供人工重试。文件消失只标 `missing`，不删 LegalRAG 解析结果或案齐正式记录。
 
-## 8.6 LLM 层（1.1.0）：快录整理
+## 8.6 LLM 层（1.1.0；2.9.0 快录开庭与传票识别）
 
 **背景**：快录条的立身之本是「捕捉零摩擦：先记下，晚点再整理」，但它实际要求四个动作——选类型、选案件、填日期、打字。这不叫零摩擦。1.1.0 让它回到该有的样子：**张嘴就记，剩下的交给机器**。
 
@@ -404,12 +407,18 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 ### 结构性防线（不靠提示词，靠类型闭合）
 
 - `src/lib/llm.js` **不 import db**——拿不到任何写入口，是纯解析器。
-- `POST /api/quick/parse` 的输出白名单只有 `task | log` 两种，**结构上不可能产出 deadline**（铁律①）。提示词里也明写禁止推算法定期限，但真正的防线是这里的类型闭合。
+- `POST /api/quick/parse` 的输出白名单是 `task | log | hearing`，**结构上不可能产出 deadline**（铁律①）。`hearing` 必须有明确日期、案件由本地唯一匹配，模型夹带的 `case_id`/`id` 一律丢弃；提示词里也明写禁止推算法定期限，但真正的防线是这里的类型闭合。
 - LLM 的每个字段都过白名单校验：`kind` 非法 → 落回 `task`；`date` 不过 `isDate()`（格式 + 真实日期双验）→ 直接丢弃留空；`title` 空 → 退回用户原文；**案件绝不由 LLM 指定**——它只给「线索字符串」，本地 `matchCase()` 对着库匹配，**且只认唯一命中**（多个案件沾边时宁可留空让人选：挂错案件比没挂更糟）。
+
+### 传票识别回退链与确认
+
+用户在快录条点击 📎 后，文件先进入数据目录下的 `quick-staging/` 暂存区，识别结果只回填表单；只有用户按「记」才写事件、待办或日志。回退顺序固定为：PDF 文字层 → macOS PDFKit/Vision 辅助程序 → 视觉模型 → 提示手填。文字层或系统 OCR 得到的文字最多送出 8000 字做字段抽取；扫描版 PDF 在没有 macOS 辅助程序的 Linux 上不转图，提示拍照或手填。文件类型、大小、字段长度和日期/时刻均由本地代码校验，案件号或当事人线索匹配只在本地完成，全部结果合并后必须唯一才挂案件。
+
+带附件的「记」在同一数据库事务中创建业务记录和附件引用；案件夹不存在、数据库失败或附件写入失败都会向前端报错并清理已写入的文件，不会留下无附件的事件。暂存文件启动时及每次识别时清理，超过 24 小时自动删除。
 
 ### 隐私尺度
 
-**只把用户亲手打的那句话发给已配置的模型服务。** 不发案件列表、不发当事人名单、不发案号库；案件匹配全程在本地。当前实现通过原生 `fetch` 调用 OpenAI 兼容接口，不增加 SDK 依赖。部署者必须自行审查所选服务的地域、保留、训练使用和保密条款；未配置模型密钥时保持纯本地手工录入。
+**只把用户亲手打的那句话发给已配置的模型服务。传票识别仅在用户主动点击 📎 并上传这份文件时，才会把该文件的文字或图片发送给已配置的文字/视觉模型。** 不发案件列表、不发当事人名单、不发案号库；案件匹配全程在本地。当前实现通过原生 `fetch` 调用 OpenAI 兼容接口，不增加 SDK 依赖。部署者必须自行审查所选服务的地域、保留、训练使用和保密条款；未配置模型密钥时保持纯本地手工录入。
 
 ### 降级（LLM 挂了不许挡录入）
 
