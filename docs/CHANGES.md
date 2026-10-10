@@ -109,6 +109,17 @@
 
 ---
 
+## 未发布 — DSH 运行时升至 0.1.5-rc.3
+
+**状态：本地分支，尚未合并 `main`。**
+
+- AI 助理 runtime 由 `0.1.1-rc.2` 升至 `0.1.5-rc.3`（2026-09-22 发布）。旧闭包里的 `@deepseek-ai/dsh-client-connection` 带 GHSA-8m2g-8cgm-3vcp（本地 HTTP 控制面 Host 头鉴权绕过；案齐未挂 api-gateway、走 stdio，原本不可达），新闭包已不含该包。
+- 上游撤包/改名的适配：`dsh-sdk-jsonrpc-demo` 只作版本号与打包核验标记，改读 `dsh-app-boot`；子 Agent `report` 工具并入 `send_message`，删除对应挂载行；`dsh-tool-str-replace-editor` 已不随 dsh-base 安装，改为直接依赖以保留 full 档能力；persona 配置键 `text` 改为 `prefix`。
+- 运行面适配：`dsh-session-projection` 两档常挂（多数核心插件已 inject 它）；`dsh-agent-presets` 不加载上游自带 preset；`dsh-agent-instructions` 项目根固定为案件夹；`dsh-anqi-jsonrpc` 改用 agent-scoped waterfall 应答 ask_user、按 seq 读审批事件，并把 `agent/assistant-stream` 分片按原 `assistant/chunk` 形状转发，抽屉流式渲染不变。
+- dsh-base 新增 8 个宿主 row 经审查列为有意排除：向 DeepSeek 附带会话日志/插件清单的请求扩展、写 `$DSH_HOME/storages` 的会话列表缓存、web_fetch provider。
+- `npm run agent:update-runtime` 增加目标版本发布预检、overrides 自动对齐实际闭包、schemastery 跟随 dsh-tools、只重解析 `@deepseek-ai/*` 作用域；parity 门新增 lockfile 层面的单一版本与全覆盖校验。release 的 DMG 核验加入新的硬依赖原生模块 `node-addon-system-darwin-<arch>`。
+- 会话文件格式升至 v3：旧版写下的 `session.jsonl` 原样保留；supervisor 每次启动新建会话、从不续开旧会话，回退旧版只会留下未被读取的 `session.v3.jsonl`。
+
 ## 未发布 — AI 助理图片输入
 
 **状态：开发分支 `feat/agent-image`，尚未合并 `main`。**

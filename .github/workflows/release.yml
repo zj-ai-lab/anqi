@@ -62,8 +62,8 @@ jobs:
         # package.json 没有 workspaces，根 npm ci 永远装不到它——但
         # package.json 的 build.extraResources 会把这整棵目录（含
         # node_modules）随包分发进 DMG，src/agent/supervisor.js 打包模式下
-        # 直接从这里 spawn DSH 子进程（DSH_BIN 指向
-        # runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js）。
+        # 直接从这里 spawn DSH 子进程（assets/bin.mjs 加载
+        # runtime/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js）。
         # 这一步不装，electron-builder 不会报错（extraResources 的 filter 只
         # 是少匹配到文件），发行版里 AI 助理会是一个含义不明的 crashed
         # worker——下面的 "Verify agent runtime bundled in DMG" 步骤专门核验
@@ -101,7 +101,7 @@ jobs:
         # 现形——这里对两个架构的打包产物各做一次机械核验：DSH 的可执行入口
         # 必须真的落在 Contents/Resources/agent-runtime/runtime/node_modules
         # 下，而不是 build.extraResources"复制成功"但内容为空；同时核验每个
-        # 架构自己的 sharp/koffi/ripgrep 原生二进制确实存在——只核验目录
+        # 架构自己的 sharp/koffi/ripgrep/node-addon-system 原生二进制确实存在——只核验目录
         # （旧版本用 test -d）或 bin.js/符号链接存在会漏检"目录还在、里面的
         # 原生二进制文件没了"这种半成品（例如 extraResources 复制中断、或
         # ensure-cross-arch-optional-deps.mjs 补装失败但留下空目录），必须
@@ -125,11 +125,12 @@ jobs:
               *) echo "FATAL: 未知的 outdir $outdir"; exit 1 ;;
             esac
             resources="dist-electron/${outdir}/案齐.app/Contents/Resources"
-            bin="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-sdk-jsonrpc-demo/lib/bin.js"
+            bin="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js"
             link="${resources}/agent-runtime/assets/node_modules"
             sharp_native="${resources}/agent-runtime/runtime/node_modules/@img/sharp-darwin-${arch}"
             koffi_native="${resources}/agent-runtime/runtime/node_modules/@koromix/koffi-darwin-${arch}"
             ripgrep_native="${resources}/agent-runtime/runtime/node_modules/@vscode/ripgrep-darwin-${arch}"
+            system_native="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/node-addon-system-darwin-${arch}"
             test -f "$bin" || {
               echo "FATAL: $bin 不存在——AI 助理 runtime 依赖未被打包进 ${outdir} 产物"
               exit 1
@@ -148,6 +149,10 @@ jobs:
             }
             test -f "$ripgrep_native/bin/rg" || {
               echo "FATAL: $ripgrep_native/bin/rg 不存在——${outdir}（${arch}）产物里没有匹配架构的 ripgrep 二进制，dsh-tool-fs-search 会在文件搜索时失败（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
+              exit 1
+            }
+            test -f "$system_native/bin/system.node" || {
+              echo "FATAL: $system_native/bin/system.node 不存在——${outdir}（${arch}）产物里没有匹配架构的 node-addon-system 原生模块，常挂插件 session-persistence-jsonl 打开会话时的 flock 会失败（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
               exit 1
             }
           done

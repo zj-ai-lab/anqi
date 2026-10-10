@@ -287,12 +287,13 @@ function ensureAssetsNodeModulesLink() {
 
 // 设计稿 §3.1 要求固定记录的字段之一：DSH 版本。initialize 的 wire 协议不
 // 回传版本号，当前 wire 也没有单独的 version RPC，所以在模块加载时读一次自己钉死
-// 的运行时依赖版本（package.json 里的 "version" 字段，与 runtime/package.json
-// 锁定版本一致），失败也不阻塞——status() 里用 'unknown' 兜底。
+// 的运行时依赖版本（assets/bin.mjs 实际 import 的 dsh-app-boot 的 package.json
+// "version" 字段；整个 DSH 闭包钉同一版本，由 tools/test-dsh-base-parity.js
+// 核验），失败也不阻塞——status() 里用 'unknown' 兜底。
 function readDshVersion() {
   try {
     const pkgPath = path.join(
-      RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-sdk-jsonrpc-demo', 'package.json'
+      RUNTIME_DIR, 'node_modules', '@deepseek-ai', 'dsh-app-boot', 'package.json'
     );
     const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
     return typeof pkg.version === 'string' ? pkg.version : 'unknown';
@@ -1814,10 +1815,11 @@ export class AgentSupervisor {
       // 之后还悄悄跑到 anqi_inbox_propose。之前这里只把 status 改回 ready、
       // 从不 abort/kill，导致超时后子进程继续跑，迟到的 running/idle/turn-end
       // 会被下一个 turn 的 resolver 误当成自己的完成事件——带 turn id 的只是
-      // 一部分 session.event 子类型（权威定义见 runtime 依赖里的
+      // 一部分 session.event 子类型（0.1.1-rc.2 时的权威定义是
       // @deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js 的
       // SessionEventMap，本注释第三次修订、逐条核对过完整类型表，以下两侧均
-      // 已穷举，不再是抽样枚举）：带 event.data.turn 的是 turn/start、
+      // 已穷举，不再是抽样枚举；该包自 0.1.5 起不在闭包内，类型改由各 dsh-*
+      // 包自带的 typert.host.js 分散声明）：带 event.data.turn 的是 turn/start、
       // turn/end、step/start、step/end、assistant/chunk、assistant/message、
       // tool/call、tool/result 这八种（即 turn/*、step/*、assistant/*、
       // tool/call、tool/result）；不带的除 session.status 通知（running/idle
@@ -2210,9 +2212,10 @@ export class AgentSupervisor {
     if (!state || !state.sawRunning || !state.sawIdle || !state.sawEnd) return;
     if (!worker.firstTurnChecked) {
       // 当前 wire 形状：request/header 的 event.data = { header: EpochHeader,
-      // reason }（@deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js 的
-      // 'request/header' 类型、@deepseek-ai/dsh-sdk-jsonrpc-server/lib/index.js
-      // 原样透传 session event）——tools 在 data.header.tools 而不是 data.tools。
+      // reason }（dsh-session 的 'request/header' 事件类型，0.1.1-rc.2 时定义在
+      // @deepseek-ai/dsh-cordis-host-runner/lib/typert.host.js；
+      // @deepseek-ai/dsh-sdk-jsonrpc-server/lib/index.js 原样透传 session
+      // event）——tools 在 data.header.tools 而不是 data.tools。
       // 之前这里读的是 data.tools（恒为 undefined），门禁 4 在生产环境从未
       // 真正校验过 header 里的 MCP 工具，参考实现 driver.mjs 的
       // firstRequestHeader.header?.tools 才是正确路径。
