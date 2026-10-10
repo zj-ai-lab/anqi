@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.9.1** | 2026-10-11 | 依赖安全补丁：proxy-addr、Electron 43.7.5、MCP SDK、sharp 等升到修复版；DSH 钉版不变；无 migration。 |
 | **2.9.0** | 2026-10-10 | 开庭时刻与地点、快录直接记开庭、传票文字层（`unpdf`）/OCR/视觉回退识别与附件事务、手机日历窄屏与日期快录预填、节前顺延提示；migration 029。 |
 | **2.8.0** | 2026-10-09 | 刑事案件字段与刑事期限规则；行政诉讼/行政复议期限规则（草稿）；2020–2026 法定节假日日历与工作日计算；按月/按年期间取到期月对应日；期限手动调参；案件类型与批量设类型；change_log 修改审计。migration 021–028。 |
 | **2.7.3** | 2026-10-05 | 修正纯应收分成款项的律师费基数进入我方收入、待收、逾期和统计的问题；页面明确标注“他方基数”，我方应收分成仍进入净额；同一款同时有应收与应付时保持双向结算口径。 |
@@ -107,14 +108,16 @@
 
 **升级注意**：migration 021–028 只加列、加表、加触发器并按程序前缀回填案件类型，不改写既有期限日期；升级前备份，回退旧版本须同时恢复备份。
 
----
-
-## 未发布 — 依赖安全补丁
+## 2.9.1 — 依赖安全补丁
 
 - 根依赖：proxy-addr 2.0.7 → 2.0.8（IPv4-mapped IPv6 短前缀信任网段会匹配全部 IPv4；默认 `ANJIAN_TRUST_PROXY` 不受影响）；Electron 43.4.0 → 43.7.5（同一大版本，`allowScripts` 钉版键同步；Electron 43 已无安装脚本，二进制首次运行时下载）；仅构建期使用的 undici、brace-expansion 升到修复版。
 - AI 助理 runtime：`@modelcontextprotocol/sdk` 1.30.0 → 1.31.0、sharp 0.35.4 → 0.35.5（librsvg 修复，影响 glibc Linux 即 Docker 镜像）、proxy-addr、ip-address、fast-uri 升到修复版；DSH 钉版仍为 `0.1.1-rc.2`。
 - 暂留：DSH GHSA-8m2g-8cgm-3vcp 位于 HTTP 控制面 `dsh-api-gateway`，案齐 Cordis 配置不挂载该插件、与 DSH 只走 stdio JSON-RPC；修复版 DSH（≥ 0.1.2）缺少本仓依赖的 `dsh-sdk-jsonrpc-demo`、`dsh-tool-subagent-report` 等包，需单独适配。http-cache-semantics、sprintf-js 只在 electron-builder 下载 Electron 时使用，不进 DMG 与 Docker，上游暂无公认修复版。
 - 均为 semver 范围内升级，版本选取发布满两周者（sharp 与 MCP SDK 的修复版本身不足两周，取最早修复版）；`update-dsh-runtime` 兼容门禁与 `tools/check.sh` 全绿。
+
+**升级注意**：无 migration，数据库与 2.9.0 完全一致，可直接互换回退。
+
+---
 
 ## 未发布 — AI 助理图片输入
 
