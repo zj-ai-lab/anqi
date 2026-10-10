@@ -14,6 +14,7 @@
 | [electron-updater](https://www.electron.build/auto-update.html) | 桌面版本检查 | MIT |
 | [@electron/rebuild](https://github.com/electron/rebuild) | 原生模块 ABI 重建 | MIT |
 | [DSH（DeepSeek Harness）](https://github.com/deepseek-ai/deepseek-harness) | 案件 AI 助理的 agent 运行时（进程外 sidecar，`@deepseek-ai/dsh-*` 包族，随发行物分发、不进仓库） | BSD-3-Clause |
+| [unpdf](https://github.com/unjs/unpdf) 1.8.1 | PDF 文字层抽取（纯 JavaScript，前 5 页） | MIT；文本解析使用 PDF.js 组件，详见包内许可证 |
 
 安装依赖时还会取得上述项目的传递依赖。它们不因案齐采用 AGPL-3.0-only 而改变各自许可证。
 
@@ -38,6 +39,6 @@
 
 ## 补充与更正
 
-2.9.0 的传票识别没有新增 npm 或原生第三方依赖：PDF 文字层路径使用仓内纯 JavaScript 解析，macOS 辅助程序只链接系统自带的 PDFKit 与 Vision 框架。因未重新分发第三方库，本版本没有新增 `LICENSES/` 文件。
+2.9.0 的 macOS OCR 辅助程序只链接系统自带的 PDFKit 与 Vision 框架；PDF 文字层使用上表登记的 `unpdf@1.8.1`。该依赖的 MIT 文本见 [`LICENSES/UNPDF-MIT.txt`](LICENSES/UNPDF-MIT.txt)。
 
 如果你发现第三方归属、许可证名称或随附文本有遗漏，请开一个不包含实质实现代码的 Issue，并指出具体文件、上游项目和可核验的许可证来源。安全问题请改用 [SECURITY.md](SECURITY.md) 中的私密渠道。

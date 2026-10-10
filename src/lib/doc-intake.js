@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { extractText, getDocumentProxy } from 'unpdf';
 import { llmReady } from './llm.js';
 import { isDate } from './dates.js';
 
@@ -42,14 +43,28 @@ function unescapePdfText(value) {
   return value.replace(/\\([\\()])/g, '$1').replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\([0-7]{1,3})/g, (_, oct) => String.fromCharCode(parseInt(oct, 8)));
 }
 
-// 传票测试 fixture 和常见未压缩 PDF 都把文字放在 (...) Tj/TJ 中；
-// 对压缩/字体编码 PDF 返回空，交给系统 OCR/视觉模型回退。
-export function extractPdfText(buffer) {
+function extractPdfTextFallback(buffer) {
   const raw = Buffer.from(buffer).subarray(0, 12 * 1024 * 1024).toString('latin1');
   const chunks = [];
   for (const match of raw.matchAll(/\(([^()]*)\)\s*T[Jj]/g)) chunks.push(unescapePdfText(match[1]));
   const text = chunks.join('\n').replace(/[\x00-\x08\x0b\x0c\x0e-\x1f]/g, ' ').trim();
   return text;
+}
+
+// unpdf 使用纯 JS PDF.js serverless build，不需要 canvas/poppler 等原生依赖。
+// 只读取前 5 页；正则只作为极简/损坏 fixture 在 unpdf 抛错时的兼容兜底。
+export async function extractPdfText(buffer) {
+  let pdf = null;
+  try {
+    pdf = await getDocumentProxy(new Uint8Array(buffer));
+    const extracted = await extractText(pdf, { mergePages: false });
+    const pages = Array.isArray(extracted.text) ? extracted.text.slice(0, 5) : [extracted.text];
+    return pages.join('\n').normalize('NFKC').trim();
+  } catch {
+    return extractPdfTextFallback(buffer).normalize('NFKC').trim();
+  } finally {
+    try { await pdf?.destroy?.(); } catch { /* PDF.js cleanup is best effort */ }
+  }
 }
 
 function helperCandidates() {
@@ -164,7 +179,7 @@ export async function extractDocument({ buffer, filename, staged }) {
   let fields = null;
   let text = '';
   if (mime === 'application/pdf') {
-    text = extractPdfText(buffer);
+    text = await extractPdfText(buffer);
     if (text.replace(/\s/g, '').length >= 30) { source = 'pdf-text'; fields = await extractTextFields(text).catch(() => null); }
   }
   if (!fields && (mime !== 'application/pdf' || !source)) {
