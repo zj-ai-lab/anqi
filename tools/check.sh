@@ -8,8 +8,8 @@ cd "$(dirname "$0")/.."
 unset FORCE_COLOR
 export NO_COLOR=1
 
-echo "[1/80] node --check"
-for f in server.js src/db.js src/lib/*.js src/lib/*.cjs src/middleware/*.js src/routes/*.js src/agent/*.js src/agent/assets/bin.mjs src/agent/assets/plugins/*/index.js src/agent/assets/mcp/server.mjs public/js/*.js cli/case tools/seed-demo.js tools/seed-finance-qa.js tools/qa-finance-ui.js tools/hash-password.js tools/backup.cjs tools/test-engine.js tools/test-engine-criminal.js tools/test-holidays.js tools/test-engine-workdays.js tools/update-holidays.js tools/test-migration-025.js tools/test-engine-admin.js tools/test-case-types.js tools/test-criminal-http.js tools/test-criminal-roll-choice.js tools/verify-engine-e2e.js tools/test-changes-http.js tools/test-migration-024.js tools/test-migration-029.js tools/test-quick-hearing-http.js tools/test-doc-intake.js tools/test-rolled-from.js tools/gen-024-change-log.mjs tools/test-settlement.js tools/test-fee-accounting.js tools/test-settlement-view.js tools/test-settlement-transaction.js tools/test-settlement-http.js tools/test-share.js tools/test-migration-006.js tools/test-migration-007.js tools/test-migration-008.js tools/test-migration-009.js tools/test-migration-010.js tools/test-migration-011.js tools/test-migration-012.js tools/test-migration-013.js tools/test-migration-014.js tools/test-migration-015.js tools/test-migration-016.js tools/test-migration-017.js tools/test-migration-018.js tools/test-migration-019.js tools/test-migration-020.js tools/test-password-hash.js tools/test-startup-config.js tools/test-trust-proxy.js tools/test-auth-security.js tools/test-secure-files.js tools/test-files-http.js tools/test-error-handler.js tools/test-document-extractor.js tools/test-legalrag-bridge.js tools/test-legalrag-http.js tools/test-inbox-http.js tools/test-agent-config.js tools/test-agent-supervisor.js tools/test-agent-proposals.js tools/test-agent-proposals-http.js tools/test-agent-settings.js tools/test-agent-http.js tools/test-agent-session-read-http.js tools/test-secret-box.js tools/test-agent-models-client.js tools/test-agent-models-http.js tools/test-agent-model-options.js tools/test-agent-markdown.js tools/test-agent-workspace-guard.js tools/test-agent-runtime-composition.js tools/test-dsh-base-parity.js tools/update-dsh-runtime.mjs tools/test-pack-manifest.js tools/report-month-changes.js tools/test-elapsed.js tools/test-precondition.js tools/test-suggested.js tools/test-migration-027.js electron/main.js electron/backend-env.js tools/test-electron-backend-env.js tools/smoke-agent-frontend.js tools/smoke-agent-profile-frontend.js build/adhoc-sign.cjs build/afterpack-agent-runtime-link.cjs build/ensure-cross-arch-optional-deps.mjs build/build-ocr-helper.mjs; do
+echo "[1/85] node --check"
+for f in server.js src/db.js src/lib/*.js src/lib/*.cjs src/middleware/*.js src/routes/*.js src/agent/*.js src/agent/assets/bin.mjs src/agent/assets/plugins/*/index.js src/agent/assets/mcp/server.mjs public/js/*.js cli/case tools/seed-demo.js tools/seed-finance-qa.js tools/qa-finance-ui.js tools/hash-password.js tools/backup.cjs tools/test-engine.js tools/test-engine-criminal.js tools/test-holidays.js tools/test-engine-workdays.js tools/update-holidays.js tools/test-migration-025.js tools/test-engine-admin.js tools/test-case-types.js tools/test-criminal-http.js tools/test-criminal-roll-choice.js tools/verify-engine-e2e.js tools/test-changes-http.js tools/test-migration-024.js tools/test-migration-029.js tools/test-quick-hearing-http.js tools/test-doc-intake.js tools/test-rolled-from.js tools/gen-024-change-log.mjs tools/test-settlement.js tools/test-fee-accounting.js tools/test-settlement-view.js tools/test-settlement-transaction.js tools/test-settlement-http.js tools/test-share.js tools/test-migration-006.js tools/test-migration-007.js tools/test-migration-008.js tools/test-migration-009.js tools/test-migration-010.js tools/test-migration-011.js tools/test-migration-012.js tools/test-migration-013.js tools/test-migration-014.js tools/test-migration-015.js tools/test-migration-016.js tools/test-migration-017.js tools/test-migration-018.js tools/test-migration-019.js tools/test-migration-020.js tools/test-password-hash.js tools/test-startup-config.js tools/test-trust-proxy.js tools/test-auth-security.js tools/test-secure-files.js tools/test-files-http.js tools/test-error-handler.js tools/test-document-extractor.js tools/test-legalrag-bridge.js tools/test-legalrag-http.js tools/test-inbox-http.js tools/test-agent-config.js tools/test-agent-supervisor.js tools/test-agent-proposals.js tools/test-agent-proposals-http.js tools/test-agent-settings.js tools/test-agent-http.js tools/test-agent-session-read-http.js tools/test-secret-box.js tools/test-agent-models-client.js tools/test-agent-models-http.js tools/test-agent-model-options.js tools/test-agent-markdown.js tools/test-agent-workspace-guard.js tools/test-agent-runtime-composition.js tools/test-dsh-base-parity.js tools/update-dsh-runtime.mjs tools/test-pack-manifest.js tools/report-month-changes.js tools/test-elapsed.js tools/test-precondition.js tools/test-suggested.js tools/test-migration-027.js electron/main.js electron/backend-env.js tools/test-electron-backend-env.js tools/smoke-agent-frontend.js tools/smoke-agent-profile-frontend.js build/adhoc-sign.cjs build/afterpack-agent-runtime-link.cjs build/ensure-cross-arch-optional-deps.mjs build/build-ocr-helper.mjs tools/smoke-quickbar-frontend.js; do
   node --check "$f"
 done
 # 原生 DOM 的 append()/prepend() 会把 null 转成字符串 "null" 塞进页面（api.js 的 el() 才会跳过）。
@@ -20,7 +20,7 @@ if grep -rnE '\.(append|prepend)\(.*\?.*:[[:space:]]*null[[:space:]]*\)' public/
 fi
 echo "  ok"
 
-echo "[2/80] rules JSON 合法性"
+echo "[2/85] rules JSON 合法性"
 node -e "
 const fs = require('fs');
 for (const f of ['rules/event_types.json','rules/stage_templates.json','rules/deadline_rules.json','rules/deadline_rules_complaint.json','rules/deadline_rules_criminal.json','rules/deadline_rules_admin.json','rules/event_types_criminal.json','rules/event_types_admin.json','rules/law_texts.json','rules/law_texts_criminal.json','rules/stage_labels_criminal.json','rules/stage_templates_criminal.json','rules/stage_templates_admin.json','rules/holidays-2020.json','rules/holidays-2021.json','rules/holidays-2022.json','rules/holidays-2023.json','rules/holidays-2024.json','rules/holidays-2025.json','rules/holidays-2026.json']) {
@@ -32,103 +32,103 @@ console.log('  ok');
 
 TMPDIR_CHECK=$(mktemp -d)
 
-echo "[3/80] 节假日通知解析与 updater 离线校验"
+echo "[3/85] 节假日通知解析与 updater 离线校验"
 DB_PATH="$TMPDIR_CHECK/holidays.db" node tools/test-holidays.js
 
-echo "[4/80] 工作日期限引擎与覆盖告警"
+echo "[4/85] 工作日期限引擎与覆盖告警"
 DB_PATH="$TMPDIR_CHECK/engine-workdays.db" node tools/test-engine-workdays.js
 
 
-echo "[5/80] migration 干跑（临时库）"
+echo "[5/85] migration 干跑（临时库）"
 DB_PATH="$TMPDIR_CHECK/check.db" node -e "import('./src/db.js').then(() => console.log('  ok'))"
 
-echo "[6/80] migration 005 → 006 fixture + 原子性测试"
+echo "[6/85] migration 005 → 006 fixture + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-006.db" node tools/test-migration-006.js
 
-echo "[7/80] migration 006 → 007 fixture + 原子性测试"
+echo "[7/85] migration 006 → 007 fixture + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-007.db" node tools/test-migration-007.js
 
-echo "[8/80] migration 007 → 008 fixture + 原子性测试"
+echo "[8/85] migration 007 → 008 fixture + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-008.db" node tools/test-migration-008.js
 
-echo "[9/80] migration 008 → 009 文件桥 + 原子性测试"
+echo "[9/85] migration 008 → 009 文件桥 + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-009.db" node tools/test-migration-009.js
 
-echo "[10/80] migration 009 → 010 人类语义字段 + 原子性测试"
+echo "[10/85] migration 009 → 010 人类语义字段 + 原子性测试"
 DB_PATH="$TMPDIR_CHECK/migration-010-bootstrap.db" node tools/test-migration-010.js
 
-echo "[11/80] migration 010 → 011 推荐反馈 + 候选事实层"
+echo "[11/85] migration 010 → 011 推荐反馈 + 候选事实层"
 DB_PATH="$TMPDIR_CHECK/migration-011-bootstrap.db" node tools/test-migration-011.js
 
-echo "[12/80] migration 011 → 012 款项凭证指针"
+echo "[12/85] migration 011 → 012 款项凭证指针"
 DB_PATH="$TMPDIR_CHECK/migration-012-bootstrap.db" node tools/test-migration-012.js
 
-echo "[13/80] migration 012 → 013 去个人化 actor（带存量数据的 fixture）"
+echo "[13/85] migration 012 → 013 去个人化 actor（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-013-bootstrap.db" node tools/test-migration-013.js
 
-echo "[14/80] migration 013 → 014 settings 键值表（带存量数据的 fixture）"
+echo "[14/85] migration 013 → 014 settings 键值表（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-014-bootstrap.db" node tools/test-migration-014.js
 
-echo "[15/80] migration 014 → 015 tasks 截止时刻（带存量数据的 fixture）"
+echo "[15/85] migration 014 → 015 tasks 截止时刻（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-015-bootstrap.db" node tools/test-migration-015.js
 
-echo "[16/80] migration 015 → 016 sessions UTC（带存量数据的 fixture）"
+echo "[16/85] migration 015 → 016 sessions UTC（带存量数据的 fixture）"
 DB_PATH="$TMPDIR_CHECK/migration-016-bootstrap.db" node tools/test-migration-016.js
 
-echo "[17/80] migration 016 → 017 案件 workspace 指针物化"
+echo "[17/85] migration 016 → 017 案件 workspace 指针物化"
 DB_PATH="$TMPDIR_CHECK/migration-017-bootstrap.db" node tools/test-migration-017.js
 
-echo "[18/80] 密码 hash 版本与 legacy 兼容"
+echo "[18/85] 密码 hash 版本与 legacy 兼容"
 node tools/test-password-hash.js
 
-echo "[19/80] 启动 fail-closed + trusted proxy 解析"
+echo "[19/85] 启动 fail-closed + trusted proxy 解析"
 node tools/test-startup-config.js
 node tools/test-trust-proxy.js
 
-echo "[20/80] 会话、恒时凭据比较与案件文件安全边界"
+echo "[20/85] 会话、恒时凭据比较与案件文件安全边界"
 node tools/test-auth-security.js
 node tools/test-secure-files.js
 node tools/test-files-http.js
 
-echo "[21/80] production 500 脱敏"
+echo "[21/85] production 500 脱敏"
 node tools/test-error-handler.js
 
-echo "[22/80] 结算整数公式单元测试"
+echo "[22/85] 结算整数公式单元测试"
 node tools/test-settlement.js
 node tools/test-fee-accounting.js
 
-echo "[23/80] 律师资金卡 view model 测试"
+echo "[23/85] 律师资金卡 view model 测试"
 node tools/test-settlement-view.js
 
-echo "[24/80] 期限引擎单元测试"
+echo "[24/85] 期限引擎单元测试"
 DB_PATH="$TMPDIR_CHECK/engine.db" node tools/test-engine.js
 DB_PATH="$TMPDIR_CHECK/engine-criminal.db" node tools/test-engine-criminal.js
-echo "[25/80] 经过时间、复议前置、参考期限回归"
+echo "[25/85] 经过时间、复议前置、参考期限回归"
 node tools/test-elapsed.js
 node tools/test-precondition.js
 node tools/test-suggested.js
 node tools/test-criminal-roll-choice.js
 
-echo "[26/80] 分成兼容 + 提醒单元测试（1.2.0/1.3.0 语义）"
+echo "[26/85] 分成兼容 + 提醒单元测试（1.2.0/1.3.0 语义）"
 DB_PATH="$TMPDIR_CHECK/share.db" node tools/test-share.js
 
-echo "[27/80] 外层结算事务组合回归"
+echo "[27/85] 外层结算事务组合回归"
 DB_PATH="$TMPDIR_CHECK/settlement-transaction.db" node tools/test-settlement-transaction.js
 
-echo "[28/80] 结算 HTTP 回归（临时库 + 临时端口）"
+echo "[28/85] 结算 HTTP 回归（临时库 + 临时端口）"
 node tools/test-settlement-http.js
 
-echo "[29/80] LegalRAG 语义筛选 + 文件桥队列 + 提取候选单元回归"
+echo "[29/85] LegalRAG 语义筛选 + 文件桥队列 + 提取候选单元回归"
 node tools/test-document-extractor.js
 DB_PATH="$TMPDIR_CHECK/legalrag-bridge.db" node tools/test-legalrag-bridge.js
 
-echo "[30/80] LegalRAG 候选人工确认 HTTP 回归"
+echo "[30/85] LegalRAG 候选人工确认 HTTP 回归"
 DB_PATH="$TMPDIR_CHECK/legalrag-http.db" node tools/test-legalrag-http.js
 
-echo "[31/80] L2 推荐去重与裁决记忆 HTTP 回归"
+echo "[31/85] L2 推荐去重与裁决记忆 HTTP 回归"
 node tools/test-inbox-http.js
 
-echo "[32/80] API 冒烟（临时库 + 临时端口）"
+echo "[32/85] API 冒烟（临时库 + 临时端口）"
 PORT=39770
 DB_PATH="$TMPDIR_CHECK/smoke.db" PORT=$PORT NODE_ENV=test HOST=127.0.0.1 ANJIAN_UNSAFE_NO_AUTH=1 node server.js >"$TMPDIR_CHECK/server.log" 2>&1 &
 SRV=$!
@@ -362,7 +362,7 @@ grep -q '^event: change' "$SSE_OUT"
 curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID/files/sig?dir=%E6%B3%95%E9%99%A2%E6%96%87%E4%B9%A6" | grep -q '外部丢入.txt'
 echo "  ok"
 
-echo "[33/80] 登录门冒烟（带 ANJIAN_USER 的实例）"
+echo "[33/85] 登录门冒烟（带 ANJIAN_USER 的实例）"
 PORT2=39771
 HASH=$(DB_PATH="$TMPDIR_CHECK/hash.db" node -e "import('./src/middleware/auth.js').then(m=>console.log(m.hashPassword('smoke-pass-123')))")
 DB_PATH="$TMPDIR_CHECK/auth.db" PORT=$PORT2 NODE_ENV=test HOST=127.0.0.1 ANJIAN_UNSAFE_NO_AUTH= ANJIAN_USER=smokeuser ANJIAN_PASS_HASH="$HASH" node server.js >"$TMPDIR_CHECK/auth.log" 2>&1 &
@@ -378,31 +378,31 @@ COOKIE=$(curl -s -D - -o /dev/null -X POST "http://127.0.0.1:$PORT2/api/login" -
 curl -fsS -H "Cookie: $COOKIE" "http://127.0.0.1:$PORT2/api/digest" >/dev/null
 echo "  ok"
 
-echo "[34/80] DSH sidecar 设置白名单（enabled 门 + baseURL 允许域策略 + apiKeyEnv 保留名）"
+echo "[34/85] DSH sidecar 设置白名单（enabled 门 + baseURL 允许域策略 + apiKeyEnv 保留名）"
 node tools/test-agent-config.js
 
-echo "[35/80] DSH sidecar supervisor（门禁红线 + turn/worker 生命周期回归）"
+echo "[35/85] DSH sidecar supervisor（门禁红线 + turn/worker 生命周期回归）"
 node tools/test-agent-supervisor.js
 
-echo "[36/80] agent 提案闭环（proposal_id 幂等 + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖）"
+echo "[36/85] agent 提案闭环（proposal_id 幂等 + 同题异 ID 并存 + decline 记忆 + 与 L2 互不覆盖）"
 node tools/test-agent-proposals.js
 
-echo "[37/80] agent-proposals 路由回归（session 绑定信任边界 + kind/source/payload/source_ref 白名单 + 幂等状态码）"
+echo "[37/85] agent-proposals 路由回归（session 绑定信任边界 + kind/source/payload/source_ref 白名单 + 幂等状态码）"
 node tools/test-agent-proposals-http.js
 
-echo "[38/80] agent session 绑定只读面路由回归（agent-case-view/agent-digest 按 session 反查 case + 他案零泄漏 + 旧全所端点不受影响）"
+echo "[38/85] agent session 绑定只读面路由回归（agent-case-view/agent-digest 按 session 反查 case + 他案零泄漏 + 旧全所端点不受影响）"
 node tools/test-agent-session-read-http.js
 
-echo "[39/80] agent 设置白名单 HTTP 回归（enabled 布尔 + provider 枚举 + apiKeyEnv 保留名 + baseURL 协议/内网/官方域 + provider 联动 + 事务原子性）"
+echo "[39/85] agent 设置白名单 HTTP 回归（enabled 布尔 + provider 枚举 + apiKeyEnv 保留名 + baseURL 协议/内网/官方域 + provider 联动 + 事务原子性）"
 node tools/test-agent-settings.js
 
-echo "[40/80] /api/agent* 路由回归（状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅）"
+echo "[40/85] /api/agent* 路由回归（状态映射 + 输入校验 + interactions 信任边界 + SSE 建立/转发/反订阅）"
 node tools/test-agent-http.js
 
-echo "[41/80] 打包清单守卫（build.files 不得排除 server.js 静态 import 图里的任何 src/** 文件）"
+echo "[41/85] 打包清单守卫（build.files 不得排除 server.js 静态 import 图里的任何 src/** 文件）"
 node tools/test-pack-manifest.js
 
-echo "[42/80] electron backend-env（dataDir 路径拼接 + ANJIAN_TEST_USERDATA 的 env+argv 双门）"
+echo "[42/85] electron backend-env（dataDir 路径拼接 + ANJIAN_TEST_USERDATA 的 env+argv 双门）"
 node tools/test-electron-backend-env.js
 
 # 红线「agent_enabled=false 时整块 UI 不渲染」此前只有源码可读性背书，没有任何
@@ -412,7 +412,7 @@ node tools/test-electron-backend-env.js
 # 按钮之后、前端监听的 SSE 事件名与后端真实广播源漂移，这三类回归都会在自检里
 # 当场变红。该脚本自带固定端口 3009（与本文件其余步骤的 39770/39771 不冲突）
 # 与临时库，跑完自行收尾。
-echo "[43/80] 前端行为冒烟（安全 Markdown + counts.agent 特性探测门 + agent_* 配置往返 + SSE 帧到 DOM 映射静态审查）"
+echo "[43/85] 前端行为冒烟（安全 Markdown + counts.agent 特性探测门 + agent_* 配置往返 + SSE 帧到 DOM 映射静态审查）"
 node tools/test-agent-markdown.js
 node tools/smoke-agent-frontend.js
 
@@ -425,7 +425,7 @@ node tools/smoke-agent-frontend.js
 # 解析出的形状与前端期待一致，并确认 POST /api/agent/models 对回环地址仍然
 # 400 拒绝（即使显式带 apiKey，配置期工具也不豁免 SSRF 校验）。固定端口
 # 3013/该假服务器随机端口，与本文件其余步骤不冲突。
-echo "[44/80] AI 助理设置面前端冒烟（新控件静态审查 + agent_api_key 掩码往返 + apiKeyEnv 优先级 + 本地假模型服务器）"
+echo "[44/85] AI 助理设置面前端冒烟（新控件静态审查 + agent_api_key 掩码往返 + apiKeyEnv 优先级 + 本地假模型服务器）"
 node tools/smoke-agent-profile-frontend.js
 
 # 2026-08-23 复审修复：拉取模型成功后下拉框的默认选中项曾经可能是一个供应商
@@ -433,130 +433,133 @@ node tools/smoke-agent-profile-frontend.js
 # 命中"，判断恒为真）。把这条选项计算规则拆成不依赖 DOM 的纯函数
 # buildModelOptions()（public/js/agent-model-options.js），这里单独跑它的
 # Node 单测，不需要真实浏览器。
-echo "[45/80] agent 模型下拉默认选中项纯逻辑自检（命中/未命中/空列表四类场景）"
+echo "[45/85] agent 模型下拉默认选中项纯逻辑自检（命中/未命中/空列表四类场景）"
 node tools/test-agent-model-options.js
 
 # 真实启动 project/full 两种 worker 核对工具集；containment 单测覆盖标准
 # read/write 与绕过 ctx.fs 的 glob/grep；parity 门会在上游 dsh-base 新增 row
 # 时 fail loud，迫使更新者挂载或明确分类。
-echo "[46/80] DSH 完整能力、案件 workspace containment、插件热更新与 base parity"
+echo "[46/85] DSH 完整能力、案件 workspace containment、插件热更新与 base parity"
 node tools/test-dsh-base-parity.js
 node tools/test-agent-workspace-guard.js
 node tools/test-agent-runtime-composition.js
 
-echo "[47/80] secret-box 静态加密自检（AES-256-GCM 往返 + 错误密钥/畸形密文安全失败 + secret.key 0o600 + ANJIAN_SECRET 熵校验）"
+echo "[47/85] secret-box 静态加密自检（AES-256-GCM 往返 + 错误密钥/畸形密文安全失败 + secret.key 0o600 + ANJIAN_SECRET 熵校验）"
 node tools/test-secret-box.js
 
-echo "[48/80] agent models-client 网络层自检（本地假 /models 服务器：OpenAI 兼容格式解析 + 超时/大小上限/401/404/畸形 JSON/未知形状/3xx 重定向拦截全部映射成安全失败 + modelsErrorToHttpStatus() 映射表纯函数回归：上游认证失败不再映射到 401）"
+echo "[48/85] agent models-client 网络层自检（本地假 /models 服务器：OpenAI 兼容格式解析 + 超时/大小上限/401/404/畸形 JSON/未知形状/3xx 重定向拦截全部映射成安全失败 + modelsErrorToHttpStatus() 映射表纯函数回归：上游认证失败不再映射到 401）"
 node tools/test-agent-models-client.js
 
-echo "[49/80] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 字符串校验 + apiKey 取值优先级 请求体>仅 deepseek-official 允许的已保存 + 错误码映射(上游认证失败改回 502,不再误判为 anqi 会话过期) + 审计/响应体不含明文 key + public/js/api.js 401 判断分支静态回归）"
+echo "[49/85] POST /api/agent/models 路由回归（provider/baseURL 与保存设置同一套 SSRF 字符串校验 + apiKey 取值优先级 请求体>仅 deepseek-official 允许的已保存 + 错误码映射(上游认证失败改回 502,不再误判为 anqi 会话过期) + 审计/响应体不含明文 key + public/js/api.js 401 判断分支静态回归）"
 node tools/test-agent-models-http.js
 
-echo "[50/80] Phase 0 agent bash 真沙箱边界（DB/workspace overlap fail-closed + 当前案 rw + 他案/contacts read/write 拒绝 + Docker bubblewrap）"
+echo "[50/85] Phase 0 agent bash 真沙箱边界（DB/workspace overlap fail-closed + 当前案 rw + 他案/contacts read/write 拒绝 + Docker bubblewrap）"
 node tools/test-agent-sandbox-boundary.js
 
-echo "[51/80] Phase 1 powerful 工具审批地基（pre-execute ask + 完整 reason + 本类不再询问）"
+echo "[51/85] Phase 1 powerful 工具审批地基（pre-execute ask + 完整 reason + 本类不再询问）"
 node tools/test-agent-approval-policy.js
 
-echo "[52/80] Phase 2 web_search 审批（完整查询词 + 三档旋钮 + fetch=false）"
+echo "[52/85] Phase 2 web_search 审批（完整查询词 + 三档旋钮 + fetch=false）"
 node tools/test-agent-web-approval.js
 
-echo "[53/80] Phase 3 二档风险分类器（默认关闭 + 结构化三分流 + 异常 fail-closed + 审计）"
+echo "[53/85] Phase 3 二档风险分类器（默认关闭 + 结构化三分流 + 异常 fail-closed + 审计）"
 node tools/test-agent-risk-classifier.js
 
-echo "[54/80] Phase 4 bash 逐命令审批（完整命令 + 三档 + 未知工具仍问 + 沙箱不放宽）"
+echo "[54/85] Phase 4 bash 逐命令审批（完整命令 + 三档 + 未知工具仍问 + 沙箱不放宽）"
 node tools/test-agent-bash-approval.js
 
-echo "[55/80] Phase 5 体验（首次发送自动启动 + 刷新历史 + 默认 deepseek-v4-flash）"
+echo "[55/85] Phase 5 体验（首次发送自动启动 + 刷新历史 + 默认 deepseek-v4-flash）"
 node tools/test-agent-experience.js
 
-echo "[56/80] Phase 6 外部 DSH/MCP 插件文档（内置 client + full-only 经审查 patch + 命名/parity/默认权限边界）"
+echo "[56/85] Phase 6 外部 DSH/MCP 插件文档（内置 client + full-only 经审查 patch + 命名/parity/默认权限边界）"
 node tools/test-agent-external-mcp-docs.js
 
-echo "[57/80] T1 二档 DeepSeek 分类政策（动作原文-only + allow/ask/block + 夹外写 path-only + 审计/fail-closed）"
+echo "[57/85] T1 二档 DeepSeek 分类政策（动作原文-only + allow/ask/block + 夹外写 path-only + 审计/fail-closed）"
 node tools/test-agent-tier2-policy.js
 
-echo "[58/80] T2 folder_path 失效回落（同名目录 + 提示元数据 + HTTP 真读取 + 权威/symlink 边界）"
+echo "[58/85] T2 folder_path 失效回落（同名目录 + 提示元数据 + HTTP 真读取 + 权威/symlink 边界）"
 node tools/test-secure-files-folder-fallback.js
 node tools/test-files-folder-fallback-http.js
 
-echo "[59/80] T3 文件根只读探测（挂载缺失返回 503 + GET 不创建影子空目录）"
+echo "[59/85] T3 文件根只读探测（挂载缺失返回 503 + GET 不创建影子空目录）"
 node tools/test-files-root-readonly.js
 
-echo "[60/80] T2 可见回落提示·透传（回落逐字带出 + 正常案省略 + 双失静默）"
+echo "[60/85] T2 可见回落提示·透传（回落逐字带出 + 正常案省略 + 双失静默）"
 node tools/test-files-workspace-notice-http.js
 
-echo "[61/80] T2 可见回落提示·前端（textContent-only + 三皮肤类 + 列表上方 + 空值移除）"
+echo "[61/85] T2 可见回落提示·前端（textContent-only + 三皮肤类 + 列表上方 + 空值移除）"
 node tools/test-case-workspace-notice.js
 
-echo "[62/80] migration 018（AI 来源戳 + 期限待核 + 案件事实表，历史默认/幂等/原子回滚）"
+echo "[62/85] migration 018（AI 来源戳 + 期限待核 + 案件事实表，历史默认/幂等/原子回滚）"
 node tools/test-migration-018.js
 
-echo "[63/80] agent 五类直写 HTTP（key/session 归属 + AI 戳 + 待核隔离/确认 + 手工事实 CRUD）"
+echo "[63/85] agent 五类直写 HTTP（key/session 归属 + AI 戳 + 待核隔离/确认 + 手工事实 CRUD）"
 node tools/test-agent-direct-write-http.js
 
-echo "[64/80] dsh-anqi 五个直写工具（精确工具集 + 描述 + contacts/facts 白名单 + 服务端强制字段）"
+echo "[64/85] dsh-anqi 五个直写工具（精确工具集 + 描述 + contacts/facts 白名单 + 服务端强制字段）"
 node tools/test-agent-direct-tools.js
 
-echo "[65/80] dsh-anqi 斜杠命令 worker 桥（可选服务 + exact session agent + list/execute/miss 契约）"
+echo "[65/85] dsh-anqi 斜杠命令 worker 桥（可选服务 + exact session agent + list/execute/miss 契约）"
 node tools/test-agent-commands.js
 
-echo "[66/80] AI 助理命令宿主/HTTP 桥（登录态挂载 + supervisor session 归属 + 斜杠命中/回退 + status 状态机）"
+echo "[66/85] AI 助理命令宿主/HTTP 桥（登录态挂载 + supervisor session 归属 + 斜杠命中/回退 + status 状态机）"
 node tools/test-agent-commands-http.js
 
-echo "[67/80] AI 助理图片能力声明（vision 模态 + 默认文本模态 + 状态接口布尔）"
+echo "[67/85] AI 助理图片能力声明（vision 模态 + 默认文本模态 + 状态接口布尔）"
 node tools/test-agent-image-capabilities.js
 
-echo "[68/80] AI 助理图片上行（2 张/8MiB/类型限额 + DSH admission + prompt image block）"
+echo "[68/85] AI 助理图片上行（2 张/8MiB/类型限额 + DSH admission + prompt image block）"
 node tools/test-agent-image-http.js
 
-echo "[69/80] AI 助理图片回读与前端（引用 404 + 历史 refs + vision-only paste/thumbnail）"
+echo "[69/85] AI 助理图片回读与前端（引用 404 + 历史 refs + vision-only paste/thumbnail）"
 node tools/test-agent-image-frontend.js
 
-echo "[70/80] migration 019（公开仓 017/018 之后的双向分成方向，幂等/原子回滚）"
+echo "[70/85] migration 019（公开仓 017/018 之后的双向分成方向，幂等/原子回滚）"
 node tools/test-migration-019.js
 
-echo "[71/80] migration 020（通讯录、案件参与人、分成关联与存量联系人回填）"
+echo "[71/85] migration 020（通讯录、案件参与人、分成关联与存量联系人回填）"
 node tools/test-migration-020.js
 
-echo "[72/80] migration 024 变更审计结构与原子回滚"
+echo "[72/85] migration 024 变更审计结构与原子回滚"
 DB_PATH="$TMPDIR_CHECK/migration-024.db" node tools/test-migration-024.js
 
-echo "[73/80] migration 025 case_type 前缀回填（一审/二审保持未分类）"
+echo "[73/85] migration 025 case_type 前缀回填（一审/二审保持未分类）"
 DB_PATH="$TMPDIR_CHECK/migration-025.db" node tools/test-migration-025.js
 
-echo "[74/80] migration 027 复议前置/参考期限字段、约束与审计"
+echo "[74/85] migration 027 复议前置/参考期限字段、约束与审计"
 DB_PATH="$TMPDIR_CHECK/migration-027.db" node tools/test-migration-027.js
 
-echo "[75/80] 案件类型分类、推断与批量设类型"
+echo "[75/85] 案件类型分类、推断与批量设类型"
 node tools/test-case-types.js
 
-echo "[76/80] 刑事 HTTP 路由与多维条件"
+echo "[76/85] 刑事 HTTP 路由与多维条件"
 node tools/test-criminal-http.js
 
-echo "[77/80] 期限引擎端到端回归"
+echo "[77/85] 期限引擎端到端回归"
 DB_PATH="$TMPDIR_CHECK/engine-e2e.db" node tools/verify-engine-e2e.js
 
-echo "[78/80] 变更审计 HTTP 读取面"
+echo "[78/85] 变更审计 HTTP 读取面"
 node tools/test-changes-http.js
 
-echo "[79/80] 行政诉讼期限引擎（隔离 + 日历抽检）"
+echo "[79/85] 行政诉讼期限引擎（隔离 + 日历抽检）"
 DB_PATH="$TMPDIR_CHECK/engine-admin.db" node tools/test-engine-admin.js
 
-echo "[80/80] migration 028 刑事节假日顺延选择字段与审计"
+echo "[80/85] migration 028 刑事节假日顺延选择字段与审计"
 DB_PATH="$TMPDIR_CHECK/migration-028.db" node -e "import('./src/db.js').then(({db}) => { const cols = db.prepare('PRAGMA table_info(deadlines)').all().map((x) => x.name); if (!cols.includes('criminal_roll_choice')) process.exit(1); db.close(); console.log('  ok'); })"
 
-echo "[81/84] migration 029 事件时刻地点与顺延原日期审计"
+echo "[81/85] migration 029 事件时刻地点与顺延原日期审计"
 DB_PATH="$TMPDIR_CHECK/migration-029.db" node tools/test-migration-029.js
 
-echo "[82/84] 快录开庭 HTTP 回归（白名单/本地匹配/解析不写库）"
+echo "[82/85] 快录开庭 HTTP 回归（白名单/本地匹配/解析不写库）"
 node tools/test-quick-hearing-http.js
 
-echo "[83/84] 传票识别回退链与附件事务 HTTP 回归"
+echo "[83/85] 传票识别回退链与附件事务 HTTP 回归"
 node tools/test-doc-intake.js
 
-echo "[84/84] 节前提示 rolled_from 引擎与 HTTP 回归"
+echo "[84/85] 节前提示 rolled_from 引擎与 HTTP 回归"
 node tools/test-rolled-from.js
+
+echo "[85/85] 快录条传票上传入口前端冒烟"
+node tools/smoke-quickbar-frontend.js
 
 echo "ALL GREEN ✅"
