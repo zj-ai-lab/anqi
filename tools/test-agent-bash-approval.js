@@ -84,7 +84,55 @@ try {
   assert.equal(tier2.classifierReason, 'classifier_error');
   supervisor.resolveApproval(worker.caseId, tier2Id, 'rejected');
 
-  const yaml = fs.readFileSync(new URL('../src/agent/assets/anqi.cordis.yml', import.meta.url), 'utf8');
+  // DSH 沙箱放宽与普通 bash 审批同为 toolName=bash，只有 reason 前缀不同。放宽
+  // 一经批准即越过 DB/他案物理隔离，3 档、本类白名单与 2 档分类器都不得放行。
+  const escalationReason = 'escalate sandbox to danger-full-access: need host-wide access';
+  const pendingEscalation = () => supervisor.listPendingInteractions(worker.caseId)
+    .find((item) => item.reason === escalationReason);
+  assert.deepEqual(supervisor.setApprovalTier(worker.caseId, '3'), { ok: true, approvalTier: '3' });
+  const repliesBeforeEscalation = replies.length;
+  supervisor._enqueueApproval(worker, { id: 45 }, {
+    sessionId: worker.sessionId, approvalId: 'escalate-1', toolName: 'bash', reason: escalationReason,
+  });
+  const tier3Escalation = pendingEscalation();
+  assert.ok(tier3Escalation, '3 档下沙箱放宽也必须弹人工卡');
+  assert.equal(replies.length, repliesBeforeEscalation, '3 档不得自动应答沙箱放宽');
+  assert.deepEqual(
+    supervisor.resolveApproval(worker.caseId, tier3Escalation.id, 'allowed-once', { rememberTool: true }),
+    { ok: false, reason: 'invalid_remember' },
+    '沙箱放宽不能被记成本类放行',
+  );
+  assert.equal(worker.approvalAllowlist.has('bash'), false);
+  supervisor.resolveApproval(worker.caseId, tier3Escalation.id, 'rejected');
+
+  assert.deepEqual(supervisor.setApprovalTier(worker.caseId, '1'), { ok: true, approvalTier: '1' });
+  worker.approvalAllowlist.add('bash');
+  supervisor._enqueueApproval(worker, { id: 46 }, {
+    sessionId: worker.sessionId, approvalId: 'escalate-2', toolName: 'bash', reason: escalationReason,
+  });
+  const allowlistedEscalation = pendingEscalation();
+  assert.ok(allowlistedEscalation, 'bash 已在本类白名单时沙箱放宽仍须弹卡');
+  supervisor.resolveApproval(worker.caseId, allowlistedEscalation.id, 'rejected');
+  worker.approvalAllowlist.clear();
+
+  let classifierCalls = 0;
+  const tier2Supervisor = new AgentSupervisor({
+    interactionTtlMs: 5_000,
+    riskClassifier: { classify: async () => { classifierCalls += 1; return { decision: 'allow', reason: 'stub' }; } },
+  });
+  const tier2Worker = { ...worker, approvalTier: '2', pendingInteractions: new Map(), approvalAllowlist: new Set() };
+  tier2Supervisor.workers.set(tier2Worker.caseId, tier2Worker);
+  await tier2Supervisor._enqueueApproval(tier2Worker, { id: 47 }, {
+    sessionId: tier2Worker.sessionId, approvalId: 'escalate-3', toolName: 'bash', reason: escalationReason,
+  });
+  assert.equal(classifierCalls, 0, '2 档沙箱放宽不送分类器');
+  assert.equal(tier2Worker.pendingInteractions.size, 1, '2 档沙箱放宽直接弹人工卡');
+  for (const record of tier2Worker.pendingInteractions.values()) clearTimeout(record.timer);
+
+  const drawerSource = fs.readFileSync(new URL('../public/js/agent-drawer.js', import.meta.url), 'utf8');
+  assert.match(drawerSource, /escalation \? \[\] : \[el\('button'/, '放宽卡片不提供“本类不再询问”');
+
+  const yaml =fs.readFileSync(new URL('../src/agent/assets/anqi.cordis.yml', import.meta.url), 'utf8');
   assert.match(yaml, /askTools:\s*\[web_search, bash\]/, '真实 full 组合必须同时审批 web_search 与 bash');
   assert.match(yaml, /mode:\s*!!js process\.env\.DSH_PERMISSION_MODE/, 'sandbox-policy 必须继续由宿主钉死');
   assert.doesNotMatch(

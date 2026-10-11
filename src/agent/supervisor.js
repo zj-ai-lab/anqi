@@ -465,6 +465,13 @@ const APPROVAL_EXTERNAL_OUTCOMES = new Set(['allowed-once', 'rejected']);
 // 完成逐命令卡 + 真沙箱回归后才加 bash。这里的 allow 只免人工提示，绝不改变
 // DSH sandbox-policy（仍为 workspace-write）或案齐的 DB/他案物理隔离。
 const TIER3_AUTO_ALLOW_TOOLS = new Set(['web_search', 'bash']);
+// DSH 沙箱放宽（@deepseek-ai/dsh-sandbox approveEscalation）与普通工具审批共用
+// approval/request，toolName 仍是 bash/write 等，只靠 reason 前缀区分。放宽一经
+// 批准，本次调用即以更宽模式运行（danger-full-access 直接不进沙箱），越过案齐的
+// DB/他案物理隔离；3 档免提示、“本类不再询问”与 2 档分类器都只为沙箱内的普通
+// 动作设计，所以放宽请求一律走人工卡片，也不能被记成本类放行。
+const SANDBOX_ESCALATION_PREFIX = 'escalate sandbox to ';
+const isSandboxEscalation = (reason) => String(reason || '').startsWith(SANDBOX_ESCALATION_PREFIX);
 
 const DEFAULT_TURN_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_PREFLIGHT_TIMEOUT_MS = 90_000;
@@ -1913,6 +1920,7 @@ export class AgentSupervisor {
     }
     if (!APPROVAL_EXTERNAL_OUTCOMES.has(outcome)) return { ok: false, reason: 'invalid_outcome' };
     if (rememberTool && outcome !== 'allowed-once') return { ok: false, reason: 'invalid_remember' };
+    if (rememberTool && isSandboxEscalation(record.reason)) return { ok: false, reason: 'invalid_remember' };
     worker.pendingInteractions.delete(interactionId); // 消费即删：one-shot
     clearTimeout(record.timer);
     if (rememberTool) worker.approvalAllowlist.add(record.toolName);
@@ -2303,6 +2311,9 @@ export class AgentSupervisor {
     const reason = typeof worker.redact.approval === 'function'
       ? worker.redact.approval(String(params.reason || ''))
       : worker.redact(String(params.reason || ''));
+    if (isSandboxEscalation(params.reason)) {
+      return this._enqueueApprovalCard(worker, message, params, { toolName, reason });
+    }
     if (worker.approvalTier === '3' && TIER3_AUTO_ALLOW_TOOLS.has(toolName)) {
       this._writeChildResponse(worker, {
         jsonrpc: '2.0', id: message.id,

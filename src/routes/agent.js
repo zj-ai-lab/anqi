@@ -658,7 +658,7 @@ export function createAgentRouter(supervisor, {
       const result = supervisor.resolveApproval(caseId, interactionId, outcome, { rememberTool: rememberTool === true });
       if (!result.ok) {
         audit(req.actor, 'agent-interaction-answer-fail', 'agent-interaction', null, `case=${caseId} approval:${result.reason}`);
-        return res.status(result.reason === 'invalid_outcome' ? 400 : 409).json({ error: '提交审批结果失败', code: result.reason });
+        return res.status(['invalid_outcome', 'invalid_remember'].includes(result.reason) ? 400 : 409).json({ error: '提交审批结果失败', code: result.reason });
       }
       audit(req.actor, 'agent-interaction-answer', 'agent-interaction', null, `case=${caseId} approval:${outcome}${rememberTool === true ? ':remember-tool' : ''}`);
       return res.json({ ok: true });
