@@ -132,6 +132,14 @@
 
 ---
 
+## 未发布 — 沙箱放宽请求一律人工确认
+
+**状态：PR 待合并 `main`。**
+
+- 修复自 2.7.0-beta.4 起存在的审批缺口：DSH 允许模型在 bash/文件操作被沙箱拒绝后申请放宽（`sandbox_permissions`，最宽到 `danger-full-access`，即不进沙箱），这类请求与普通命令同为 `toolName=bash`，此前会被 3 档免提示、“本类不再询问”白名单直接放行，2 档也会送分类器。放宽一经批准即越过 DB 与他案的物理隔离。
+- 现在宿主按 reason 前缀 `escalate sandbox to ` 识别放宽请求，任何档位都转人工卡片（标题标明“放宽沙箱”），不送分类器；卡片不提供“本类不再询问”，服务端也拒绝把放宽记成本类放行（`invalid_remember`，HTTP 400）。普通命令的三档行为不变。
+- `tools/test-agent-bash-approval.js` 增加 3 档 / 白名单 / 2 档三条放宽回归；用真实 worker 复核过放宽请求的 wire 形状。
+
 ## 未发布 — AI 助理图片输入
 
 **状态：开发分支 `feat/agent-image`，尚未合并 `main`。**

@@ -515,26 +515,29 @@ export async function mountAgentDrawer(caseId) {
   function renderApprovalCard(interactionId, toolName, reason, classifierDecision, classifierReason) {
     if (state.cards.has(interactionId)) return;
     clearEmptyHint();
+    // 沙箱放宽请求（reason 以 "escalate sandbox to " 开头）每次都要人工确认，
+    // 服务端拒绝把它记成本类放行，这里也不提供该按钮。
+    const escalation = String(reason || '').startsWith('escalate sandbox to ');
     const actions = el('div', { class: 'agent-card-actions' },
       el('button', {
         class: 'btn small ok', type: 'button',
         onclick: () => answerInteraction(interactionId, { outcome: 'allowed-once' }, '已允许一次'),
       }, '允许一次'),
-      el('button', {
+      ...(escalation ? [] : [el('button', {
         class: 'btn small', type: 'button',
         onclick: () => answerInteraction(
           interactionId,
           { outcome: 'allowed-once', rememberTool: true },
           '本会话不再询问此类操作',
         ),
-      }, '本类不再询问'),
+      }, '本类不再询问')]),
       el('button', {
         class: 'btn small danger', type: 'button',
         onclick: () => answerInteraction(interactionId, { outcome: 'rejected' }, '已拒绝'),
       }, '拒绝')
     );
     const node = el('div', { class: 'agent-card agent-card-approval' },
-      el('div', { class: 'agent-card-title' }, '需要授权'),
+      el('div', { class: 'agent-card-title' }, escalation ? '需要授权（放宽沙箱）' : '需要授权'),
       el('div', {}, `AI 助理请求执行：${toolName || '（未知工具）'}`),
       ...(classifierDecision ? [el(
         'div',
