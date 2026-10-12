@@ -485,6 +485,8 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 提醒是确定性派生子系统。开庭档位为前一天与当天，期限档位为提前天数与当天，待办档位为带 `due_on + due_time` 的截止前分钟；来源查询与 digest 同口径，只提醒 active 案件、confirmed 且非 advisory 的 pending 期限和 open 待办。`fire_at` 存 UTC ISO，界面输入/展示为北京时间。
 
+`remind_enabled=false` 时自动档位全部取消并停止重新派生；人工添加的提醒不受影响，仍会按时领取和发送。
+
 规划器每个 worker tick 对全部来源完整对账，以 `(source_type,source_id,tier)` 为身份。来源指纹变化时原地更新并递增 version；来源消失、完成、案件关闭或档位关闭时取消并写原因。用户取消的自动行在指纹不变时保持取消，指纹变化才重新建 scheduled 行。人工提醒创建即确认，修改/取消必须带 `expected_version`，sending 中或终态行不可改。
 
 `reminders` 状态如下：
