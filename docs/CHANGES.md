@@ -152,6 +152,23 @@
 
 ---
 
+## 2.10.0 — 提醒中枢与应用内通知
+
+- **自动提醒档位**（settings 可改、真保存）：开庭前一天 18:00 与当天 07:30；已确认期限前 3 天 07:30 与当天 07:30；带 `due_on + due_time` 的待办截止前 30 分钟。来源查询与 L0 digest 同口径：只提醒 active 案件、`status=pending` 且 `review_status=confirmed` 且非 advisory 的期限、open 待办；AI 填写的待核期限不提醒。
+- **派生而非录入**：自动提醒以 `(source_type, source_id, tier)` 为身份，worker 每个 tick（默认 30 秒）对全部来源完整对账——来源改日期/时刻/标题原地更新并 `version+1`，来源完成、案件关闭、档位关闭或来源消失则取消并记原因；用户取消过的自动提醒在来源指纹不变时保持取消。`GET /api/reminders` 读取前也会先对该案对账。
+- **人工单条提醒**：`POST /api/reminders` 创建即确认；改期与取消必须带 `expected_version`，不一致 409；发送中不可改；取消只改状态不删行；所有人工动作进 `audit_log`。
+- **到点执行**：短事务领取（`scheduled → sending`，一次最多 50 条）并以唯一 `delivery_key` 写投递意图，事务外调用渠道；超过追赶窗口（默认 60 分钟，`ANJIAN_REMIND_CATCHUP_MINUTES`）标 `missed(window_expired)`；服务启动把残留 `sending` 置 `unknown(crash_recovery)`，不自动重发；全程不调用任何模型。
+- **渠道插件口**：注册表 `id / label / configured(settings) / deliver()`；本版只实现 `inapp`——投递先落 `queued`，经 `GET /api/notifications/stream`（SSE）推到已打开的页面，页面弹浏览器通知并 `ack` 为 `shown`；无人在线时 24 小时内下次连上补发，超时 `expired`。企业微信、飞书、钉钉等外部渠道留待后续版本。
+- **界面**：顶栏 🔔 徽标与最近提醒列表（含「全部标为已看」与通知权限申请）；用户中心新增「提醒」分区（总开关、五个档位、浏览器通知权限、worker 心跳与待看 / 错过 / 失败计数）——`remind_enabled=false` 只停止自动档位，手动添加的提醒仍按时发；案件页「期限跑道」下新增「提醒」块（自动行可取消，人工行可改期 / 取消，可添加）。通知正文只含案件名、事项、时间与开庭地点，不含联系人或金额。
+- **桌面与移动端**：macOS App 关闭窗口改为隐藏（页面与 SSE 连接保持，通知照弹），Dock 图标或重新打开即恢复；Android WebView 不支持 Web Notification API，仅保证页内铃铛可用；未做 Service Worker / Web Push。
+- **部署**：新增 env `ANJIAN_REMIND_POLL_SECONDS`（默认 30，最小 1）、`ANJIAN_REMIND_CATCHUP_MINUTES`（默认 60）；反向代理须对 `/api/notifications/stream` 关闭缓冲并放长读超时（SELF-HOSTING.md 有 nginx 示例）。
+- **测试**：`tools/check.sh` 由 86 步增至 92 步——migration 030、规划器（含 `TZ=UTC` 与 `TZ=America/New_York` 子进程换算一致性）、worker 状态机（追赶窗口 / 唯一投递 / 崩溃恢复 / 渠道异常 / 50 条上限 / 24 小时过期）、HTTP 与 SSE 全流程（含「提醒子系统从不写 events/deadlines/tasks」断言）、前端静态契约、Electron 窗口策略。
+- **数据**：migration 030 新增 `reminders` 与 `reminder_deliveries`（派生表，不进 `change_log` 触发器），`settings` 新增 `remind_*` 六键。
+
+**升级注意**：migration 030 只建表加索引，不改既有表；回退到 2.9.x 需先恢复升级前备份（旧版不认识 `user_version=30`）。
+
+---
+
 ## 未发布 — 服务器开启完整档的部署说明
 
 **状态：仅文档，无代码改动。**
