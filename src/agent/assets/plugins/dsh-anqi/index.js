@@ -300,6 +300,9 @@ export function apply(ctx, config = {}) {
   }
 
   const caseIdParameter = scope === 'global' ? { case_id: { type: 'number', description: '只能填写 anqi_case_resolve 返回的 granted_case_id 或 anqi_case_select 的结果。' } } : {};
+  const requiredCaseIdParameter = scope === 'global' ? {
+    case_id: { type: 'number', required: true, description: '只能填写 anqi_case_resolve 返回的 granted_case_id 或 anqi_case_select 的结果。' },
+  } : {};
   ctx.tools.register(defineTool({
     name: 'anqi_worklog_add',
     description: scope === 'global' ? '直接写入并盖 AI 戳的工作日志；case_id 只能使用服务端刚授予的案件，否则可省略记为所务记录。' : '直接写入绑定案件的工作日志并盖 AI 戳，人可改可撤。',
@@ -388,7 +391,7 @@ export function apply(ctx, config = {}) {
     name: 'anqi_inbox_propose',
     description: 'Submit one task-only suggestion for lawyer review. Global scope must provide a case_id granted by the server.',
     parameters: {
-      ...caseIdParameter,
+      ...requiredCaseIdParameter,
       title: {
         type: 'string',
         required: true,
@@ -458,7 +461,7 @@ export function apply(ctx, config = {}) {
     name: 'anqi_contact_upsert',
     description: '直接写入案件联系人并盖 AI 戳，人可改可撤。Global scope 的 case_id 只能用服务端授予值。',
     parameters: {
-      ...caseIdParameter,
+      ...requiredCaseIdParameter,
       id: { type: 'number', description: 'Existing contact id to update; omit to create.' },
       role: { type: 'string', description: '当事人/对方当事人/承办法官/法官助理/书记员/对方律师/合作律师/其他。' },
       name: { type: 'string', description: 'Contact name; required when creating.' },
@@ -507,7 +510,7 @@ export function apply(ctx, config = {}) {
     name: 'anqi_event_add',
     description: '直接写入已授予案件的程序事件并盖 AI 戳，人可改可撤；global scope 必须提供服务端授予的 case_id。',
     parameters: {
-      ...caseIdParameter,
+      ...requiredCaseIdParameter,
       type: { type: 'string', required: true, description: 'Event type from anqi metadata vocabulary.' },
       occurred_on: { type: 'string', required: true, description: 'YYYY-MM-DD.' },
       service_method: { type: 'string' },
@@ -531,7 +534,7 @@ export function apply(ctx, config = {}) {
     name: 'anqi_fact_add',
     description: '直接写入已授予案件的正式事实并盖 AI 戳，人可改可撤；global scope 必须提供服务端授予的 case_id。',
     parameters: {
-      ...caseIdParameter,
+      ...requiredCaseIdParameter,
       content: { type: 'string', required: true },
       occurred_on: { type: 'string', description: 'Optional YYYY-MM-DD fact date.' },
       source: { type: 'string', description: 'Optional source/provenance label.' },
@@ -552,7 +555,7 @@ export function apply(ctx, config = {}) {
     name: 'anqi_deadline_add',
     description: '直接写入已授予案件的待核期限并盖 AI 戳，人可改可撤；不进入提醒或期限跑道；global scope 必须提供服务端授予的 case_id。',
     parameters: {
-      ...caseIdParameter,
+      ...requiredCaseIdParameter,
       name: { type: 'string', required: true },
       due_on: { type: 'string', required: true, description: 'YYYY-MM-DD. The model supplies a draft date; the server marks it pending review.' },
       basis: { type: 'string' },
