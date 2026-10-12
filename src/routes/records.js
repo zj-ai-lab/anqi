@@ -146,6 +146,28 @@ export function createTaskRecord({ caseId = null, payload, actor = 'web', origin
   });
 }
 
+export function createWorklogRecord({ caseId = null, payload, actor = 'web', createdBy = 'manual' }) {
+  const b = payload && typeof payload === 'object' && !Array.isArray(payload) ? payload : {};
+  const content = String(b.content ?? '').trim();
+  if (!content) throw recordError('content 必填');
+  const workedOn = b.worked_on || todayCN();
+  if (!isDate(workedOn)) throw recordError('worked_on 须为 YYYY-MM-DD');
+  const normalizedCaseId = caseId === null || caseId === undefined || caseId === '' ? null : Number(caseId);
+  if (normalizedCaseId !== null) caseForWrite(normalizedCaseId);
+  const normalizedCreatedBy = ['manual', 'ai', 'import'].includes(createdBy) ? createdBy : 'manual';
+  return withChangeContext({ actor }, () => {
+    const info = db.prepare(
+      'INSERT INTO worklog (case_id, worked_on, content, minutes, artifacts, created_by) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      normalizedCaseId, workedOn, content,
+      Number.isInteger(b.minutes) ? b.minutes : null,
+      String(b.artifacts || ''), normalizedCreatedBy,
+    );
+    audit(actor, 'create', 'worklog', info.lastInsertRowid, content.slice(0, 50));
+    return db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
+  });
+}
+
 // ---------- events ----------
 r.post('/cases/:id/events', (req, res) => {
   try {
@@ -439,11 +461,12 @@ r.patch('/tasks/:id', (req, res) => {
     audit(req.actor, 'update', 'task', row.id, Object.keys(b).join(','));
     if (isCompleting) {
       const content = `完成待办：${updated.title}`;
-      const info = db.prepare(
-        'INSERT INTO worklog (case_id, worked_on, content) VALUES (?, ?, ?)'
-      ).run(updated.case_id, todayCN(), content);
-      completionWorklog = db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
-      audit(req.actor, 'create', 'worklog', info.lastInsertRowid, `待办完成 #${row.id} ${updated.title}`);
+      completionWorklog = createWorklogRecord({
+        caseId: updated.case_id,
+        payload: { worked_on: todayCN(), content },
+        actor: req.actor,
+        createdBy: 'manual',
+      });
     }
   });
   res.json({ ...updated, completion_worklog: completionWorklog });
@@ -461,21 +484,11 @@ r.delete('/tasks/:id', (req, res) => {
 
 // ---------- worklog ----------
 r.post('/worklog', (req, res) => {
-  const b = req.body || {};
-  if (!b.content || !b.content.trim()) return res.status(400).json({ error: 'content 必填' });
-  const workedOn = b.worked_on || todayCN();
-  if (!isDate(workedOn)) return res.status(400).json({ error: 'worked_on 须为 YYYY-MM-DD' });
-  if (b.case_id && !db.prepare('SELECT id FROM cases WHERE id = ?').get(b.case_id)) {
-    return res.status(404).json({ error: '案件不存在' });
+  try {
+    res.json(createWorklogRecord({ caseId: req.body?.case_id || null, payload: req.body, actor: req.actor }));
+  } catch (error) {
+    responseError(res, error);
   }
-  const created = withChangeContext({ actor: req.actor }, () => {
-    const info = db.prepare(
-      'INSERT INTO worklog (case_id, worked_on, content, minutes, artifacts) VALUES (?, ?, ?, ?, ?)'
-    ).run(b.case_id || null, workedOn, b.content.trim(), Number.isInteger(b.minutes) ? b.minutes : null, b.artifacts || '');
-    audit(req.actor, 'create', 'worklog', info.lastInsertRowid, b.content.slice(0, 50));
-    return db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
-  });
-  res.json(created);
 });
 
 r.patch('/worklog/:id', (req, res) => {
@@ -567,9 +580,8 @@ r.post('/quick', (req, res) => {
           } });
           row = created.row; derived = created.derived; entityId = row.id;
         } else if (kind === 'log') {
-          const info = db.prepare('INSERT INTO worklog (case_id, worked_on, content) VALUES (?, ?, ?)').run(stagedPack.c.id, b.date || todayCN(), b.text.trim());
-          row = db.prepare('SELECT * FROM worklog WHERE id=?').get(info.lastInsertRowid); entityId = row.id;
-          audit(req.actor, 'create', 'worklog', row.id, 'quick');
+          row = createWorklogRecord({ caseId: stagedPack.c.id, payload: { worked_on: b.date || todayCN(), content: b.text.trim() }, actor: req.actor });
+          entityId = row.id;
         } else {
           const info = db.prepare('INSERT INTO tasks (case_id, title, plan_date) VALUES (?, ?, ?)').run(stagedPack.c.id, b.text.trim(), b.date || '');
           row = taskView(info.lastInsertRowid); entityId = row.id;
@@ -590,11 +602,10 @@ r.post('/quick', (req, res) => {
     return res.json({ kind, row: result.row, ...(result.derived ? { derived: result.derived } : {}), attachment: result.attachment, ...(legalrag ? { legalrag } : {}) });
   }
   if (kind === 'log') {
-    const row = withChangeContext({ actor: req.actor }, () => {
-      const info = db.prepare('INSERT INTO worklog (case_id, worked_on, content) VALUES (?, ?, ?)')
-        .run(b.case_id || null, b.date || todayCN(), b.text.trim());
-      audit(req.actor, 'create', 'worklog', info.lastInsertRowid, 'quick');
-      return db.prepare('SELECT * FROM worklog WHERE id = ?').get(info.lastInsertRowid);
+    const row = createWorklogRecord({
+      caseId: b.case_id || null,
+      payload: { worked_on: b.date || todayCN(), content: b.text.trim() },
+      actor: req.actor,
     });
     return res.json({ kind: 'log', row });
   }
