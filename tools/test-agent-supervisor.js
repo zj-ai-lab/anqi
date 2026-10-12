@@ -48,9 +48,9 @@ const scratchDb = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-agent-supervisor-d
 process.env.DB_PATH = path.join(scratchDb, 'agent-supervisor.db');
 
 const { db } = await import('../src/db.js');
-const { AgentSupervisor, AGENT_RUNTIME_PATHS } = await import('../src/agent/supervisor.js');
+const { AgentSupervisor, AGENT_RUNTIME_PATHS, GLOBAL_SCOPE } = await import('../src/agent/supervisor.js');
 const { AGENT_SETTINGS_KEYS } = await import('../src/agent/config.js');
-const { caseIdForSession } = await import('../src/agent/session-registry.js');
+const { caseIdForSession, isGlobalSession } = await import('../src/agent/session-registry.js');
 
 const REQUIRED_MCP_TOOL = AGENT_RUNTIME_PATHS.requiredMcpTool;
 const REQUIRED_SKILL_NAME = AGENT_RUNTIME_PATHS.requiredSkillName;
@@ -1698,6 +1698,60 @@ async function startFakeWorker(opts) {
 
   setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
   console.log('  [26/26] prompt() 命中 live worker 时重新查配置：ok（disabled 时拒绝 turn + 顺手停掉存活 worker + 落终态审计）');
+}
+
+
+// ---- 场景 27：global worker 固定 project/read-only workspace，且 stopAll 覆盖它 ----
+{
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.capabilityMode, 'full');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+  let sandboxProbeCalled = false;
+  let spawnEnv;
+  let globalSessionId;
+  const supervisor = new AgentSupervisor({
+    filesRoot,
+    bashSandboxProbeFn: () => { sandboxProbeCalled = true; return { available: false }; },
+    spawnFn: (_command, _args, options) => {
+      spawnEnv = options.env;
+      const child = makeFakeChild(undefined, {
+        'session/create': (frame, c) => {
+          globalSessionId = frame.params.sessionId;
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: globalSessionId } });
+        },
+        'session/preflight': (frame, c) => c.sendLine({
+          jsonrpc: '2.0', id: frame.id,
+          result: {
+            ready: true,
+            tools: { required: 'anqi_case_resolve', ready: true, visibleNames: ['anqi_case_resolve', 'anqi_case_select'] },
+            skills: { complete: true, names: ['anqi-global-intake'], ready: true },
+          },
+        }),
+      });
+      return child;
+    },
+  });
+  const status = await supervisor.start(GLOBAL_SCOPE);
+  assert.equal(status.status, 'ready', `global worker 必须进入 ready（实际 ${status.status}/${status.error}）`);
+  assert.equal(sandboxProbeCalled, false, 'global worker 即使设置 full 也不应运行 bash 探针');
+  assert.equal(spawnEnv.DSH_ANQI_SCOPE, 'global');
+  assert.equal(spawnEnv.DSH_CAPABILITY_MODE, 'project');
+  assert.equal(spawnEnv.DSH_PERMISSION_MODE, 'read-only');
+  assert.equal(path.basename(spawnEnv.DSH_CWD), 'agent-global-workspace');
+  assert.equal(fs.statSync(spawnEnv.DSH_CWD).mode & 0o777, 0o700);
+  assert.equal(isGlobalSession(globalSessionId), true, 'spawn 前必须登记 global session');
+  const globalWorker = supervisor.workers.get(GLOBAL_SCOPE);
+  await supervisor.stopAll('global supervisor test');
+  const stopped = await waitUntil(() => !supervisor.isLive(GLOBAL_SCOPE));
+  assert.equal(stopped, true, 'stopAll 必须停止 global worker');
+  assert.equal(isGlobalSession(globalSessionId), false, 'global worker 终态必须注销 session');
+  assert.equal(globalWorker.scope, GLOBAL_SCOPE);
+  console.log('  [27/27] global worker：project/read-only + no bash probe + workspace 0700 + stopAll/session cleanup 通过');
 }
 
 clearAgentSettings();
