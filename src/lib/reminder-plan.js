@@ -110,10 +110,13 @@ export function planAutoReminders({ hearings = [], deadlines = [], tasks = [], s
     if (!isDate(row.due_on) || row.due_on < today) continue;
     const days = Number(s.remind_deadline_days_before);
     if (s.remind_deadline_time !== '' && s.remind_deadline_days_before !== '') {
-      add(row, 'deadline', 'deadline_before', localIsoAt(addDays(row.due_on, -days), s.remind_deadline_time), deadlineTitle(row, days));
+      if (days === 0) {
+        add(row, 'deadline', 'deadline_day', localIsoAt(row.due_on, s.remind_deadline_time), deadlineTitle(row, 0));
+      } else {
+        add(row, 'deadline', 'deadline_before', localIsoAt(addDays(row.due_on, -days), s.remind_deadline_time), deadlineTitle(row, days));
+        add(row, 'deadline', 'deadline_day', localIsoAt(row.due_on, s.remind_deadline_time), deadlineTitle(row, 0));
+      }
     }
-    if (s.remind_deadline_time !== '' && days !== 0) add(row, 'deadline', 'deadline_day', localIsoAt(row.due_on, s.remind_deadline_time), deadlineTitle(row, 0));
-    else if (s.remind_deadline_time !== '' && days === 0) add(row, 'deadline', 'deadline_day', localIsoAt(row.due_on, s.remind_deadline_time), deadlineTitle(row, 0));
   }
   const minutes = Number(s.remind_task_minutes_before);
   for (const row of tasks) {
