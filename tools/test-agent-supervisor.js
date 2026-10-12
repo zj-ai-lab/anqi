@@ -1546,6 +1546,9 @@ async function startFakeWorker(opts) {
   const skillDir = path.join(assetsDir, 'skills', REQUIRED_SKILL_NAME);
   fs.mkdirSync(skillDir, { recursive: true });
   fs.writeFileSync(path.join(skillDir, 'SKILL.md'), '# 自检占位 skill\n');
+  const globalSkillDir = path.join(assetsDir, 'skills', 'anqi-global-intake');
+  fs.mkdirSync(globalSkillDir, { recursive: true });
+  fs.writeFileSync(path.join(globalSkillDir, 'SKILL.md'), '# 自检占位 global skill\n');
 
   const originalResourcesPath = process.resourcesPath;
   const spawnReachedMarker = new Error('scenario-24-spawn-reached-marker');
