@@ -25,6 +25,8 @@ import { backfillCandidateFacts } from './src/lib/candidate-facts.js';
 import { backfillRecommendationMemory } from './src/lib/recommendations.js';
 import { resolveTrustProxy } from './src/lib/trust-proxy.js';
 import { resolveStartupConfig } from './src/lib/startup-config.js';
+import { createReminderWorker } from './src/lib/reminder-worker.js';
+import { createRemindersRouter } from './src/routes/reminders.js';
 
 const startupConfig = resolveStartupConfig(process.env);
 
@@ -71,12 +73,17 @@ const agentRouter = createAgentRouter(agentSupervisor);
 // agentRouter 完全一致。
 const settingsRouter = createSettingsRouter(agentSupervisor);
 const casesRouter = createCasesRouter(agentSupervisor);
+const reminderWorker = createReminderWorker({
+  pollSeconds: startupConfig.reminders.pollSeconds,
+  catchupMinutes: startupConfig.reminders.catchupMinutes,
+});
+const remindersRouter = createRemindersRouter(reminderWorker);
 
 app.use('/api', authRouter); // /api/login /api/logout（自带限速，不过会话门）
 app.use(
   '/api', apiAuth,
   casesRouter, recordsRouter, viewsRouter, feesRouter, sharesRouter,
-  filesRouter, contactsRouter, peopleRouter, legalragRouter, settingsRouter, agentRouter, changesRouter
+  filesRouter, contactsRouter, peopleRouter, legalragRouter, settingsRouter, agentRouter, changesRouter, remindersRouter
 );
 app.use('/internal', internalAuth, internalRouter);
 app.use(pageAuth, express.static(path.join(__dirname, 'public')));
@@ -116,6 +123,7 @@ const httpServer = app.listen(port, host, () => {
   agentSupervisor.setInternalBaseURL(`http://${internalCallbackHost(startupConfig.host)}:${actualPort}`);
   console.log(`anjian listening on :${actualPort}`);
   if (startLegalRagBridge()) console.log('anjian LegalRAG bridge started');
+  reminderWorker.start();
 });
 
 // 优雅退出：设计稿 §3.2「server shutdown」是取消当前 turn、终止 worker 的
@@ -147,6 +155,11 @@ async function gracefulShutdown(signal) {
     timer = setTimeout(() => { timedOut = true; resolve(); }, STOP_ALL_TIMEOUT_MS);
     timer.unref?.();
   });
+  try {
+    await reminderWorker.stop();
+  } catch (error) {
+    console.error('reminder worker stop failed during shutdown:', error.message);
+  }
   try {
     await Promise.race([
       agentSupervisor.stopAll(`server shutdown (${signal})`).then(() => clearTimeout(timer)),

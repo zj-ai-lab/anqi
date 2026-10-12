@@ -14,6 +14,7 @@ const { fork } = require('node:child_process');
 const http = require('node:http');
 const { initAutoUpdater } = require('./updater');
 const { buildBackendEnv, shouldRedirectTestUserData } = require('./backend-env');
+const { shouldPreventClose } = require('./window-policy');
 
 // dev 环境（未签名）禁用 sandbox，避免 macOS "Operation not permitted" 刷屏。
 // 打包发版后走正规签名 + sandbox；dev 只是绕过本机权限限制。
@@ -53,6 +54,7 @@ const APP_ROOT = IS_DEV
 
 let mainWindow = null;
 let backendProc = null;
+let quitting = false;
 
 // ── 配置读写（userData/config.json）─────────────────────────────────
 function configPath() {
@@ -199,6 +201,12 @@ function createMainWindow(port) {
   });
 
   mainWindow.on('closed', () => { mainWindow = null; });
+  mainWindow.on('close', (event) => {
+    if (shouldPreventClose(process.platform, quitting)) {
+      event.preventDefault();
+      mainWindow.hide();
+    }
+  });
 
   // 打包后启动自动更新检查（dev 跳过）
   initAutoUpdater(mainWindow);
@@ -308,7 +316,9 @@ if (!gotLock) {
   });
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) {
+    if (mainWindow && process.platform === 'darwin') {
+      mainWindow.show();
+    } else if (BrowserWindow.getAllWindows().length === 0) {
       const config = readConfig();
       if (config) {
         startBackend(config).then(createMainWindow).catch((e) => {
@@ -323,6 +333,7 @@ if (!gotLock) {
 
   // 退出时 kill 后端子进程（否则成为孤儿进程占着端口）
   app.on('before-quit', () => {
+    quitting = true;
     if (backendProc) {
       backendProc.kill();
       backendProc = null;

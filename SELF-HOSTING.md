@@ -213,8 +213,20 @@ Android 壳不预置任何服务器。首次启动时输入你自己部署的案
 | `ANJIAN_VISION_MODEL` | 可选传票视觉模型名；默认 `deepseek-flash` |
 | `ANJIAN_OCR_HELPER` | 可选 macOS OCR 辅助程序绝对路径；未设置时查找应用资源与 `build/bin/anqi-ocr` |
 | `ANJIAN_DISCORD_WEBHOOK` | 可选 L0 日报 webhook |
+| `ANJIAN_REMIND_POLL_SECONDS` | 提醒 worker 轮询秒数，默认 30，最小 1 |
+| `ANJIAN_REMIND_CATCHUP_MINUTES` | 到点领取的追赶窗口，默认 60 分钟 |
 
 `.env.example` 是当前版本的完整起点。密钥一律放在部署环境或权限受控的 secret 文件中，不要提交到仓库。
+
+提醒通知在 Chrome、Edge 等桌面浏览器和 macOS App 中使用 Web Notification API 弹出；Android WebView 不支持该 API，只保证页面内铃铛列表可用。反向代理必须放行 `/api/notifications/stream` SSE，例如 nginx：
+
+```nginx
+location /api/notifications/stream {
+  proxy_pass http://127.0.0.1:3000;
+  proxy_buffering off;
+  proxy_read_timeout 1h;
+}
+```
 
 传票识别的暂存文件放在 `DB_PATH` 所在数据目录的 `quick-staging/` 下，服务启动和每次识别时清理超过 24 小时的文件。暂存区只保存用户主动上传、等待表单确认的原始字节与元数据；案件夹不存在时不会写入附件。macOS 桌面版会优先使用 `ANJIAN_OCR_HELPER` 指向的辅助程序，其次使用发行物内置的 `bin/anqi-ocr`；Linux 不转换扫描版 PDF，用户可改为上传照片或手填。
 

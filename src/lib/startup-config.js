@@ -3,6 +3,20 @@ import { assertPassphraseStrength } from './secret-box.js';
 
 export const DEFAULT_HOST = '127.0.0.1';
 
+export function resolveReminderConfig(env = process.env) {
+  const pollRaw = env.ANJIAN_REMIND_POLL_SECONDS ?? '30';
+  const catchupRaw = env.ANJIAN_REMIND_CATCHUP_MINUTES ?? '60';
+  const pollSeconds = Number(pollRaw);
+  const catchupMinutes = Number(catchupRaw);
+  if (!/^\d+$/.test(String(pollRaw)) || !Number.isInteger(pollSeconds) || pollSeconds < 1) {
+    throw new Error('ANJIAN_REMIND_POLL_SECONDS 必须是大于等于 1 的整数');
+  }
+  if (!/^\d+$/.test(String(catchupRaw)) || !Number.isInteger(catchupMinutes) || catchupMinutes < 0) {
+    throw new Error('ANJIAN_REMIND_CATCHUP_MINUTES 必须是非负整数');
+  }
+  return Object.freeze({ pollSeconds, catchupMinutes });
+}
+
 function configured(value) {
   return typeof value === 'string' && value.length > 0;
 }
@@ -73,5 +87,6 @@ export function resolveStartupConfig(env = process.env) {
     nodeEnv,
     unsafeNoAuth,
     authConfigured: hasUser && hasHash,
+    reminders: resolveReminderConfig(env),
   });
 }

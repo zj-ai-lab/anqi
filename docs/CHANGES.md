@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.10.0** | 2026-10-12 | 确定性提醒中枢、应用内原生通知、migration 030；自动档位随开庭/期限/带时刻待办对账，支持人工提醒与 SSE 补发。 |
 | **2.9.4** | 2026-10-12 | 修复 2.9.2 起启用 Landlock 的 Linux 服务器选「完整 DSH」档被误拒的问题（启动前探针仍指向已撤掉的旧启动器包）；README 改正无沙箱时的实际行为；无 migration。 |
 | **2.9.3** | 2026-10-12 | 安全修复：AI 助理的沙箱放宽请求在任何审批档位都转人工确认，不再被 3 档免提示或“本类不再询问”自动放行；无 migration。 |
 | **2.9.2** | 2026-10-11 | AI 助理运行时升至 DSH `0.1.5-rc.3`，消除 GHSA-8m2g-8cgm-3vcp（原本不可达）；runtime `npm audit` 归零；功能与工具面不变；无 migration。 |
@@ -148,6 +149,23 @@
 - README 改正：服务器不具备沙箱条件时完整档会在启动前被拒绝，而不是“仅禁用命令、其余能力不受影响”。
 
 **升级注意**：无 migration，数据库与 2.9.3 完全一致，可直接互换回退。
+
+---
+
+## 2.10.0 — 提醒中枢与应用内通知
+
+- **自动提醒档位**（settings 可改、真保存）：开庭前一天 18:00 与当天 07:30；已确认期限前 3 天 07:30 与当天 07:30；带 `due_on + due_time` 的待办截止前 30 分钟。来源查询与 L0 digest 同口径：只提醒 active 案件、`status=pending` 且 `review_status=confirmed` 且非 advisory 的期限、open 待办；AI 填写的待核期限不提醒。
+- **派生而非录入**：自动提醒以 `(source_type, source_id, tier)` 为身份，worker 每个 tick（默认 30 秒）对全部来源完整对账——来源改日期/时刻/标题原地更新并 `version+1`，来源完成、案件关闭、档位关闭或来源消失则取消并记原因；用户取消过的自动提醒在来源指纹不变时保持取消。`GET /api/reminders` 读取前也会先对该案对账。
+- **人工单条提醒**：`POST /api/reminders` 创建即确认；改期与取消必须带 `expected_version`，不一致 409；发送中不可改；取消只改状态不删行；所有人工动作进 `audit_log`。
+- **到点执行**：短事务领取（`scheduled → sending`，一次最多 50 条）并以唯一 `delivery_key` 写投递意图，事务外调用渠道；超过追赶窗口（默认 60 分钟，`ANJIAN_REMIND_CATCHUP_MINUTES`）标 `missed(window_expired)`；服务启动把残留 `sending` 置 `unknown(crash_recovery)`，不自动重发；全程不调用任何模型。
+- **渠道插件口**：注册表 `id / label / configured(settings) / deliver()`；本版只实现 `inapp`——投递先落 `queued`，经 `GET /api/notifications/stream`（SSE）推到已打开的页面，页面弹浏览器通知并 `ack` 为 `shown`；无人在线时 24 小时内下次连上补发，超时 `expired`。企业微信、飞书、钉钉等外部渠道留待后续版本。
+- **界面**：顶栏 🔔 徽标与最近提醒列表（含「全部标为已看」与通知权限申请）；用户中心新增「提醒」分区（总开关、五个档位、浏览器通知权限、worker 心跳与待看 / 错过 / 失败计数）——`remind_enabled=false` 只停止自动档位，手动添加的提醒仍按时发；案件页「期限跑道」下新增「提醒」块（自动行可取消，人工行可改期 / 取消，可添加）。通知正文只含案件名、事项、时间与开庭地点，不含联系人或金额。
+- **桌面与移动端**：macOS App 关闭窗口改为隐藏（页面与 SSE 连接保持，通知照弹），Dock 图标或重新打开即恢复；Android WebView 不支持 Web Notification API，仅保证页内铃铛可用；未做 Service Worker / Web Push。
+- **部署**：新增 env `ANJIAN_REMIND_POLL_SECONDS`（默认 30，最小 1）、`ANJIAN_REMIND_CATCHUP_MINUTES`（默认 60）；反向代理须对 `/api/notifications/stream` 关闭缓冲并放长读超时（SELF-HOSTING.md 有 nginx 示例）。
+- **测试**：`tools/check.sh` 由 86 步增至 92 步——migration 030、规划器（含 `TZ=UTC` 与 `TZ=America/New_York` 子进程换算一致性）、worker 状态机（追赶窗口 / 唯一投递 / 崩溃恢复 / 渠道异常 / 50 条上限 / 24 小时过期）、HTTP 与 SSE 全流程（含「提醒子系统从不写 events/deadlines/tasks」断言）、前端静态契约、Electron 窗口策略。
+- **数据**：migration 030 新增 `reminders` 与 `reminder_deliveries`（派生表，不进 `change_log` 触发器），`settings` 新增 `remind_*` 六键。
+
+**升级注意**：migration 030 只建表加索引，不改既有表；回退到 2.9.x 需先恢复升级前备份（旧版不认识 `user_version=30`）。
 
 ---
 

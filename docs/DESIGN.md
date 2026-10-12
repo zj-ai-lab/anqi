@@ -151,8 +151,8 @@ CREATE TABLE holidays (
   kind TEXT NOT NULL                  -- holiday（放假）|workday（调休补班）
 );
 
--- 系统设置（键值）。当前只服务「用户中心 · 个人设置」六个抬头字段：
--- name/license_no/firm/phone/email/address。纯展示信息，不进期限引擎、不进任何计算。
+-- 系统设置（键值）。服务个人抬头字段与提醒档位 remind_*：提醒值由 worker
+-- 每 tick 读取，时刻为 HH:MM，空串表示关闭对应档位。
 -- 写入白名单在应用层（src/routes/settings.js），白名单外的键直接丢弃，schema 不约束键名。
 CREATE TABLE settings (
   key   TEXT PRIMARY KEY,
@@ -168,6 +168,24 @@ CREATE TABLE audit_log (
 );
 ```
 
+提醒派生表（migration 030）不进入 `change_log`：
+
+| 表 | 关键字段 | 语义 |
+|---|---|---|
+| `reminders` | `origin/source_type/source_id/tier` | 自动行身份与人工行来源；`fire_at` 为 UTC ISO；`version/status/status_reason` 支持对账和乐观并发 |
+| `reminder_deliveries` | `reminder_id/reminder_version/channel/delivery_key` | 每个提醒版本、渠道各一条投递；`delivery_key` UNIQUE 防止重复领取，`queued/shown/expired/sent/failed/unknown` 记录渠道结果 |
+
+提醒设置由 `/api/settings` 白名单保存，缺省值由 `resolveReminderSettings()` 补齐：
+
+| 键 | 默认值 | 空值语义 |
+|---|---:|---|
+| `remind_enabled` | `true` | — |
+| `remind_hearing_eve_time` | `18:00` | 关闭前一天开庭档 |
+| `remind_hearing_day_time` | `07:30` | 关闭当天开庭档 |
+| `remind_deadline_days_before` | `3` | 关闭提前期限档 |
+| `remind_deadline_time` | `07:30` | 关闭当天期限档 |
+| `remind_task_minutes_before` | `30` | 关闭待办档 |
+
 **contacts（004）**：案件联系人（当事人/对方/承办法官/法官助理/书记员/对方律师/合作律师），带电话/身份证号/单位/备注——敏感层级最高的表。**接口层硬边界：contacts 只出 `/api`（人面），永不进 `/internal`（自动化面）任何响应**（`internal.js` 有防回归注释）；audit 只记角色+姓名不落号码。
 
 **合作对象通讯录与案件参与人（020）**：`people` 是跨案件的轻量通讯录，只保存姓名、电话、单位和备注；`case_participants` 把通讯录对象加入具体案件，并在案件维度保存角色和备注。案件分成约定与已发生台账分别用可空 `person_id` 关联 `people`：选了本案参与人时以通讯录对象为身份主键，同时保留 `counterpart` 作为历史可读姓名；临时填写对象仍可只保存姓名，不强迫建立通讯录记录。020 只把存量 `contacts` 中的合作律师/对方律师回填到通讯录和案件参与人，不改写既有分成金额或约定身份。
@@ -180,7 +198,7 @@ CREATE TABLE audit_log (
 
 **款项凭证（012）**：`fee_item_files` 只保存款项与案件夹原件之间的指针：`fee_item_id`、`case_id`、案件夹内 `rel_path`、`kind ∈ {receipt, invoice, share_sheet, other}`、`size` 与创建时间。文件本体固定写入 `<案件夹>/财务凭证/`，不进 SQLite；同一案件内 `rel_path` 唯一。挂接与解除均校验款项当前 `version` 并写审计，解除只删关联行，绝不物理删除案件夹原件。夹内文件被移动或改名时，读取投影返回 `missing=true`，不自动重建。凭证不进 OCR、LegalRAG、LLM、inbox 或 `/internal`。
 
-> 历史欠账（不复述 DDL，指向 migration 文件即可）：**002** 新增 `fee_items`（律师费款项）+ `sessions`（30 天滚动登录会话）；**016** 将 `sessions.created_at/last_seen` 统一为 UTC（保留存量 token，识别并保留运行期已写成 UTC 的续期值）；**003** 新增 `attachments`（案件夹文件**引用**表，§8.5）+ `cases.legalrag_url`（每案 LegalRAG 快捷链，§9.6-A）；**009** 新增 LegalRAG 案件映射、文件 revision/任务状态、提取运行与人工候选表（§8.7）；**011** 新增推荐反馈闭环字段与 `legalrag_candidate_facts` 逻辑事实层（§5、§8.7）；**012** 新增款项凭证指针（§8.5）；**017/018** 新增案件 workspace 与 Agent 直写来源/事实层；**019** 放开款项方案与收讫快照的双向分成方向，保留逐款显式关联。
+> 历史欠账（不复述 DDL，指向 migration 文件即可）：**002** 新增 `fee_items`（律师费款项）+ `sessions`（30 天滚动登录会话）；**016** 将 `sessions.created_at/last_seen` 统一为 UTC（保留存量 token，识别并保留运行期已写成 UTC 的续期值）；**003** 新增 `attachments`（案件夹文件**引用**表，§8.5）+ `cases.legalrag_url`（每案 LegalRAG 快捷链，§9.6-A）；**009** 新增 LegalRAG 案件映射、文件 revision/任务状态、提取运行与人工候选表（§8.7）；**011** 新增推荐反馈闭环字段与 `legalrag_candidate_facts` 逻辑事实层（§5、§8.7）；**012** 新增款项凭证指针（§8.5）；**017/018** 新增案件 workspace 与 Agent 直写来源/事实层；**019** 放开款项方案与收讫快照的双向分成方向，保留逐款显式关联；**030** 新增 reminders 与 reminder_deliveries（§8.9）。
 
 **合作分成（005/006 既有台账；007 结算引擎）**：合作律师分成是「财务节律」，与期限引擎正交（不进 `deadlines`，见 §11 A10）。007 在既有数据之上增加「稳定约定 → 不可变公式版本 → 款项级方案 → 确认结算快照 → 已发生台账」五层；各层不可混用：
 
@@ -273,7 +291,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 5. **费用台账**——以律师能直接阅读的“案件资金卡”呈现律师费、扣费、分成比例、应收/应付、结算状态与下一步；案件页与费用页复用同一结算组件和款项凭证组件。输入端主路径固定为“记律师费 → 记钱怎么走 → 收到钱了”，确认收款时在同一窗口列出本款已关联的应收与应付；版本、快照、预览、修正与技术校验收进“历史与高级”。1.8 起粘性总账抬头只保留全页唯一 56px 净额，并把“要追的钱”作为相邻焦点；分区锚点直达按案款项、待处理分成、分成约定与历史修复。主体为双栏：左栏一案一卡，右栏为经营信号、待处理分成与低频附属区。页首不得把所有金额平铺成同权 KPI：第一层只突出“总账净额”，并直接展示 `我方律师费已收 − 已发生应付分成 + 已发生应收分成` 的全期权责等式；待收、已到期、放弃/减免与金额待定属于第二层经营信号。律师费 `paid` 是我方收款毛额；**若某款只挂有效 `receivable` 分成而没有 `payable` 分成，该款金额只是他方收款基数，不进入我的收入、待收、逾期或统计**，页面仍保留“他方基数”记录。若同一款同时存在应收和应付，则按双向结算仍计入我方律师费毛额。每案面板同样展示 `本案净额 = 本案我方律师费已收 − 本案应付分成 + 本案应收分成`；无 `case_id` 的外部应收只进入全局总账，不摊入任一案件。
 6. **历史分成修复**——仅人工认领、保留或逻辑作废升级前孤儿台账。
 7. **统计**——期限履约、案件分布、收结案趋势、应收账龄与分成后净口径。
-8. **用户中心**——皮肤偏好、个人设置、账户与安全、关于。**只保留真能用的功能**：个人设置的六个抬头字段（姓名／执业证号／律所／电话／邮箱／办公地址）经 `/api/settings` 落 `settings` 表，读写都在本机，不进期限引擎、不进任何计算、无 LLM 通道；白名单在 `src/routes/settings.js`，白名单外的键直接丢弃。原「通知偏好」面板已整块删除——那两个阈值（期限预警 3 天／开庭提醒 7 天）硬编码在前后端多处，做成可配置是独立的一件事；留一块全禁用的假控件只会让人以为能改。**沿用的原则不变：不得提供「可改但不保存」的假交互**——接不通就别摆控件，而不是摆出来再禁用。
+8. **用户中心**——皮肤偏好、个人设置、提醒、账户与安全、关于。个人设置六个抬头字段与 `remind_*` 提醒档位均经 `/api/settings` 真保存；提醒设置由 worker 每 tick 读取，控件与白名单一一对应。浏览器通知权限只在用户点击时申请；权限拒绝时仍保留页内铃铛列表，不提供不能保存的假交互。
 9. **登录**——账号密码登录，成功后进入 30 天滚动会话。
 
 **1.3.1 历史分成修复工作台**（`share-repairs.html`）：从费用页、顶栏和案件内已结历史分成的「待修复」标识进入。默认仅展示 `open` 修复单与同案已收款候选；候选、相同方向/合作对象/金额/月份的参照均只是人工核对信息，不展示 contacts 颗粒字段。认领先要求裁决说明；存在软重复时再明确确认「独立」并填写例外理由，才会携带 `confirm_independent=true` 调用 API。保留未认领与逻辑作废同样强制填写理由；工作台不提供自动匹配、合并、删除或重算，且不接 LLM、inbox、quick 或 `/internal` 路径。
@@ -462,6 +480,38 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 社区插件在设置页高级项中填写一个已审查的绝对路径 `cordis.patch.yml`；仅 `full` 档把它作为案齐强制组合之上的上游 Cordis patch 加载，并用官方 HMR 监听文件，现有 worker 可原地挂载、卸载或更新插件。插件就是本机 Node 代码，必须视为与当前用户等权的可信扩展：它理论上能绕过应用级 provider，因此界面明确警告且拒绝相对路径、缺失文件、非普通文件与符号链接。依赖完整 DSH Web Client 插槽的 UI 插件不会自动出现在案齐对话抽屉里，除非另做前端适配；`project` 档完全不读取插件 patch。
 
 案件助理对话的 assistant 文本按安全 Markdown 子集渲染：标题、段落、粗体/斜体/删除线、行内与围栏代码、引用、有序/无序/任务列表、表格及 HTTP(S)/mailto 链接。渲染器只用 DOM 节点组装，不解释原始 HTML；危险协议不生成链接，Markdown 图片只显示为可点击的来源链接而不自动请求远端资源。流式 chunk 可反复重绘当前气泡，最终 `assistant/message` 仍以权威完整文本收口；用户输入、系统行和工具摘要继续按纯文本显示。
+
+## 8.9 提醒中枢（2.10.0）
+
+提醒是确定性派生子系统。开庭档位为前一天与当天，期限档位为提前天数与当天，待办档位为带 `due_on + due_time` 的截止前分钟；来源查询与 digest 同口径，只提醒 active 案件、confirmed 且非 advisory 的 pending 期限和 open 待办。`fire_at` 存 UTC ISO，界面输入/展示为北京时间。
+
+`remind_enabled=false` 时自动档位全部取消并停止重新派生；人工添加的提醒不受影响，仍会按时领取和发送。
+
+规划器每个 worker tick 对全部来源完整对账，以 `(source_type,source_id,tier)` 为身份。来源指纹变化时原地更新并递增 version；来源消失、完成、案件关闭或档位关闭时取消并写原因。用户取消的自动行在指纹不变时保持取消，指纹变化才重新建 scheduled 行。人工提醒创建即确认，修改/取消必须带 `expected_version`，sending 中或终态行不可改。
+
+`reminders` 状态如下：
+
+| 状态 | 进入条件 |
+|---|---|
+| `scheduled` | 对账后等待到点，或人工创建/改期 |
+| `sending` | tick 在短事务中领取，最多 50 条 |
+| `fired` | 所有配置渠道都返回终态或 `queued` |
+| `cancelled` | 用户取消，或来源完成、案件关闭、来源变化、档位/总开关关闭 |
+| `missed` | 超过 catch-up 窗口，原因 `window_expired` |
+| `unknown` | 服务启动恢复残留 `sending`，原因 `crash_recovery`，不自动重发 |
+
+`reminder_deliveries` 状态如下：
+
+| 状态 | 进入条件 |
+|---|---|
+| `queued` | 渠道已领取；inapp 等待客户端显示 |
+| `shown` | 客户端 ack，幂等 |
+| `expired` | queued 超过 24 小时未 ack |
+| `sent` / `failed` / `unknown` | 其他渠道的终态或不确定结果 |
+
+到点领取在短事务中最多 50 条，事务提交后调用渠道；残留 sending 启动时置 unknown，不自动重发。超过 24 小时未 ack 的 queued delivery 置 expired。
+
+渠道插件注册表导出 `id / label / configured(settings) / deliver(reminder, delivery, ctx)`；2.10 只实现 `inapp`，deliver 不联网而返回 queued。worker 通过进程内事件广播给 SSE；客户端连接时补发 24 小时内 queued，ack 后变 shown。网页与 macOS Electron 使用 Web Notification API，Android WebView 只显示页内铃铛；Web Push、Service Worker 和企业微信/飞书/钉钉留到后续版本。提醒正文只含案件名、事项标题、时间、开庭地点，不含联系人、金额或案件文件。
 
 ## 9. 外部集成边界
 

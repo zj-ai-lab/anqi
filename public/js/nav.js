@@ -3,6 +3,7 @@
 import { api, el, toast } from './api.js';
 import { iconEl } from './icons.js';
 import { initSkinSwitcher } from './skin.js';
+import { mountNotifications } from './notify.js';
 
 // 顺序按 DESIGN-TOKENS §10 A-2：今日 / 案件 / 日历 / 费用 / 通讯录 / 修复 / 统计 / 用户中心
 const LINKS = [
@@ -75,6 +76,7 @@ export async function mountNav() {
   );
 
   document.body.prepend(nav);
+  mountNotifications(nav);
   initHamburger(hamburger, dropdown);
   initSkinSwitcher(nav);   // 皮肤切换器不依赖网络：先把 UI 立起来，再去拉数据
   mountQuickbar();

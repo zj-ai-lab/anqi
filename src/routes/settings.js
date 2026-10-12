@@ -14,6 +14,7 @@ import {
   validateBaseURL,
 } from '../agent/config.js';
 import { encryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
+import { resolveReminderSettings } from '../lib/reminder-plan.js';
 
 // agent_api_key 明文入参的长度上限——纯粹是防御式的 DoS/误用兜底（真实
 // API key 从没见过超过几百字符的），不是安全边界本身：加密/落库对任意长度
@@ -65,7 +66,11 @@ const MAX_API_KEY_LENGTH = 4096;
 export function createSettingsRouter(supervisor) {
   const r = Router();
 
-  const ALLOWED = ['name', 'license_no', 'firm', 'phone', 'email', 'address'];
+  const ALLOWED = [
+    'name', 'license_no', 'firm', 'phone', 'email', 'address',
+    'remind_enabled', 'remind_hearing_eve_time', 'remind_hearing_day_time',
+    'remind_deadline_days_before', 'remind_deadline_time', 'remind_task_minutes_before',
+  ];
   // 存储层键名（settings 表里真实的行名）——GET 响应要把其中的
   // agent_api_key_encrypted 过滤掉，绝不把密文原样吐给前端（虽然密文不是
   // 明文，但没有正当理由顺手带出去，见文件顶部注释）。
@@ -200,6 +205,34 @@ export function createSettingsRouter(supervisor) {
     return { ok: true, values };
   }
 
+  function validateReminderFields(body) {
+    const has = (key) => Object.hasOwn(body, key);
+    const values = {};
+    const timeKeys = ['remind_hearing_eve_time', 'remind_hearing_day_time', 'remind_deadline_time'];
+    const integerKeys = [
+      ['remind_deadline_days_before', 0, 30],
+      ['remind_task_minutes_before', 0, 1440],
+    ];
+    if (has('remind_enabled')) {
+      const v = body.remind_enabled;
+      if (!['true', 'false', true, false].includes(v)) return { ok: false, error: 'remind_enabled 必须是 true 或 false' };
+      values.remind_enabled = v === false || v === 'false' ? 'false' : 'true';
+    }
+    for (const key of timeKeys) {
+      if (!has(key)) continue;
+      const v = String(body[key] ?? '').trim();
+      if (v !== '' && !/^(?:[01]\d|2[0-3]):[0-5]\d$/.test(v)) return { ok: false, error: `${key} 必须是 HH:MM 或空串` };
+      values[key] = v;
+    }
+    for (const [key, min, max] of integerKeys) {
+      if (!has(key)) continue;
+      const v = String(body[key] ?? '').trim();
+      if (v !== '' && (!/^\d+$/.test(v) || Number(v) < min || Number(v) > max)) return { ok: false, error: `${key} 必须是 ${min}-${max} 的整数或空串` };
+      values[key] = v;
+    }
+    return { ok: true, values };
+  }
+
   // GET/PUT /api/settings 共用的响应体构造：
   //   - settings 表的原始行原样带出（六个人工字段 + agent_enabled/provider/
   //     capabilityMode/baseURL/model/apiKeyEnv/pluginPatch 等白名单字段），但把 agent_api_key_encrypted
@@ -222,6 +255,7 @@ export function createSettingsRouter(supervisor) {
     view.agent_api_key_configured = !!value;
     view.agent_api_key_source = source;
     view.agent_api_key_masked = value ? maskSecret(value) : null;
+    Object.assign(view, resolveReminderSettings(rows));
     return view;
   }
 
@@ -233,6 +267,14 @@ export function createSettingsRouter(supervisor) {
     const body = req.body || {};
     const previousCapabilityMode = readAgentSetting(AGENT_SETTINGS_KEYS.capabilityMode).trim() || 'project';
 
+    const reminderKeys = ALLOWED.filter((key) => key.startsWith('remind_'));
+    const touchesReminderKey = reminderKeys.some((key) => Object.hasOwn(body, key));
+    let reminderValues = {};
+    if (touchesReminderKey) {
+      const validated = validateReminderFields(body);
+      if (!validated.ok) return res.status(400).json({ error: validated.error });
+      reminderValues = validated.values;
+    }
     let agentValues = {};
     const touchesAnyAgentKey = AGENT_BODY_KEYS.some((key) => Object.prototype.hasOwnProperty.call(body, key));
     if (touchesAnyAgentKey) {
@@ -247,7 +289,9 @@ export function createSettingsRouter(supervisor) {
     const pairs = [
       ...ALLOWED
         .filter((k) => Object.prototype.hasOwnProperty.call(body, k))
+        .filter((k) => !k.startsWith('remind_'))
         .map((k) => [k, String(body[k] ?? '')]),
+      ...Object.entries(reminderValues),
       ...Object.entries(agentValues),
     ];
     const runtimeRestartKeys = new Set([

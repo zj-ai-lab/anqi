@@ -2299,8 +2299,70 @@ if (drop) {
 async function load() {
   [bundle, people] = await Promise.all([api(`/cases/${id}`), api('/people')]);
   render();
-  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker(), loadChanges()]);
+  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker(), loadChanges(), loadReminders()]);
   await Promise.all([loadFiles(), loadFileCandidates()]);
+}
+
+const REMINDER_STATUS_LABEL = { scheduled: '待发', sending: '发送中', fired: '已发', cancelled: '已取消', missed: '错过', unknown: '结果不明' };
+async function loadReminders() {
+  const list = document.getElementById('case-reminder-list');
+  if (!list) return;
+  const rows = await api(`/reminders?case_id=${id}&limit=100`);
+  const renderRow = (row) => {
+    if (!row.id) return row;
+    const actions = el('span', { class: 'tl-actions' });
+    if (row.origin === 'manual' && row.status === 'scheduled') {
+      const reschedule = el('button', { class: 'btn ghost small', type: 'button' }, '改期');
+      reschedule.addEventListener('click', () => {
+        const [dateValue, timeValue] = String(row.fire_at_local || '').split(' ');
+        const editor = el('form', { class: 'reminder-edit' },
+          el('input', { name: 'date', type: 'date', required: '', value: dateValue || '' }),
+          el('input', { name: 'time', type: 'time', required: '', value: timeValue || '' }),
+          el('button', { class: 'btn small primary', type: 'submit' }, '确定'),
+        );
+        editor.addEventListener('submit', async (event) => {
+          event.preventDefault();
+          const data = new FormData(editor);
+          try {
+            await api(`/reminders/${row.id}`, {
+              method: 'PATCH',
+              body: { fire_at_local: `${data.get('date')} ${data.get('time')}`, expected_version: row.version },
+            });
+            toast('提醒已改期');
+          } catch (error) {
+            if (error.status === 409) toast(error.message || '提醒版本已变化');
+          }
+          await loadReminders();
+        });
+        editor.addEventListener('reset', () => editor.remove());
+        const oldEditor = actions.querySelector('.reminder-edit');
+        oldEditor?.remove();
+        actions.append(editor);
+      });
+      actions.append(reschedule);
+    }
+    if (row.status === 'scheduled') {
+      const cancel = el('button', { class: 'btn ghost small', type: 'button' }, '取消');
+      cancel.addEventListener('click', async () => {
+        try { await api(`/reminders/${row.id}/cancel`, { method: 'POST', body: { expected_version: row.version } }); }
+        finally { await loadReminders(); }
+      });
+      actions.append(cancel);
+    }
+    return el('div', { class: 'reminder-row' }, el('span', {}, row.origin === 'auto' ? '自动 · ' : '人工 · ', row.title), el('span', { class: 'mono' }, row.fire_at_local), el('span', {}, REMINDER_STATUS_LABEL[row.status] || row.status), actions);
+  };
+  const scheduledRows = rows.filter((row) => row.status === 'scheduled' || row.status === 'sending' || row.status === 'fired');
+  const visible = scheduledRows.slice(0, 5);
+  const children = visible.length ? visible.map(renderRow) : [el('div', { class: 'muted' }, '暂无提醒')];
+  if (scheduledRows.length > 5) {
+    const more = el('details', { class: 'reminder-more' }, el('summary', {}, `其余 ${scheduledRows.length - 5} 条`), ...scheduledRows.slice(5).map(renderRow));
+    children.push(more);
+  }
+  list.replaceChildren(...children);
+  const form = document.getElementById('case-reminder-form');
+  if (form && !form.dataset.bound) {
+    form.dataset.bound = '1'; form.addEventListener('submit', async (event) => { event.preventDefault(); const data = new FormData(form); await api('/reminders', { method: 'POST', body: { case_id: Number(id), title: data.get('title'), fire_at_local: `${data.get('date')} ${data.get('time')}` } }); form.reset(); await loadReminders(); });
+  }
 }
 
 document.addEventListener('anjian:changed', load);
