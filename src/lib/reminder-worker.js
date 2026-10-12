@@ -30,7 +30,7 @@ function viewDelivery(database, deliveryId) {
     LEFT JOIN cases c ON c.id=r.case_id WHERE d.id=?`).get(deliveryId);
 }
 
-export function createReminderWorker({ db = defaultDb, pollSeconds = 30, catchupMinutes = 60, now = () => new Date() } = {}) {
+export function createReminderWorker({ db = defaultDb, pollSeconds = 30, catchupMinutes = 60, now = () => new Date(), channels: channelOverride = null } = {}) {
   const events = new EventEmitter();
   let timer = null; let running = false; let runningTick = false;
   const state = { running: false, last_tick_at: '', last_error: '' };
@@ -99,7 +99,7 @@ export function createReminderWorker({ db = defaultDb, pollSeconds = 30, catchup
         const nowIso = isoNow(now); const cutoffIso = new Date(new Date(nowIso).getTime() - Number(catchupMinutes) * 60_000).toISOString();
         const due = tx(db, () => {
           const rows = db.prepare("SELECT * FROM reminders WHERE status='scheduled' AND fire_at<=? AND fire_at>=? ORDER BY fire_at,id LIMIT 50").all(nowIso, cutoffIso);
-          const stamp = nowIso; const channels = configuredChannels(settings); const deliveries = [];
+          const stamp = nowIso; const channels = channelOverride ?? configuredChannels(settings); const deliveries = [];
           for (const row of rows) {
             db.prepare("UPDATE reminders SET status='sending',updated_at=? WHERE id=? AND version=? AND status='scheduled'").run(stamp, row.id, row.version);
             for (const channel of channels) {
