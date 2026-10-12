@@ -2,9 +2,13 @@ import { Router } from 'express';
 import { db, audit } from '../db.js';
 import { buildDigest } from '../lib/digest.js';
 import { enqueueLlmSuggestion, enqueueAgentProposal, releaseDueSnoozes } from '../lib/recommendations.js';
-import { caseIdForSession } from '../agent/session-registry.js';
+import {
+  caseIdForSession, isGlobalSession, offerSessionCases, grantSessionCase,
+  sessionCaseGranted,
+} from '../agent/session-registry.js';
+import { matchCaseByHints } from '../lib/case-match.js';
 import { upsertContactRecord } from './contacts.js';
-import { createDeadlineRecord, createEventRecord, createTaskRecord } from './records.js';
+import { createDeadlineRecord, createEventRecord, createTaskRecord, createWorklogRecord } from './records.js';
 import { createFactRecord } from './legalrag.js';
 
 // 受信任自动化专用面。公网反向代理必须把 /internal/* 硬 404。
@@ -97,13 +101,37 @@ function runAgentDirectWrite({ kind, caseId, payload, actor, sessionId }) {
       createdBy: 'ai',
       reviewStatus: 'pending_review',
     });
+  } else if (kind === 'worklog') {
+    item = createWorklogRecord({ caseId, payload, actor, createdBy: 'ai' });
   } else {
-    const error = new Error('agent 直写 kind 须为 contact/task/event/fact/deadline');
+    const error = new Error('agent 直写 kind 须为 contact/task/event/fact/deadline/worklog');
     error.code = 'agent_direct_kind_invalid';
     throw error;
   }
   audit(actor, 'agent-direct', kind, item.id, `session=${String(sessionId).slice(0, 200)}`);
-  return { created, outcome: created ? 'created' : 'updated', kind, item, ...(derived ? { derived } : {}) };
+  const caseRow = caseId ? db.prepare('SELECT id,name FROM cases WHERE id=?').get(caseId) : null;
+  return {
+    created, outcome: created ? 'created' : 'updated', kind, item,
+    case_id: caseRow?.id ?? null, case_name: caseRow?.name ?? '',
+    ...(derived ? { derived } : {}),
+  };
+}
+
+function globalSessionCaseId(sessionId, rawCaseId, { required = false } = {}) {
+  if (rawCaseId === undefined || rawCaseId === null || rawCaseId === '') {
+    if (required) {
+      const error = new Error('全局会话写入该类型必须带 case_id'); error.status = 400; error.code = 'case_id_required'; throw error;
+    }
+    return null;
+  }
+  const caseId = Number(rawCaseId);
+  if (!Number.isInteger(caseId) || caseId <= 0) {
+    const error = new Error('case_id 非法'); error.status = 400; error.code = 'case_id_invalid'; throw error;
+  }
+  if (!sessionCaseGranted(sessionId, caseId)) {
+    const error = new Error('该案件尚未由案齐服务端授予本会话'); error.status = 403; error.code = 'case_not_granted'; throw error;
+  }
+  return caseId;
 }
 
 // DSH agent 专用只读面：session_id 由 supervisor 固定注入 worker env，服务端按
@@ -114,12 +142,58 @@ function runAgentDirectWrite({ kind, caseId, payload, actor, sessionId }) {
 r.get('/agent-case-view', (req, res) => {
   const sessionId = sessionIdFromRequest(req);
   if (!sessionId) return res.status(400).json({ error: '缺少 session_id', code: 'session_id_invalid' });
-  const caseId = caseIdForSession(sessionId);
-  if (!caseId) return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝读取', code: 'session_not_bound' });
+  let caseId;
+  if (isGlobalSession(sessionId)) {
+    if (req.query?.case_id === undefined || req.query.case_id === '') {
+      return res.status(403).json({ error: '全局会话读取案件必须带 case_id', code: 'case_not_granted' });
+    }
+    try { caseId = globalSessionCaseId(sessionId, req.query.case_id, { required: true }); }
+    catch (error) { return res.status(error.status || 403).json({ error: error.message, code: error.code }); }
+  } else {
+    caseId = caseIdForSession(sessionId);
+    if (!caseId) return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝读取', code: 'session_not_bound' });
+  }
   releaseDueSnoozes();
   const c = db.prepare('SELECT * FROM cases WHERE id = ?').get(caseId);
   if (!c) return res.status(404).json({ error: '案件不存在' });
   res.json(buildCaseView(c));
+});
+
+r.post('/agent-case-resolve', (req, res) => {
+  const sessionId = sessionIdFromRequest(req) || (typeof req.body?.session_id === 'string' ? req.body.session_id.trim() : '');
+  if (!sessionId) return res.status(400).json({ error: '缺少 session_id', code: 'session_id_invalid' });
+  if (!isGlobalSession(sessionId)) return res.status(403).json({ error: '仅全局会话可解析案件', code: 'session_scope_invalid' });
+  const cases = db.prepare('SELECT id,name,case_no,client,opponent,court,handling_agency,case_type,procedure,stage,status,updated_at FROM cases').all();
+  const contacts = db.prepare("SELECT case_id,role,name FROM contacts WHERE role IN ('当事人','对方当事人')").all();
+  const result = matchCaseByHints({ cases, contacts, hints: {
+    parties: req.body?.parties,
+    case_name: req.body?.case_name,
+    case_no: req.body?.case_no,
+    agency: req.body?.agency,
+  } });
+  let granted_case_id;
+  if (result.match === 'unique') {
+    const id = result.candidates[0]?.id;
+    offerSessionCases(sessionId, [id]);
+    if (grantSessionCase(sessionId, id)) granted_case_id = id;
+  } else if (result.match === 'multiple') {
+    offerSessionCases(sessionId, result.candidates.map((row) => row.id));
+  }
+  audit(req.actor, 'agent-case-resolve', 'agent-session', null, `match=${result.match} candidates=${result.candidates.length}`);
+  return res.json({ ...result, ...(granted_case_id === undefined ? {} : { granted_case_id }) });
+});
+
+r.post('/agent-case-select', (req, res) => {
+  const sessionId = sessionIdFromRequest(req) || (typeof req.body?.session_id === 'string' ? req.body.session_id.trim() : '');
+  if (!sessionId) return res.status(400).json({ error: '缺少 session_id', code: 'session_id_invalid' });
+  if (!isGlobalSession(sessionId)) return res.status(403).json({ error: '仅全局会话可选择案件', code: 'session_scope_invalid' });
+  const caseId = Number(req.body?.case_id);
+  if (!Number.isInteger(caseId) || caseId <= 0) return res.status(400).json({ error: 'case_id 非法', code: 'case_id_invalid' });
+  const row = db.prepare("SELECT id FROM cases WHERE id=? AND status='active'").get(caseId);
+  if (!row) return res.status(404).json({ error: '案件不存在或不是 active', code: 'case_not_found' });
+  if (!grantSessionCase(sessionId, caseId)) return res.status(403).json({ error: '案件不在本次服务端候选中', code: 'case_not_offered' });
+  audit(req.actor, 'agent-case-select', 'agent-session', null, `case_id=${caseId}`);
+  return res.json({ granted_case_id: caseId });
 });
 
 // DSH agent 专用 digest：同样按 session 反查绑定 case，buildDigest(caseId) 只
@@ -181,15 +255,24 @@ r.post('/agent-proposals', (req, res) => {
     if (typeof sessionId !== 'string' || !sessionId.trim()) {
       return res.status(400).json({ error: 'agent 直写必须携带 session_id', code: 'session_id_invalid' });
     }
-    const caseId = caseIdForSession(sessionId);
-    if (!caseId) {
-      return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝直写', code: 'session_not_bound' });
+    let caseId;
+    if (isGlobalSession(sessionId)) {
+      const kind = String(b.kind || '');
+      const requiresCase = ['contact', 'event', 'fact', 'deadline'].includes(kind);
+      try { caseId = globalSessionCaseId(sessionId, b.case_id ?? b.payload.case_id, { required: requiresCase }); }
+      catch (error) { return directWriteError(res, error); }
+      if (caseId !== null && !db.prepare("SELECT id FROM cases WHERE id=? AND status='active'").get(caseId)) {
+        return res.status(404).json({ error: '案件不存在或不是 active', code: 'case_not_found' });
+      }
+    } else {
+      caseId = caseIdForSession(sessionId);
+      if (!caseId) return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝直写', code: 'session_not_bound' });
     }
     try {
       const result = runAgentDirectWrite({
         kind: b.kind,
         caseId,
-        payload: b.payload,
+        payload: { ...b.payload, ...(isGlobalSession(sessionId) && caseId !== null ? { case_id: caseId } : {}) },
         actor: req.actor,
         sessionId,
       });
@@ -208,9 +291,16 @@ r.post('/agent-proposals', (req, res) => {
   if (typeof sessionId !== 'string' || !sessionId.trim()) {
     return res.status(400).json({ error: 'agent-proposals 必须携带 session_id', code: 'session_id_invalid' });
   }
-  // 反查而不是信任：body.case_id 从不参与本路由的任何判断，即使带了也直接
+  // 全局会话的软建议必须引用本会话已授予的案件；案件会话则反查而不是信任：body.case_id 从不参与本路由的任何判断，即使带了也直接
   // 丢弃——caseId 只可能来自 supervisor 登记表，查不到就是查不到。
-  const caseId = caseIdForSession(sessionId);
+  let caseId;
+  try {
+    caseId = isGlobalSession(sessionId)
+      ? globalSessionCaseId(sessionId, b.case_id, { required: true })
+      : caseIdForSession(sessionId);
+  } catch (error) {
+    return res.status(error.status || 403).json({ error: error.message, code: error.code || 'case_not_granted' });
+  }
   if (!caseId) {
     return res.status(403).json({ error: 'session 未绑定任何存活 case，拒绝提案', code: 'session_not_bound' });
   }

@@ -15,6 +15,9 @@
 // 与 DSH 子进程的实际存活与否无关——存活性由 supervisor.workers 自己管理，
 // 这里只负责"这个 session 属于哪个 case"这一件事。
 const sessionToCase = new Map();
+const globalSessions = new Set();
+const offeredCases = new Map();
+const grantedCases = new Map();
 
 export function bindSession(sessionId, caseId) {
   if (typeof sessionId !== 'string' || !sessionId) {
@@ -29,6 +32,9 @@ export function bindSession(sessionId, caseId) {
 export function unbindSession(sessionId) {
   if (typeof sessionId !== 'string' || !sessionId) return;
   sessionToCase.delete(sessionId);
+  globalSessions.delete(sessionId);
+  offeredCases.delete(sessionId);
+  grantedCases.delete(sessionId);
 }
 
 // 反查：查不到返回 null，绝不回落到"信任调用方"。
@@ -37,7 +43,46 @@ export function caseIdForSession(sessionId) {
   return sessionToCase.get(sessionId) ?? null;
 }
 
+export function bindGlobalSession(sessionId) {
+  if (typeof sessionId !== 'string' || !sessionId) throw new Error('bindGlobalSession 需要非空字符串 sessionId');
+  sessionToCase.delete(sessionId);
+  globalSessions.add(sessionId);
+  offeredCases.set(sessionId, new Set());
+  grantedCases.set(sessionId, new Set());
+}
+
+export function isGlobalSession(sessionId) {
+  return typeof sessionId === 'string' && globalSessions.has(sessionId);
+}
+
+export function offerSessionCases(sessionId, caseIds) {
+  if (!isGlobalSession(sessionId)) return false;
+  const offered = new Set((Array.isArray(caseIds) ? caseIds : [])
+    .filter((id) => Number.isInteger(Number(id)) && Number(id) > 0)
+    .slice(0, 10).map(Number));
+  offeredCases.set(sessionId, offered);
+  return true;
+}
+
+export function grantSessionCase(sessionId, caseId) {
+  if (!isGlobalSession(sessionId)) return false;
+  const normalized = Number(caseId);
+  if (!Number.isInteger(normalized) || normalized <= 0) return false;
+  const offered = offeredCases.get(sessionId) || new Set();
+  if (!offered.has(normalized)) return false;
+  if (!grantedCases.has(sessionId)) grantedCases.set(sessionId, new Set());
+  grantedCases.get(sessionId).add(normalized);
+  return true;
+}
+
+export function sessionCaseGranted(sessionId, caseId) {
+  return isGlobalSession(sessionId) && (grantedCases.get(sessionId) || new Set()).has(Number(caseId));
+}
+
 // 仅供测试使用：清空整张表，避免多个测试文件的进程内状态互相污染。
 export function _resetSessionRegistryForTest() {
   sessionToCase.clear();
+  globalSessions.clear();
+  offeredCases.clear();
+  grantedCases.clear();
 }
