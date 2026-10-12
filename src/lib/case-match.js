@@ -69,8 +69,12 @@ export function matchCaseByHints({ cases = [], contacts = [], hints = {} } = {})
   const match = active.intersection.size === 1
     ? 'unique'
     : active.union.size === 0 ? 'none' : 'multiple';
+  // A unique intersection is the only authoritative grant target. In that
+  // case do not let an additional broad hint leave unrelated union rows ahead
+  // of the actual intersection member in the returned candidate list.
+  const candidateIds = match === 'unique' ? active.intersection : active.union;
   const candidates = active.rows
-    .filter((row) => active.union.has(Number(row.id)))
+    .filter((row) => candidateIds.has(Number(row.id)))
     .sort((a, b) => String(b.updated_at || '').localeCompare(String(a.updated_at || '')) || Number(b.id) - Number(a.id))
     .slice(0, 10)
     .map((row) => Object.fromEntries(CANDIDATE_FIELDS.map((field) => [field, row[field] ?? ''])));

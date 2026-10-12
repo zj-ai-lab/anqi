@@ -12,7 +12,9 @@ const contacts = [
   { case_id: 3, role: '当事人', name: '王五' },
   { case_id: 1, role: '承办法官', name: '王五' },
 ];
-assert.equal(matchCaseByHints({ cases, contacts, hints: { parties: ['张三'], case_no: '(2099)测 0000 民初 1 号' } }).match, 'unique');
+const unique = matchCaseByHints({ cases, contacts, hints: { parties: ['张三'], case_no: '(2099)测 0000 民初 1 号' } });
+assert.equal(unique.match, 'unique');
+assert.deepEqual(unique.candidates.map((row) => row.id), [1]);
 const conflict = matchCaseByHints({ cases, contacts, hints: { parties: ['张三'], case_no: 'X-5' } });
 assert.equal(conflict.match, 'multiple');
 assert.equal(conflict.conflict, true);
