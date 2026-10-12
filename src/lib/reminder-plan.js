@@ -9,6 +9,7 @@ const DEFAULTS = Object.freeze({
   remind_deadline_time: '07:30',
   remind_task_minutes_before: '30',
 });
+const TERMINAL = new Set(['fired', 'missed', 'unknown']);
 const TIME_RE = /^(?:[01]\d|2[0-3]):[0-5]\d$/u;
 
 export function resolveReminderSettings(rows = []) {
@@ -76,7 +77,7 @@ function caseName(row) { return row.case_name || row.name || '案件'; }
 function hearingTitle(row, dayLabel) {
   const when = row.occurred_time ? `${dayLabel} ${row.occurred_time}` : `${dayLabel} 时间未记`;
   const place = row.location ? ` · ${row.location}` : '';
-  return `${when}开庭 · ${caseName(row)}${place}`;
+  return `${when} 开庭 · ${caseName(row)}${place}`;
 }
 function deadlineTitle(row, days) {
   const when = days === 0 ? '今天到期' : `${days} 天后到期`;
@@ -131,16 +132,16 @@ export function reconcile(desired, existingAutoRows) {
   for (const item of desired) {
     const key = `${item.source_type}:${item.source_id}:${item.tier}`; desiredKeys.add(key);
     const row = byKey.get(key);
-    if (!row || (row.status === 'cancelled' && row.source_fingerprint !== item.source_fingerprint)) { insert.push(item); continue; }
-    if (row.status === 'cancelled') continue;
+    if (!row || (row.status === 'cancelled' && row.source_fingerprint !== item.source_fingerprint)
+      || (TERMINAL.has(row.status) && row.source_fingerprint !== item.source_fingerprint)) { insert.push(item); continue; }
+    if (row.status === 'cancelled' || TERMINAL.has(row.status)) continue;
     if (row.fire_at !== item.fire_at || row.title !== item.title || row.body !== item.body || row.source_fingerprint !== item.source_fingerprint) update.push({ id: row.id, patch: { ...item, version: Number(row.version || 1) + 1 } });
   }
   for (const row of existingAutoRows) {
     const key = `${row.source_type}:${row.source_id}:${row.tier}`;
     if (desiredKeys.has(key) || row.status === 'cancelled' || row.status === 'fired' || row.status === 'missed' || row.status === 'unknown') continue;
-    const reason = row.source_status === 'done' || row.status_source === 'done' ? 'source_done' : row.case_status === 'inactive' ? 'case_inactive' : row.tier_disabled ? 'tier_disabled' : 'source_changed';
+    const reason = row.source_status === 'done' || row.status_source === 'done' ? 'source_done' : (row.case_status && row.case_status !== 'active') ? 'case_inactive' : row.tier_disabled ? 'tier_disabled' : 'source_changed';
     cancel.push({ id: row.id, reason });
   }
   return { insert, update, cancel };
 }
-

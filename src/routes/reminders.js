@@ -11,7 +11,13 @@ function parseLocal(value) {
   try { return beijingToUtcIso(date, time); } catch { return null; }
 }
 function local(iso) { return utcIsoToBeijing(iso); }
-function decorate(row) { return row ? { ...row, fire_at_local: `${local(row.fire_at).date} ${local(row.fire_at).time}` } : row; }
+function decorate(row) {
+  if (!row) return row;
+  const source_summary = row.source_type
+    ? { type: row.source_type, id: row.source_id ?? null }
+    : null;
+  return { ...row, fire_at_local: `${local(row.fire_at).date} ${local(row.fire_at).time}`, source_summary };
+}
 function deliveryView(database, row) {
   const delivery = database.prepare(`SELECT d.*, r.title, r.body, r.case_id, r.fire_at, c.name AS case_name
     FROM reminder_deliveries d JOIN reminders r ON r.id=d.reminder_id LEFT JOIN cases c ON c.id=r.case_id WHERE d.id=?`).get(row.id);

@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events';
-import { db as defaultDb, audit } from '../db.js';
+import { db as defaultDb } from '../db.js';
 import { todayCN } from './dates.js';
 import { planAutoReminders, reconcile, resolveReminderSettings, utcIsoToBeijing } from './reminder-plan.js';
 import { configuredChannels } from './reminder-channels/index.js';
@@ -37,9 +37,7 @@ export function createReminderWorker({ db = defaultDb, pollSeconds = 30, catchup
 
   function recoverSending() {
     tx(db, () => {
-      const rows = db.prepare("SELECT id FROM reminders WHERE status='sending'").all();
       db.prepare("UPDATE reminders SET status='unknown', status_reason='crash_recovery', updated_at=? WHERE status='sending'").run(isoNow(now));
-      for (const row of rows) audit('system', 'reminder-crash-recovery', 'reminder', row.id, 'sending→unknown');
     });
   }
 
@@ -59,13 +57,22 @@ export function createReminderWorker({ db = defaultDb, pollSeconds = 30, catchup
     }
     const sourceMap = new Map();
     for (const [type, list] of Object.entries(filtered)) for (const row of list) sourceMap.set(`${type === 'hearings' ? 'event' : type === 'deadlines' ? 'deadline' : 'task'}:${row.id}`, row);
+    const tierDisabled = (tier) => {
+      if (settings.remind_enabled === 'false') return true;
+      if (tier === 'hearing_eve') return settings.remind_hearing_eve_time === '';
+      if (tier === 'hearing_day') return settings.remind_hearing_day_time === '';
+      if (tier === 'deadline_before') return settings.remind_deadline_days_before === '';
+      if (tier === 'deadline_day') return settings.remind_deadline_time === '';
+      if (tier === 'task_before') return settings.remind_task_minutes_before === '';
+      return false;
+    };
     const existing = [...latest.values()].map((row) => {
       let source = sourceMap.get(`${row.source_type}:${row.source_id}`);
       if (!source && row.source_id != null) {
         const table = row.source_type === 'event' ? 'events' : row.source_type === 'deadline' ? 'deadlines' : 'tasks';
         source = db.prepare(`SELECT x.*, c.status AS case_status FROM ${table} x LEFT JOIN cases c ON c.id=x.case_id WHERE x.id=?`).get(row.source_id);
       }
-      return { ...row, source_status: source?.status || '', case_status: source?.case_status || (source ? 'active' : ''), tier_disabled: settings[`remind_${row.tier.replace('hearing_', 'hearing_').replace('deadline_', 'deadline_').replace('task_', 'task_')}_time`] === '' };
+      return { ...row, source_status: source?.status || '', case_status: source?.case_status || (source ? 'active' : ''), tier_disabled: tierDisabled(row.tier) };
     });
     const plan = reconcile(desired, existing);
     tx(db, () => {
@@ -116,10 +123,21 @@ export function createReminderWorker({ db = defaultDb, pollSeconds = 30, catchup
             const stamp = isoNow(now);
             db.prepare('UPDATE reminder_deliveries SET status=?,detail=?,updated_at=? WHERE id=? AND reminder_id=? AND reminder_version=?')
               .run(result.status, String(result.detail || ''), stamp, item.deliveryId, item.row.id, item.row.version);
-            db.prepare("UPDATE reminders SET status='fired',fired_at=?,updated_at=? WHERE id=? AND version=? AND status='sending'").run(stamp, stamp, item.row.id, item.row.version);
+            // The reminder is finalized after the whole batch below, once every
+            // configured channel has returned.  Keeping it sending during this
+            // loop prevents a multi-channel plugin from exposing a partial fired
+            // state to the next tick.
             if (result.status === 'queued') events.emit('queued', viewDelivery(db, item.deliveryId));
           });
         }
+        tx(db, () => {
+          const stamp = isoNow(now);
+          const ids = [...new Set(due.map((item) => item.row.id))];
+          for (const id of ids) {
+            const row = db.prepare("SELECT id,version FROM reminders WHERE id=? AND status='sending'").get(id);
+            if (row) db.prepare("UPDATE reminders SET status='fired',fired_at=?,updated_at=? WHERE id=? AND version=? AND status='sending'").run(stamp, stamp, row.id, row.version);
+          }
+        });
         tx(db, () => {
           const expiry = new Date(new Date(nowIso).getTime() - 24 * 3600_000).toISOString();
           db.prepare("UPDATE reminder_deliveries SET status='expired',updated_at=? WHERE status='queued' AND attempted_at<?").run(nowIso, expiry);
