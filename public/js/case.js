@@ -2303,6 +2303,7 @@ async function load() {
   await Promise.all([loadFiles(), loadFileCandidates()]);
 }
 
+const REMINDER_STATUS_LABEL = { scheduled: '待发', sending: '发送中', fired: '已发', cancelled: '已取消', missed: '错过', unknown: '结果不明' };
 async function loadReminders() {
   const list = document.getElementById('case-reminder-list');
   if (!list) return;
@@ -2348,7 +2349,7 @@ async function loadReminders() {
       });
       actions.append(cancel);
     }
-    return el('div', { class: 'reminder-row' }, el('span', {}, row.origin === 'auto' ? '自动 · ' : '人工 · ', row.title), el('span', { class: 'mono' }, row.fire_at_local), el('span', {}, row.status === 'scheduled' ? '待发' : row.status), actions);
+    return el('div', { class: 'reminder-row' }, el('span', {}, row.origin === 'auto' ? '自动 · ' : '人工 · ', row.title), el('span', { class: 'mono' }, row.fire_at_local), el('span', {}, REMINDER_STATUS_LABEL[row.status] || row.status), actions);
   };
   const scheduledRows = rows.filter((row) => row.status === 'scheduled' || row.status === 'sending' || row.status === 'fired');
   const visible = scheduledRows.slice(0, 5);
