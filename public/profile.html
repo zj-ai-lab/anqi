@@ -85,6 +85,24 @@
       </div>
     </div>
 
+    <!-- ═════ 提醒（确定性 worker + 应用内通知） ═════ -->
+    <div class="panel" aria-label="提醒">
+      <div class="p-head"><h2 class="p-title">提醒</h2><span class="p-meta">应用内通知</span></div>
+      <div class="panel-body">
+        <label class="settings-row"><div><div class="label">启用提醒</div><div class="desc">开庭、确认期限和带截止时刻的待办按档位自动生成</div></div><input type="checkbox" id="remind-enabled" aria-label="启用提醒"></label>
+        <div class="formgrid">
+          <label class="f">开庭前一天<input id="remind-hearing-eve-time" type="time"></label>
+          <label class="f">开庭当天<input id="remind-hearing-day-time" type="time"></label>
+          <label class="f">期限提前天数<input id="remind-deadline-days-before" type="number" min="0" max="30"></label>
+          <label class="f">期限提醒时刻<input id="remind-deadline-time" type="time"></label>
+          <label class="f">待办提前分钟<input id="remind-task-minutes-before" type="number" min="0" max="1440"></label>
+        </div>
+        <div class="formrow"><button class="btn" type="button" id="remind-browser-enable">开启浏览器通知</button><span id="remind-browser-permission" class="page-sub">权限：读取中</span></div>
+        <div class="page-sub" id="remind-worker-status">worker 状态：读取中</div>
+        <div class="formrow"><button class="btn primary" type="button" id="remind-save">保存提醒设置</button></div>
+      </div>
+    </div>
+
     <!-- ═════ AI 助理（DSH sidecar：案件页对话式助理，默认关闭） ═════ -->
     <div class="panel" aria-label="AI 助理">
       <div class="p-head">

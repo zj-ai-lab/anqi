@@ -74,10 +74,37 @@ matchMedia('(prefers-color-scheme: dark)').addEventListener('change', paintNow);
 
 /* ── 个人设置：加载回填 → 保存落库 ──
    六个纯展示型抬头字段，白名单在 src/routes/settings.js（服务端才是权威门）。
-   通知偏好面板已随 014 一并删除：那两个阈值（3/7 天）硬编码在前后端 8 处以上，
-   做成可配置是另一件事，留着一块全禁用的假控件只会让人以为能改。 */
+   提醒偏好由 /api/settings 真保存，并由 worker 在每个 tick 读取生效。 */
 const SETTING_KEYS = ['name', 'license_no', 'firm', 'phone', 'email', 'address'];
 const saveBtn = $('set-save');
+
+/* ── 提醒设置：控件与服务端 remind_* 白名单一一对应 ── */
+const remindSave = $('remind-save');
+const remindFields = {
+  remind_enabled: $('remind-enabled'),
+  remind_hearing_eve_time: $('remind-hearing-eve-time'),
+  remind_hearing_day_time: $('remind-hearing-day-time'),
+  remind_deadline_days_before: $('remind-deadline-days-before'),
+  remind_deadline_time: $('remind-deadline-time'),
+  remind_task_minutes_before: $('remind-task-minutes-before'),
+};
+const permissionLabel = $('remind-browser-permission');
+function paintBrowserPermission() {
+  permissionLabel.textContent = !('Notification' in window) ? '本端不支持原生通知，页内铃铛仍可用' : `权限：${Notification.permission}`;
+}
+const browserEnable = $('remind-browser-enable');
+browserEnable?.addEventListener('click', async () => { if ('Notification' in window) await Notification.requestPermission(); paintBrowserPermission(); });
+paintBrowserPermission();
+if (remindSave) {
+  api('/settings').then((s) => {
+    for (const [key, control] of Object.entries(remindFields)) if (control) control.type === 'checkbox' ? (control.checked = s[key] !== 'false') : (control.value = s[key] ?? '');
+  }).catch(() => {});
+  api('/notifications/status').then((s) => { const w = s.worker || {}; $('remind-worker-status').textContent = `worker：${w.running ? '运行中' : '已停'} · 最近心跳 ${w.last_tick_at || '—'} · 下一提醒 ${w.next_fire_at || '—'} · 待看 ${w.queued || 0} · 错过 ${w.missed || 0} · 失败 ${w.failed || 0}`; }).catch(() => {});
+  remindSave.addEventListener('click', async () => {
+    remindSave.disabled = true;
+    try { const body = {}; for (const [key, control] of Object.entries(remindFields)) body[key] = control.type === 'checkbox' ? control.checked : control.value; await api('/settings', { method: 'PUT', body }); toast('提醒设置已保存'); } catch (e) { toast('保存失败：' + (e.message || e)); } finally { remindSave.disabled = false; }
+  });
+}
 
 if (saveBtn) {
   api('/settings').then((s) => {

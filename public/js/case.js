@@ -2299,8 +2299,25 @@ if (drop) {
 async function load() {
   [bundle, people] = await Promise.all([api(`/cases/${id}`), api('/people')]);
   render();
-  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker(), loadChanges()]);
+  await Promise.all([loadFees(), loadShares(), loadWorkspacePicker(), loadChanges(), loadReminders()]);
   await Promise.all([loadFiles(), loadFileCandidates()]);
+}
+
+async function loadReminders() {
+  const list = document.getElementById('case-reminder-list');
+  if (!list) return;
+  const rows = await api(`/reminders?case_id=${id}&limit=100`);
+  const visible = rows.filter((row) => row.status === 'scheduled' || row.status === 'sending' || row.status === 'fired').slice(0, 5);
+  list.replaceChildren(...(visible.length ? visible : [el('div', { class: 'muted' }, '暂无提醒')]).map((row) => {
+    if (!row.id) return row;
+    const actions = row.status === 'scheduled' ? el('button', { class: 'btn ghost small', type: 'button' }, '取消') : '';
+    actions?.addEventListener?.('click', async () => { await api(`/reminders/${row.id}/cancel`, { method: 'POST', body: { expected_version: row.version } }); await loadReminders(); });
+    return el('div', { class: 'reminder-row' }, el('span', {}, row.origin === 'auto' ? '自动 · ' : '人工 · ', row.title), el('span', { class: 'mono' }, row.fire_at_local), el('span', {}, row.status === 'scheduled' ? '待发' : row.status), actions);
+  }));
+  const form = document.getElementById('case-reminder-form');
+  if (form && !form.dataset.bound) {
+    form.dataset.bound = '1'; form.addEventListener('submit', async (event) => { event.preventDefault(); const data = new FormData(form); await api('/reminders', { method: 'POST', body: { case_id: Number(id), title: data.get('title'), fire_at_local: `${data.get('date')} ${data.get('time')}` } }); form.reset(); await loadReminders(); });
+  }
 }
 
 document.addEventListener('anjian:changed', load);
