@@ -270,7 +270,7 @@ docker start anqi
 
 **默认关闭**。不启用时，AI 助理相关的依赖只以文件形式存在于镜像/安装目录中，不会被加载、不占用内存，也不会发起任何网络请求；对绝大多数只用手动案件管理的部署没有任何影响。
 
-开启方式：在设置页把「AI 助理」开关打开，选择能力档位，并按需填写 provider / baseURL / model。默认「案件项目」档只开放本案文件、skill/todo/ask-user 与案齐领域工具；「完整 DSH」档另行开放 shell、后台 jobs、goal、subagent、workflow、Ralph 和 web search。完整档的 shell 进程可能读取当前 OS 用户可读的案件夹外路径，联网查询会把内容发给相应服务，启用前应按执业保密要求判断。API key 的值有两种来源，取值时环境变量优先：
+开启方式：在设置页把「AI 助理」开关打开，选择能力档位，并按需填写 provider / baseURL / model。默认「案件项目」档只开放本案文件、skill/todo/ask-user 与案齐领域工具；「完整 DSH」档另行开放 shell、后台 jobs、goal、subagent、workflow、Ralph 和 web search。完整档的 shell 进程可能读取当前 OS 用户可读的案件夹外路径，联网查询会把内容发给相应服务，启用前应按执业保密要求判断。服务器部署要开完整档，宿主必须先满足沙箱前置条件，否则整档会在启动前被拒绝，详见下方「[在服务器上开启「完整 DSH」档](#在服务器上开启完整-dsh档)」。API key 的值有两种来源，取值时环境变量优先：
 
 - **环境变量（`apiKeyEnv`，兼容既有部署）**：设置页里只填一个环境变量**名**，真正的 key 值必须由部署者在部署环境里单独设置，不写进设置页、不进数据库。默认 provider 是 `deepseek-official` 时，常见做法是把 `apiKeyEnv` 填成 `DEEPSEEK_API_KEY`，并在部署环境里配置该变量的真实 key。
 - **界面直接填（推荐，设置页「用户中心 · AI 助理」直接填写）**：选好供应商后 baseURL 会自动带出，填一次 key 就能点「拉取可用模型」从下拉框选模型，不需要碰任何环境变量。key 落库前用 AES-256-GCM 静态加密，解密用的主密钥由 `ANJIAN_SECRET` 环境变量派生（若配置），否则自动在数据目录下生成 `secret.key` 文件（首次生成、权限 0600）。**这把主密钥本身就是敏感数据**：`secret.key` 丢失或损坏，或 `ANJIAN_SECRET` 变更，都会让库里已加密存储的 key 永久解不开（不报错，只是「未配置」）——见上方「数据、案件夹与备份」；换主机/换容器卷时，`secret.key` 必须和 `anjian.db` 一起搬过去，`ANJIAN_SECRET` 则必须和其它部署环境变量一起搬过去。
@@ -286,6 +286,106 @@ docker start anqi
 镜像体积代价：Docker 镜像因此增大约 192MB（275MB → 467MB，x86_64 实测，DeepSeek Agent SDK 及其原生模块的预编译产物），无论是否启用都会打进同一份镜像——这是为了让「先部署、后按需开启」不需要重新拉镜像；如果确定完全不需要这项功能，可以自行裁剪 Dockerfile 中对应的一层。
 
 已知边界：发行 workflow 的冒烟测试只对 `linux/amd64` 镜像跑上述启动/回归断言，`linux/arm64` 那条腿（用户在树莓派等 arm64 设备上拉到的镜像）目前没有等价门禁覆盖——lock 文件里 AI 助理依赖树的 `linux-arm64` 预编译产物齐全，理论上能装、能跑，但未经真机验证；arm64 平台部署 AI 助理前建议自行按上面这套步骤跑一次冒烟。
+
+## 在服务器上开启「完整 DSH」档
+
+> 只有服务器（Docker / Node）部署需要读本节。macOS 桌面版的命令跑在系统自带的 Seatbelt 沙箱里，不需要任何额外配置。
+
+「完整 DSH」档会给助理放开 shell 命令和后台任务。为保证这些命令读不到其他案件、正式数据库和容器里的其他路径，案齐在**读取 API key、打开案件、启动助理之前**先检测宿主能否提供一个「完全强制执行」的本地沙箱。检测不通过就整档拒绝启动（fail-closed，绝不裸跑命令），这时只能使用「案件项目」档。下面两种后端满足其一即可：
+
+- **宿主内核的 Landlock**：推荐，不需要改容器权限；
+- **容器内可用的 bubblewrap**：需要放宽容器权限，有额外风险。
+
+### 第一步：自检当前环境
+
+用你准备部署的同一个镜像跑一次检测，把 `<version>` 换成实际版本：
+
+```sh
+docker run --rm --network none -e DB_PATH=/tmp/probe.db --entrypoint node \
+  ghcr.io/zj-ai-lab/anqi:<version> --input-type=module \
+  -e 'const m = await import("/app/src/agent/supervisor.js"); console.log(JSON.stringify(m.probeHostBashSandbox()));'
+```
+
+`DB_PATH=/tmp/probe.db` 让检测在容器临时目录里用一个空库，容器退出即删除，不会碰到你的真实数据。
+
+- 输出含 `"available":true`：按标准参数启动就能开完整档，本节后面不用看；`backend` 字段会告诉你选中的是 `landlock` 还是 `bwrap`。
+- 输出含 `"available":false`：按下面路线一或路线二处理，处理完再跑一次这条检测。
+
+这条检测用的参数要和正式启动一致：正式启动若加了下文的 `--cap-add`、`--security-opt` 或 `--user`，检测时也要加上，否则结果不代表实际情况。
+
+### 路线一：使用启用 Landlock 的宿主内核（推荐）
+
+Landlock 是 Linux 内核自带的文件访问控制。只要宿主内核满足下面两个条件，**容器保持 Docker 默认参数即可开完整档**，不需要额外 capability，也不需要改 seccomp，是攻击面最小的方式。2.9.4 起支持此路线；2.9.2 与 2.9.3 存在误判，会把这类宿主当作没有沙箱。
+
+1. **内核足够新**：案齐只接受 Landlock「完全强制执行」，需要 Landlock ABI 5，对应主线 Linux 6.10 及以上。更老的内核虽然有 Landlock，但只能部分生效，案齐会拒绝启动。Ubuntu 22.04、Debian 12、Ubuntu 24.04 的原版内核都低于 6.10；Debian 13、Ubuntu 24.04 的 HWE 新内核等在版本上可以满足。
+2. **Landlock 已启用**：内核编入了不等于启用了。
+
+在宿主机上确认这两点：
+
+```sh
+uname -r
+cat /sys/kernel/security/lsm
+```
+
+第一条看内核版本，第二条的输出里有 `landlock` 即为启用。版本足够但列表里没有 `landlock`，一般是启动参数 `lsm=` 没包含它，按发行版文档加入后重启。发行版可能把新版 Landlock 移植到旧版本号的内核上，所以最终以第一步的自检结果为准。OpenWrt 等裁剪过的内核可能根本没有编入 Landlock，只能走路线二，或者维持「案件项目」档。
+
+### 路线二：放宽容器权限，让 bubblewrap 可用
+
+宿主内核达不到路线一的条件时，可以让容器里的 bubblewrap 自己为每条命令建立命名空间沙箱。Docker 默认不允许普通容器创建命名空间，需要额外授权。
+
+> [!WARNING]
+> 这两种配方都会扩大**整个案齐容器**的权限，不只是助理。一旦案齐服务本身被攻破，攻击者突破容器的难度会降低；宿主没有 AppArmor / SELinux 兜底时更明显。请按执业保密要求和主机安全状况自行权衡；拿不准时，维持「案件项目」档是更稳妥的选择。
+
+两种配方都实测通过：本案目录可读写，读写其他案件、写正式数据库均被拦截。它们共用同一份 seccomp 配置：在 Docker 当前默认规则的基础上，只多放行 bubblewrap 建沙箱需要的 6 个系统调用。
+
+```sh
+curl -fsSL -o anqi-seccomp.json \
+  https://raw.githubusercontent.com/moby/profiles/seccomp/v0.2.4/seccomp/default.json
+python3 - <<'PY'
+import json
+p = json.load(open('anqi-seccomp.json'))
+p['syscalls'].append({
+    "names": ["unshare", "clone", "mount", "umount2", "pivot_root", "setns"],
+    "action": "SCMP_ACT_ALLOW",
+    "comment": "anqi: allow bubblewrap to build its per-command sandbox",
+})
+json.dump(p, open('anqi-seccomp.json', 'w'), indent=2)
+PY
+```
+
+不要用 `--security-opt seccomp=unconfined` 图省事：它会关掉全部系统调用过滤，比上面这份窄名单危险得多。
+
+**配方 A：`SYS_ADMIN` + 收窄的 seccomp（改动最小）**
+
+在标准启动命令里加两个参数，产品本身不用改：
+
+```sh
+  --cap-add SYS_ADMIN \
+  --security-opt seccomp="$PWD/anqi-seccomp.json" \
+```
+
+代价是整个容器拿到 `SYS_ADMIN`，这是 Linux 里范围最广的一项 capability。只加 `--cap-add SYS_ADMIN`、仍用 Docker 默认 seccomp 是不够的：默认规则会拦下 `pivot_root`，bubblewrap 依然建不起沙箱。
+
+**配方 B：非 root + 收窄的 seccomp（不需要 `SYS_ADMIN`）**
+
+用同一份 `anqi-seccomp.json`，改为：
+
+```sh
+  --user 1000:1000 \
+  --security-opt seccomp="$PWD/anqi-seccomp.json" \
+  --security-opt systempaths=unconfined \
+```
+
+这条不给 `SYS_ADMIN`，容器权限比配方 A 小，但有两项额外工作和代价：
+
+- 案齐改以非 root 用户运行，你要把宿主上 `data/`、案件夹等挂载目录的属主改成对应 uid，否则案齐没有写权限、无法启动；
+- `systempaths=unconfined` 会取消 Docker 对 `/proc` 等系统路径的默认遮蔽，也是一项放宽。
+
+配方 B 目前只验证到沙箱这一层（自检通过、隔离成立）。官方镜像默认以 root 运行，案齐整体改以非 root 运行（包括助理会话目录、DSH home 下的图片附件目录等）尚未做端到端验证，采用前请先用测试数据完整冒烟一遍。
+
+### 第二步：开启后实际验证隔离
+
+无论走哪条路线，开启完整档后都要实际验证一次。在设置页切到「完整 DSH」档，打开某个案件的助理，让它用命令读取另一个案件目录里的文件，以及正式数据库文件。两者都必须失败，报 `Permission denied` 或「文件不存在」。如果能读到内容，说明沙箱没有生效，应立即切回「案件项目」档并检查上面的配置。
 
 ## macOS 桌面版
 
