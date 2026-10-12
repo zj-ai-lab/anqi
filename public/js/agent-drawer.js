@@ -943,8 +943,9 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
         const snapshot = await api(`${agentPath}/start`, { method: 'POST' });
         applySnapshot(snapshot);
       }
-      const attachments = await uploadDraftImages();
-      const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
+        const attachments = await uploadDraftImages();
+        const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
+      // image contract: /agent/prompt` carries attachmentIds only; base64 stays in admission upload.
       await api(`${agentPath}/prompt`, { method: 'POST', body: scope === 'global' ? { text } : { text, attachmentIds } });
       appendUser(text, attachments);
       textarea.value = '';
