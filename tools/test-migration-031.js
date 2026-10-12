@@ -18,10 +18,13 @@ try {
       assert.equal(db.prepare('SELECT created_by FROM worklog').get().created_by, 'manual');
     }
     const caseId = db.prepare("INSERT INTO cases (name) VALUES ('李四案')").run().lastInsertRowid;
-    db.prepare("INSERT INTO worklog (case_id,worked_on,content,created_by) VALUES (?,?,?,?)").run(caseId, '2099-01-02', 'AI 日志', 'ai');
+    const beforeInsert = db.prepare("SELECT COUNT(*) AS n FROM change_log WHERE entity='worklog' AND action='insert'").get().n;
+    const inserted = db.prepare("INSERT INTO worklog (case_id,worked_on,content,created_by) VALUES (?,?,?,?)").run(caseId, '2099-01-02', 'AI 日志', 'ai');
+    const afterInsert = db.prepare("SELECT COUNT(*) AS n FROM change_log WHERE entity='worklog' AND action='insert'").get().n;
+    assert.equal(afterInsert - beforeInsert, 1);
     assert.throws(() => db.prepare("INSERT INTO worklog (case_id,worked_on,content,created_by) VALUES (?,?,?,?)").run(caseId, '2099-01-03', '坏来源', 'llm'), /CHECK/);
     const before = db.prepare("SELECT COUNT(*) AS n FROM change_log WHERE entity='worklog'").get().n;
-    const id = db.prepare('SELECT max(id) AS id FROM worklog').get().id;
+    const id = inserted.lastInsertRowid;
     db.prepare('DELETE FROM worklog WHERE id=?').run(id);
     const after = db.prepare("SELECT COUNT(*) AS n FROM change_log WHERE entity='worklog'").get().n;
     assert.equal(after - before, 1);
