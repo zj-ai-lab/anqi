@@ -168,6 +168,24 @@ CREATE TABLE audit_log (
 );
 ```
 
+提醒派生表（migration 030）不进入 `change_log`：
+
+| 表 | 关键字段 | 语义 |
+|---|---|---|
+| `reminders` | `origin/source_type/source_id/tier` | 自动行身份与人工行来源；`fire_at` 为 UTC ISO；`version/status/status_reason` 支持对账和乐观并发 |
+| `reminder_deliveries` | `reminder_id/reminder_version/channel/delivery_key` | 每个提醒版本、渠道各一条投递；`delivery_key` UNIQUE 防止重复领取，`queued/shown/expired/sent/failed/unknown` 记录渠道结果 |
+
+提醒设置由 `/api/settings` 白名单保存，缺省值由 `resolveReminderSettings()` 补齐：
+
+| 键 | 默认值 | 空值语义 |
+|---|---:|---|
+| `remind_enabled` | `true` | — |
+| `remind_hearing_eve_time` | `18:00` | 关闭前一天开庭档 |
+| `remind_hearing_day_time` | `07:30` | 关闭当天开庭档 |
+| `remind_deadline_days_before` | `3` | 关闭提前期限档 |
+| `remind_deadline_time` | `07:30` | 关闭当天期限档 |
+| `remind_task_minutes_before` | `30` | 关闭待办档 |
+
 **contacts（004）**：案件联系人（当事人/对方/承办法官/法官助理/书记员/对方律师/合作律师），带电话/身份证号/单位/备注——敏感层级最高的表。**接口层硬边界：contacts 只出 `/api`（人面），永不进 `/internal`（自动化面）任何响应**（`internal.js` 有防回归注释）；audit 只记角色+姓名不落号码。
 
 **合作对象通讯录与案件参与人（020）**：`people` 是跨案件的轻量通讯录，只保存姓名、电话、单位和备注；`case_participants` 把通讯录对象加入具体案件，并在案件维度保存角色和备注。案件分成约定与已发生台账分别用可空 `person_id` 关联 `people`：选了本案参与人时以通讯录对象为身份主键，同时保留 `counterpart` 作为历史可读姓名；临时填写对象仍可只保存姓名，不强迫建立通讯录记录。020 只把存量 `contacts` 中的合作律师/对方律师回填到通讯录和案件参与人，不改写既有分成金额或约定身份。
@@ -469,7 +487,27 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 规划器每个 worker tick 对全部来源完整对账，以 `(source_type,source_id,tier)` 为身份。来源指纹变化时原地更新并递增 version；来源消失、完成、案件关闭或档位关闭时取消并写原因。用户取消的自动行在指纹不变时保持取消，指纹变化才重新建 scheduled 行。人工提醒创建即确认，修改/取消必须带 `expected_version`，sending 中或终态行不可改。
 
-`reminders` 状态为 `scheduled → sending → fired`，也可进入 `cancelled`、`missed(window_expired)`、`unknown(crash_recovery)`；`reminder_deliveries` 状态为 `queued → shown|expired` 或 `sent|failed|unknown`。到点领取在短事务中最多 50 条，事务提交后调用渠道；残留 sending 启动时置 unknown，不自动重发。超过 24 小时未 ack 的 queued delivery 置 expired。
+`reminders` 状态如下：
+
+| 状态 | 进入条件 |
+|---|---|
+| `scheduled` | 对账后等待到点，或人工创建/改期 |
+| `sending` | tick 在短事务中领取，最多 50 条 |
+| `fired` | 所有配置渠道都返回终态或 `queued` |
+| `cancelled` | 用户取消，或来源完成、案件关闭、来源变化、档位/总开关关闭 |
+| `missed` | 超过 catch-up 窗口，原因 `window_expired` |
+| `unknown` | 服务启动恢复残留 `sending`，原因 `crash_recovery`，不自动重发 |
+
+`reminder_deliveries` 状态如下：
+
+| 状态 | 进入条件 |
+|---|---|
+| `queued` | 渠道已领取；inapp 等待客户端显示 |
+| `shown` | 客户端 ack，幂等 |
+| `expired` | queued 超过 24 小时未 ack |
+| `sent` / `failed` / `unknown` | 其他渠道的终态或不确定结果 |
+
+到点领取在短事务中最多 50 条，事务提交后调用渠道；残留 sending 启动时置 unknown，不自动重发。超过 24 小时未 ack 的 queued delivery 置 expired。
 
 渠道插件注册表导出 `id / label / configured(settings) / deliver(reminder, delivery, ctx)`；2.10 只实现 `inapp`，deliver 不联网而返回 queued。worker 通过进程内事件广播给 SSE；客户端连接时补发 24 小时内 queued，ack 后变 shown。网页与 macOS Electron 使用 Web Notification API，Android WebView 只显示页内铃铛；Web Push、Service Worker 和企业微信/飞书/钉钉留到后续版本。提醒正文只含案件名、事项标题、时间、开庭地点，不含联系人、金额或案件文件。
 
