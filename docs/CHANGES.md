@@ -141,6 +141,15 @@
 
 ---
 
+## 未发布 — Linux 服务器 Landlock 沙箱探测修复
+
+**状态：PR 待合并 `main`。**
+
+- 修复 2.9.2 引入的回归：DSH 0.1.5 起 Landlock 启动器随 `@deepseek-ai/node-addon-system-<platform>-<arch>` 分发，而 supervisor 的启动前探针仍指向已撤掉的 `node-addon-landlock-run-*`，导致宿主内核启用 Landlock、容器内 bwrap 不可用的 Linux 服务器（Docker 默认参数下常见）选择「完整 DSH」档时被误判为没有沙箱、整档拒绝启动。方向是 fail-closed，不会裸跑命令。
+- 探针改按上游 `launcherPath()` 同一规则从 runtime 根解析平台包；`tools/test-agent-sandbox-boundary.js` 新增结构门禁，对照上游包名规则、校验 runtime lockfile 含 Linux x64/arm64 平台包，Linux 宿主上再校验启动器真实存在。
+- 在启用 Landlock 的 Ubuntu 24.04 + Docker 28（AppArmor 限制无特权 userns，bwrap 不可用）上实测：已发布 2.9.3 镜像复现误拒；修复后镜像默认参数即选中 Landlock，完整档启动、bash 在本案读写正常，读写他案与正式库均被拒绝。
+- README 改正：服务器不具备沙箱条件时完整档会在启动前被拒绝，而不是“仅禁用命令、其余能力不受影响”。
+
 ## 未发布 — AI 助理图片输入
 
 **状态：开发分支 `feat/agent-image`，尚未合并 `main`。**

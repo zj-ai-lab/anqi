@@ -44,6 +44,7 @@ try {
   const {
     AGENT_BASH_SANDBOX_UNAVAILABLE,
     AgentSupervisor,
+    landlockLauncherPath,
     probeHostBashSandbox,
   } = await import('../src/agent/supervisor.js');
   const { AGENT_SETTINGS_KEYS } = await import('../src/agent/config.js');
@@ -69,19 +70,61 @@ try {
     },
   });
   assert.deepEqual(bwrapCapability, { available: true, backend: 'bwrap', enforcement: 'full' });
+  const fixtureLauncher = '/fixture/runtime/node-addon-system-linux-x64/bin/landlock-run';
+  const probedPrograms = [];
   const landlockCapability = probeHostBashSandbox({
     platform: 'linux',
     runtimeDir: '/fixture/runtime',
+    landlockLauncherFn: () => fixtureLauncher,
     spawnSyncFn(program) {
+      probedPrograms.push(program);
       return program === 'bwrap'
         ? { status: 1, stdout: '' }
         : { status: 0, stdout: 'landlock-run: fully enforced\n' };
     },
   });
   assert.deepEqual(landlockCapability, { available: true, backend: 'landlock', enforcement: 'full' });
+  assert.deepEqual(probedPrograms, ['bwrap', fixtureLauncher], 'Landlock 探针必须执行定位到的平台包启动器');
+  const missingLauncher = probeHostBashSandbox({
+    platform: 'linux',
+    runtimeDir: '/fixture/runtime',
+    spawnSyncFn(program) {
+      return program === 'bwrap' ? { status: 1, stdout: '' } : { status: 0, stdout: 'landlock-run: fully enforced\n' };
+    },
+  });
+  assert.equal(missingLauncher.available, false, '平台包解析不到时 Landlock 档必须判为不可用');
+
+  // 结构门禁：定位规则必须与上游 node-addon-system 的 launcherPath() 一致（上游
+  // 改名会在这里失败），且 Docker 镜像依赖的 Linux 两个架构平台包确实在
+  // runtime lockfile 里；Linux 宿主上再核验启动器文件真实存在。2.9.2 曾因探针
+  // 仍指向已撤掉的 node-addon-landlock-run-* 而让 Landlock 主机误拒 full 档。
+  const { launcherPath: upstreamLauncherPath } = await import(
+    '../src/agent/runtime/node_modules/@deepseek-ai/node-addon-system/lib/index.js'
+  );
+  const resolvedSpecs = [];
+  const fakeResolve = (specifier) => {
+    resolvedSpecs.push(specifier);
+    return path.join('/fixture/pkgs', specifier);
+  };
+  assert.equal(landlockLauncherPath({ resolvePackageJson: fakeResolve }), upstreamLauncherPath(fakeResolve));
+  assert.equal(resolvedSpecs.length, 2);
+  assert.equal(resolvedSpecs[0], resolvedSpecs[1], 'Landlock 平台包名必须与上游一致');
+  const runtimeLock = JSON.parse(fs.readFileSync(path.join(ROOT, 'src/agent/runtime/package-lock.json'), 'utf8'));
+  for (const arch of ['x64', 'arm64']) {
+    const launcher = landlockLauncherPath({
+      platform: 'linux', arch, resolvePackageJson: (specifier) => path.join('node_modules', specifier),
+    });
+    const lockKey = path.dirname(path.dirname(launcher)).split(path.sep).join('/');
+    assert.ok(runtimeLock.packages[lockKey]?.integrity, `runtime lockfile 缺少 ${lockKey}`);
+  }
+  if (process.platform === 'linux') {
+    assert.ok(fs.existsSync(landlockLauncherPath()), 'Linux 宿主上 Landlock 启动器必须真实存在');
+  }
+
   const unavailableCapability = probeHostBashSandbox({
     platform: 'linux',
     runtimeDir: '/fixture/runtime',
+    landlockLauncherFn: () => fixtureLauncher,
     spawnSyncFn(program) {
       return program === 'bwrap'
         ? { status: 1, stdout: '' }

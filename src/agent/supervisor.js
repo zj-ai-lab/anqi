@@ -49,6 +49,7 @@ import {
   rmSync,
   symlinkSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
@@ -116,11 +117,27 @@ const BWRAP_PROBE_ARGS = Object.freeze([
   '--', 'true',
 ]);
 
+// Landlock 启动器随 DSH 闭包里的 @deepseek-ai/node-addon-system-<platform>-<arch>
+// 分发（0.1.5 起；此前是 node-addon-landlock-run-*）。定位规则照抄上游
+// node-addon-system 的 launcherPath()：从 runtime 根按 Node 解析平台包的
+// package.json，取其 bin/landlock-run；解析不到即抛错，由探针归为不可用。
+// tools/test-agent-sandbox-boundary.js 对照上游规则与 lockfile 机械核验。
+export function landlockLauncherPath({
+  platform = process.platform,
+  arch = process.arch,
+  runtimeDir = RUNTIME_DIR,
+  resolvePackageJson = createRequire(path.join(runtimeDir, 'package.json')).resolve,
+} = {}) {
+  const platformPackage = `@deepseek-ai/node-addon-system-${platform}-${arch}`;
+  return path.join(path.dirname(resolvePackageJson(`${platformPackage}/package.json`)), 'bin', 'landlock-run');
+}
+
 export function probeHostBashSandbox({
   platform = process.platform,
   arch = process.arch,
   runtimeDir = RUNTIME_DIR,
   spawnSyncFn = spawnSync,
+  landlockLauncherFn = landlockLauncherPath,
   timeoutMs = 5_000,
 } = {}) {
   if (platform === 'darwin') {
@@ -153,15 +170,8 @@ export function probeHostBashSandbox({
     // 缺二进制、spawn 拒绝、超时都只表示这一档不可用，继续试 Landlock。
   }
 
-  const landlockLauncher = path.join(
-    runtimeDir,
-    'node_modules',
-    '@deepseek-ai',
-    `node-addon-landlock-run-${platform}-${arch}`,
-    'bin',
-    'landlock-run',
-  );
   try {
+    const landlockLauncher = landlockLauncherFn({ platform, arch, runtimeDir });
     const landlock = spawnSyncFn(landlockLauncher, ['--probe'], {
       timeout: timeoutMs,
       encoding: 'utf8',
