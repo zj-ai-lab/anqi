@@ -10,7 +10,7 @@ const file = path.join(dir, 'test.db');
 const db = new Database(file);
 db.pragma('foreign_keys = ON');
 runMigrations(db);
-assert.equal(db.pragma('user_version', { simple: true }), 30);
+assert.ok(db.pragma('user_version', { simple: true }) >= 30, 'migration 030 remains applied before later migrations');
 for (const table of ['reminders', 'reminder_deliveries']) {
   assert.ok(db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(table));
 }
