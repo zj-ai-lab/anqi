@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.9.4** | 2026-10-12 | 修复 2.9.2 起启用 Landlock 的 Linux 服务器选「完整 DSH」档被误拒的问题（启动前探针仍指向已撤掉的旧启动器包）；README 改正无沙箱时的实际行为；无 migration。 |
 | **2.9.3** | 2026-10-12 | 安全修复：AI 助理的沙箱放宽请求在任何审批档位都转人工确认，不再被 3 档免提示或“本类不再询问”自动放行；无 migration。 |
 | **2.9.2** | 2026-10-11 | AI 助理运行时升至 DSH `0.1.5-rc.3`，消除 GHSA-8m2g-8cgm-3vcp（原本不可达）；runtime `npm audit` 归零；功能与工具面不变；无 migration。 |
 | **2.9.1** | 2026-10-11 | 依赖安全补丁：proxy-addr、Electron 43.7.5、MCP SDK、sharp 等升到修复版；DSH 钉版不变；无 migration。 |
@@ -139,16 +140,16 @@
 
 **升级注意**：无 migration，数据库与 2.9.2 完全一致，可直接互换回退；回退到 2.9.2 及更早版本会重新带回该审批缺口。
 
----
-
-## 未发布 — Linux 服务器 Landlock 沙箱探测修复
-
-**状态：PR 待合并 `main`。**
+## 2.9.4 — Linux 服务器 Landlock 沙箱探测修复
 
 - 修复 2.9.2 引入的回归：DSH 0.1.5 起 Landlock 启动器随 `@deepseek-ai/node-addon-system-<platform>-<arch>` 分发，而 supervisor 的启动前探针仍指向已撤掉的 `node-addon-landlock-run-*`，导致宿主内核启用 Landlock、容器内 bwrap 不可用的 Linux 服务器（Docker 默认参数下常见）选择「完整 DSH」档时被误判为没有沙箱、整档拒绝启动。方向是 fail-closed，不会裸跑命令。
 - 探针改按上游 `launcherPath()` 同一规则从 runtime 根解析平台包；`tools/test-agent-sandbox-boundary.js` 新增结构门禁，对照上游包名规则、校验 runtime lockfile 含 Linux x64/arm64 平台包，Linux 宿主上再校验启动器真实存在。
 - 在启用 Landlock 的 Ubuntu 24.04 + Docker 28（AppArmor 限制无特权 userns，bwrap 不可用）上实测：已发布 2.9.3 镜像复现误拒；修复后镜像默认参数即选中 Landlock，完整档启动、bash 在本案读写正常，读写他案与正式库均被拒绝。
 - README 改正：服务器不具备沙箱条件时完整档会在启动前被拒绝，而不是“仅禁用命令、其余能力不受影响”。
+
+**升级注意**：无 migration，数据库与 2.9.3 完全一致，可直接互换回退。
+
+---
 
 ## 未发布 — AI 助理图片输入
 
