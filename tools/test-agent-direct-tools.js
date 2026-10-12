@@ -1,4 +1,4 @@
-// dsh-anqi 直写工具契约：五工具存在、描述明确、session 固定注入、绝不携带 case_id。
+// dsh-anqi 直写工具契约：案件面五类记录加工作日志，描述明确、session 固定注入、绝不携带 case_id。
 import assert from 'node:assert/strict';
 
 process.env.ANJIAN_INTERNAL_KEY = 'direct-tools-test-key';
@@ -31,6 +31,7 @@ try {
   apply({ tools: { register(tool) { tools.push(tool); } } }, { baseURL: 'http://127.0.0.1:3007' });
   const byName = new Map(tools.map((tool) => [tool.name, tool]));
   assert.deepEqual(tools.map((tool) => tool.name), [
+    'anqi_worklog_add',
     'anqi_case_get',
     'anqi_digest',
     'anqi_inbox_propose',
@@ -41,7 +42,7 @@ try {
     'anqi_deadline_add',
   ]);
 
-  const directNames = ['anqi_contact_upsert', 'anqi_task_add', 'anqi_event_add', 'anqi_fact_add', 'anqi_deadline_add'];
+  const directNames = ['anqi_worklog_add', 'anqi_contact_upsert', 'anqi_task_add', 'anqi_event_add', 'anqi_fact_add', 'anqi_deadline_add'];
   for (const name of directNames) {
     const description = byName.get(name)?.description || '';
     assert.match(description, /直接写入/);
@@ -66,6 +67,7 @@ try {
   }]);
   assert.deepEqual(caseView.facts, [{ id: 3, content: '已通知补证', created_by: 'ai' }]);
 
+  await byName.get('anqi_worklog_add').execute({ content: '完成会见记录', worked_on: '2030-01-01' }, exec);
   await byName.get('anqi_contact_upsert').execute({ role: '法官助理', name: '王助理', created_by: 'manual' }, exec);
   await byName.get('anqi_task_add').execute({ title: '核对送达', origin: 'manual' }, exec);
   await byName.get('anqi_event_add').execute({ type: 'other', occurred_on: '2030-01-01', created_by: 'manual' }, exec);
@@ -73,7 +75,7 @@ try {
   await byName.get('anqi_deadline_add').execute({ name: '补证期限', due_on: '2030-01-02', review_status: 'confirmed' }, exec);
 
   const directCalls = calls.filter((call) => call.body?.mode === 'direct');
-  assert.deepEqual(directCalls.map((call) => call.body.kind), ['contact', 'task', 'event', 'fact', 'deadline']);
+  assert.deepEqual(directCalls.map((call) => call.body.kind), ['worklog', 'contact', 'task', 'event', 'fact', 'deadline']);
   for (const call of directCalls) {
     assert.equal(call.url.endsWith('/internal/agent-proposals'), true);
     assert.equal(call.body.session_id, process.env.ANQI_AGENT_SESSION_ID);
@@ -84,7 +86,7 @@ try {
   }
   console.log(`EVIDENCE_TOOL_NAMES ${JSON.stringify(tools.map((tool) => tool.name))}`);
   console.log(`EVIDENCE_PLUGIN_CASE_GET ${JSON.stringify({ contacts: caseView.contacts, facts: caseView.facts })}`);
-  console.log('agent direct tools: exact 8-tool set + visible contacts/facts + server-forced session/source/review contract passed');
+  console.log('agent direct tools: worklog + visible contacts/facts + server-forced session/source/review contract passed');
 } finally {
   globalThis.fetch = originalFetch;
 }

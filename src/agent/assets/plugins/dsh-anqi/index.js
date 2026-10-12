@@ -60,7 +60,7 @@ const TASK_FIELDS = [
   'id', 'title', 'plan_date', 'due_on', 'due_time', 'deadline_id', 'stage',
   'priority', 'origin', 'created_by', 'status', 'done_at', 'note',
 ];
-const WORKLOG_FIELDS = ['id', 'worked_on', 'content', 'minutes', 'artifacts'];
+const WORKLOG_FIELDS = ['id', 'worked_on', 'content', 'minutes', 'artifacts', 'created_by'];
 const RECOMMENDATION_FIELDS = [
   'id', 'intent_key', 'status', 'decision_reason', 'change_summary',
   'seen_count', 'created_at', 'decided_at',
@@ -121,6 +121,8 @@ function sanitizeDirectResult(value, fields) {
     outcome: String(value?.outcome || ''),
     kind: String(value?.kind || ''),
     item: pick(value?.item, fields),
+    case_id: value?.case_id === null || value?.case_id === undefined ? null : Number(value.case_id),
+    case_name: value?.case_name === undefined ? '' : String(value.case_name),
     ...(value?.derived && typeof value.derived === 'object' ? { derived: value.derived } : {}),
   };
 }
@@ -186,6 +188,10 @@ export function apply(ctx, config = {}) {
   // 惰性读取：session id 只在真正提交提案时才校验存在，避免 case_get/digest
   // 这两个只读工具在还没接好 supervisor session 注入的过渡期里也被拖累失败。
   const agentSessionIdEnv = String(config.sessionIdEnv || 'ANQI_AGENT_SESSION_ID');
+  // 直接加载插件的既有离线单元测试没有宿主 env；按历史案件面默认。
+  // supervisor/runtime 会显式注入 scope，preset 仍对缺失 scope fail-closed。
+  const scope = String(process.env.DSH_ANQI_SCOPE || 'case').trim();
+  if (!['case', 'global'].includes(scope)) throw new Error('dsh-anqi requires DSH_ANQI_SCOPE=case|global');
 
   async function request(pathname, { method = 'GET', body, signal, headers: extraHeaders } = {}) {
     const internalKey = process.env[internalKeyEnv];
@@ -236,13 +242,77 @@ export function apply(ctx, config = {}) {
         outcome: { type: 'string', required: true },
         kind: { type: 'string', required: true },
         item: { ...OPEN_OBJECT, required: true },
+        case_id: { oneOf: [{ type: 'number' }, { type: 'null' }] },
+        case_name: { type: 'string', required: true },
         derived: OPEN_OBJECT,
       },
     },
     render: renderJson,
   };
 
+  if (scope === 'global') {
+    ctx.tools.register(defineTool({
+      name: 'anqi_case_resolve',
+      description: '按律师提供的当事人、案号或办案机关调用案齐本地匹配。只能使用服务端返回的 granted_case_id；不得猜案件。',
+      parameters: {
+        parties: { type: 'array', items: { type: 'string' } },
+        case_name: { type: 'string' }, case_no: { type: 'string' }, agency: { type: 'string' },
+      },
+      output: { schema: { type: 'object', additionalProperties: true }, render: renderJson },
+      async execute(args, exec) {
+        exec.signal.throwIfAborted();
+        const sessionId = requiredEnv(agentSessionIdEnv);
+        const value = await request('/internal/agent-case-resolve', {
+          method: 'POST', signal: exec.signal,
+          body: { session_id: sessionId, parties: Array.isArray(args?.parties) ? args.parties.map((v) => String(v).slice(0, 200)) : [], case_name: String(args?.case_name || '').slice(0, 200), case_no: String(args?.case_no || '').slice(0, 200), agency: String(args?.agency || '').slice(0, 200) },
+        });
+        return {
+          match: String(value?.match || 'none'), candidates: pickRows(value?.candidates, ['id', 'name', 'case_no', 'client', 'opponent', 'court', 'handling_agency', 'case_type', 'procedure', 'stage']),
+          inactive_hits: Number(value?.inactive_hits || 0), conflict: value?.conflict === true,
+          ...(value?.granted_case_id === undefined ? {} : { granted_case_id: Number(value.granted_case_id) }),
+        };
+      },
+    }));
+    ctx.tools.register(defineTool({
+      name: 'anqi_case_select',
+      description: '从 anqi_case_resolve 刚返回的候选中选择案件；其它 case_id 会被服务端拒绝。',
+      parameters: { case_id: { type: 'number', required: true } },
+      output: { schema: { type: 'object', additionalProperties: false, properties: { granted_case_id: { type: 'number', required: true } } }, render: renderJson },
+      async execute(args, exec) {
+        exec.signal.throwIfAborted();
+        const sessionId = requiredEnv(agentSessionIdEnv);
+        const value = await request('/internal/agent-case-select', { method: 'POST', signal: exec.signal, body: { session_id: sessionId, case_id: Number(args.case_id) } });
+        return { granted_case_id: Number(value.granted_case_id) };
+      },
+    }));
+    ctx.tools.register(defineTool({
+      name: 'anqi_case_get',
+      description: '读取已由 anqi_case_resolve 或 anqi_case_select 授予的案件；其它案件不可见。',
+      parameters: { case_id: { type: 'number', required: true } },
+      output: { schema: { type: 'object', additionalProperties: true }, render: renderJson },
+      async execute(args, exec) {
+        exec.signal.throwIfAborted();
+        const sessionId = requiredEnv(agentSessionIdEnv);
+        const value = await request(`/internal/agent-case-view?case_id=${encodeURIComponent(Number(args.case_id))}`, { signal: exec.signal, headers: { 'X-Anjian-Session-Id': sessionId } });
+        return sanitizeCasePayload(value);
+      },
+    }));
+  }
+
+  const caseIdParameter = scope === 'global' ? { case_id: { type: 'number', description: '只能填写 anqi_case_resolve 返回的 granted_case_id 或 anqi_case_select 的结果。' } } : {};
   ctx.tools.register(defineTool({
+    name: 'anqi_worklog_add',
+    description: scope === 'global' ? '直接写入并盖 AI 戳的工作日志；case_id 只能使用服务端刚授予的案件，否则可省略记为所务记录。' : '直接写入绑定案件的工作日志并盖 AI 戳，人可改可撤。',
+    parameters: { ...caseIdParameter, content: { type: 'string', required: true }, worked_on: { type: 'string' } },
+    output: directOutput,
+    async execute(args, exec) {
+      const payload = directPayload(args, ['content', 'worked_on'], { content: 5000, worked_on: 10 });
+      if (scope === 'global' && args.case_id !== undefined) payload.case_id = Number(args.case_id);
+      return directWrite('worklog', payload, exec, WORKLOG_FIELDS);
+    },
+  }));
+
+  if (scope === 'case') ctx.tools.register(defineTool({
     name: 'anqi_case_get',
     description: 'Read whitelisted contacts, formal facts, events, deadlines, tasks, worklog, and recent recommendations for the one anqi case this session is bound to. No other case can be selected or read.',
     parameters: {},
@@ -278,7 +348,7 @@ export function apply(ctx, config = {}) {
     },
   }));
 
-  ctx.tools.register(defineTool({
+  if (scope === 'case') ctx.tools.register(defineTool({
     name: 'anqi_digest',
     description: 'Read the whitelisted anqi digest scoped to the one case this session is bound to, including near deadlines, hearings, open tasks, fees due, and summary counts. Other cases never appear in the result.',
     parameters: {},
@@ -316,8 +386,9 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(defineTool({
     name: 'anqi_inbox_propose',
-    description: 'Submit one task-only suggestion for lawyer review. This cannot create events or deadlines and never writes a task directly; it is only a proposal, not an approval.',
+    description: 'Submit one task-only suggestion for lawyer review. Global scope must provide a case_id granted by the server.',
     parameters: {
+      ...caseIdParameter,
       title: {
         type: 'string',
         required: true,
@@ -359,6 +430,7 @@ export function apply(ctx, config = {}) {
         signal: exec.signal,
         body: {
           session_id: sessionId,
+          ...(scope === 'global' ? { case_id: Number(args.case_id) } : {}),
           proposal_id: proposalId,
           source_ref: {
             session_id: sessionId,
@@ -384,8 +456,9 @@ export function apply(ctx, config = {}) {
 
   ctx.tools.register(defineTool({
     name: 'anqi_contact_upsert',
-    description: '直接写入绑定案件的联系人、盖 AI 戳，人可改可撤。Omit id to create; provide an id returned by anqi_case_get to update that contact.',
+    description: '直接写入案件联系人并盖 AI 戳，人可改可撤。Global scope 的 case_id 只能用服务端授予值。',
     parameters: {
+      ...caseIdParameter,
       id: { type: 'number', description: 'Existing contact id to update; omit to create.' },
       role: { type: 'string', description: '当事人/对方当事人/承办法官/法官助理/书记员/对方律师/合作律师/其他。' },
       name: { type: 'string', description: 'Contact name; required when creating.' },
@@ -396,17 +469,20 @@ export function apply(ctx, config = {}) {
     },
     output: directOutput,
     async execute(args, exec) {
-      return directWrite('contact', directPayload(
+      const payload = directPayload(
         args, ['id', 'role', 'name', 'phone', 'id_no', 'org', 'note'],
         { role: 50, name: 300, phone: 100, id_no: 100, org: 500, note: 3000 }
-      ), exec, CONTACT_FIELDS);
+      );
+      if (scope === 'global') payload.case_id = Number(args.case_id);
+      return directWrite('contact', payload, exec, CONTACT_FIELDS);
     },
   }));
 
   ctx.tools.register(defineTool({
     name: 'anqi_task_add',
-    description: '直接写入绑定案件的待办、盖 AI 戳，人可改可撤。This creates the task now instead of submitting a proposal.',
+    description: '直接写入待办并盖 AI 戳，人可改可撤。Global scope 的 case_id 只能用服务端授予值，可省略记为所务待办。',
     parameters: {
+      ...caseIdParameter,
       title: { type: 'string', required: true },
       plan_date: { type: 'string', description: 'Optional YYYY-MM-DD planned start date.' },
       due_on: { type: 'string', description: 'Optional YYYY-MM-DD task due date; not a legal deadline.' },
@@ -418,17 +494,20 @@ export function apply(ctx, config = {}) {
     },
     output: directOutput,
     async execute(args, exec) {
-      return directWrite('task', directPayload(
+      const payload = directPayload(
         args, ['title', 'plan_date', 'due_on', 'due_time', 'deadline_id', 'stage', 'priority', 'note'],
         { title: 500, plan_date: 10, due_on: 10, due_time: 5, stage: 200, priority: 20, note: 3000 }
-      ), exec, TASK_FIELDS);
+      );
+      if (scope === 'global' && args.case_id !== undefined) payload.case_id = Number(args.case_id);
+      return directWrite('task', payload, exec, TASK_FIELDS);
     },
   }));
 
   ctx.tools.register(defineTool({
     name: 'anqi_event_add',
-    description: '直接写入绑定案件的程序事件、盖 AI 戳，人可改可撤。Deterministic engine derivation remains active for this event.',
+    description: '直接写入已授予案件的程序事件并盖 AI 戳，人可改可撤；global scope 必须提供服务端授予的 case_id。',
     parameters: {
+      ...caseIdParameter,
       type: { type: 'string', required: true, description: 'Event type from anqi metadata vocabulary.' },
       occurred_on: { type: 'string', required: true, description: 'YYYY-MM-DD.' },
       service_method: { type: 'string' },
@@ -439,17 +518,20 @@ export function apply(ctx, config = {}) {
     },
     output: directOutput,
     async execute(args, exec) {
-      return directWrite('event', directPayload(
+      const payload = directPayload(
         args, ['type', 'occurred_on', 'occurred_time', 'location', 'service_method', 'instrument', 'note'],
         { type: 100, occurred_on: 10, occurred_time: 5, location: 120, service_method: 200, instrument: 1000, note: 3000 }
-      ), exec, EVENT_FIELDS);
+      );
+      if (scope === 'global') payload.case_id = Number(args.case_id);
+      return directWrite('event', payload, exec, EVENT_FIELDS);
     },
   }));
 
   ctx.tools.register(defineTool({
     name: 'anqi_fact_add',
-    description: '直接写入绑定案件的一条正式事实、盖 AI 戳，人可改可撤。Use source/note to preserve provenance without inventing evidence.',
+    description: '直接写入已授予案件的正式事实并盖 AI 戳，人可改可撤；global scope 必须提供服务端授予的 case_id。',
     parameters: {
+      ...caseIdParameter,
       content: { type: 'string', required: true },
       occurred_on: { type: 'string', description: 'Optional YYYY-MM-DD fact date.' },
       source: { type: 'string', description: 'Optional source/provenance label.' },
@@ -457,17 +539,20 @@ export function apply(ctx, config = {}) {
     },
     output: directOutput,
     async execute(args, exec) {
-      return directWrite('fact', directPayload(
+      const payload = directPayload(
         args, ['content', 'occurred_on', 'source', 'note'],
         { content: 5000, occurred_on: 10, source: 1000, note: 3000 }
-      ), exec, FACT_FIELDS);
+      );
+      if (scope === 'global') payload.case_id = Number(args.case_id);
+      return directWrite('fact', payload, exec, FACT_FIELDS);
     },
   }));
 
   ctx.tools.register(defineTool({
     name: 'anqi_deadline_add',
-    description: '直接写入绑定案件的期限、盖 AI 戳、人可改可撤；强制标记待核，人工确认前不进入提醒或期限跑道。',
+    description: '直接写入已授予案件的待核期限并盖 AI 戳，人可改可撤；不进入提醒或期限跑道；global scope 必须提供服务端授予的 case_id。',
     parameters: {
+      ...caseIdParameter,
       name: { type: 'string', required: true },
       due_on: { type: 'string', required: true, description: 'YYYY-MM-DD. The model supplies a draft date; the server marks it pending review.' },
       basis: { type: 'string' },
@@ -476,10 +561,12 @@ export function apply(ctx, config = {}) {
     },
     output: directOutput,
     async execute(args, exec) {
-      return directWrite('deadline', directPayload(
+      const payload = directPayload(
         args, ['name', 'due_on', 'basis', 'calc_note', 'severity'],
         { name: 500, due_on: 10, basis: 3000, calc_note: 3000, severity: 20 }
-      ), exec, DEADLINE_FIELDS);
+      );
+      if (scope === 'global') payload.case_id = Number(args.case_id);
+      return directWrite('deadline', payload, exec, DEADLINE_FIELDS);
     },
   }));
 }
