@@ -39,7 +39,10 @@ export const Config = Schema.object({
   preflightTimeoutMs: Schema.number().step(1).min(1_000).default(60_000),
 });
 
-const ANQI_SCOPE = String(process.env.DSH_ANQI_SCOPE || '');
+// Direct command-bridge unit tests load this plugin without supervisor env;
+// retain the historical案件 default. Production supervisor always injects an
+// explicit scope and the Cordis preset remains fail-closed when it is absent.
+const ANQI_SCOPE = String(process.env.DSH_ANQI_SCOPE || 'case');
 if (!['case', 'global'].includes(ANQI_SCOPE)) throw new Error('DSH_ANQI_SCOPE must be case or global');
 const REQUIRED_MCP_TOOL = ANQI_SCOPE === 'global' ? 'anqi_case_resolve' : 'mcp__anqi-local__case_folder_info';
 const REQUIRED_SKILL = ANQI_SCOPE === 'global' ? 'anqi-global-intake' : 'anqi-case-brief';
