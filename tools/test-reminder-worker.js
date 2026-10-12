@@ -1,0 +1,26 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import Database from 'better-sqlite3';
+import { runMigrations } from '../src/db.js';
+import { createReminderWorker } from '../src/lib/reminder-worker.js';
+
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-rworker-'));
+const db = new Database(path.join(dir, 'worker.db')); db.pragma('foreign_keys=ON'); runMigrations(db);
+const now = new Date('2099-11-03T00:00:00.000Z');
+const insert = db.prepare(`INSERT INTO reminders (origin,tier,title,fire_at,version,status,created_at,updated_at) VALUES ('manual','manual',?,?,1,'scheduled',?,?)`);
+const stamp = now.toISOString();
+insert.run('in', '2099-11-02T23:30:00.000Z', stamp, stamp);
+insert.run('late', '2099-11-01T00:00:00.000Z', stamp, stamp);
+const worker = createReminderWorker({ db, catchupMinutes: 60, now: () => now });
+await worker.tick();
+assert.equal(db.prepare("SELECT status FROM reminders WHERE title='in'").get().status, 'fired');
+assert.equal(db.prepare("SELECT status_reason FROM reminders WHERE title='late'").get().status_reason, 'window_expired');
+assert.equal(db.prepare('SELECT COUNT(*) c FROM reminder_deliveries').get().c, 1);
+await worker.tick(); assert.equal(db.prepare('SELECT COUNT(*) c FROM reminder_deliveries').get().c, 1);
+db.prepare("UPDATE reminders SET status='sending' WHERE title='in'").run();
+worker.start(); await worker.stop();
+assert.equal(db.prepare("SELECT status_reason FROM reminders WHERE title='in'").get().status_reason, 'crash_recovery');
+console.log('reminder worker: catch-up, missed, delivery uniqueness, and crash recovery passed');
+db.close(); fs.rmSync(dir, { recursive: true, force: true });

@@ -61,6 +61,7 @@ r.get('/counts', (req, res) => {
     // {configured:false, keySource:'none'}，与上面 agent:false 语义一致。
     agent_key_configured: keyStatus.configured,
     agent_key_source: keyStatus.keySource,
+    notifications_queued: db.prepare("SELECT COUNT(*) c FROM reminder_deliveries WHERE channel='inapp' AND status='queued'").get().c,
   });
 });
 
