@@ -4,6 +4,7 @@ import { api, el, toast } from './api.js';
 import { iconEl } from './icons.js';
 import { initSkinSwitcher } from './skin.js';
 import { mountNotifications } from './notify.js';
+import { mountGlobalAgentDrawer } from './agent-drawer.js';
 
 // 顺序按 DESIGN-TOKENS §10 A-2：今日 / 案件 / 日历 / 费用 / 通讯录 / 修复 / 统计 / 用户中心
 const LINKS = [
@@ -43,6 +44,7 @@ export async function mountNav() {
     LINKS.map(([href, label, ic]) => navLink(href, label, path, ic))
   );
   const versionBadge = el('span', { class: 'ver' });
+  const globalAgentSlot = el('span', { id: 'agent-global-entry-slot', class: 'agent-global-entry-slot', hidden: '' });
 
   const nav = el('nav', { class: 'topnav' },
     hamburger,
@@ -65,6 +67,7 @@ export async function mountNav() {
       }, label))
     ),
     el('span', { class: 'navbadge counts', id: 'nav-counts' }),
+    globalAgentSlot,
     el('button', {
       class: 'iconbtn', 'aria-label': '退出登录', title: '退出登录',
       onclick: async () => {
@@ -84,6 +87,14 @@ export async function mountNav() {
   // counts 只是徽标——用 .then 不用 await，别让顶栏和整页渲染陪着网络一起等
   api('/counts').then((c) => {
     if (c.version) versionBadge.textContent = `v${c.version}`;
+    if (c.agent) {
+      globalAgentSlot.hidden = false;
+      mountGlobalAgentDrawer();
+      document.querySelector('.quick-ai-toggle')?.removeAttribute('hidden');
+    } else {
+      globalAgentSlot.hidden = true;
+      document.querySelector('.quick-ai-toggle')?.setAttribute('hidden', '');
+    }
     // 快录条的「整理」按钮：服务端配了 DEEPSEEK_API_KEY 才亮出来（搭 counts 顺风车，零额外请求）
     const tidy = document.querySelector('.quickbar .btn.ghost');
     if (tidy && c.llm) tidy.hidden = false;
@@ -165,6 +176,10 @@ function mountQuickbar() {
   const tidyBtn = el('button', {
     class: 'btn ghost small', type: 'button', title: '让 LLM 把这句话整理成类型/案件/日期（只填表，不入库）',
   }, '整理');
+  const aiToggle = el('button', {
+    class: 'quick-ai-toggle', type: 'button', 'aria-pressed': 'false', hidden: '',
+    title: '把这句话交给 AI 总入口自动拆条、认案并分别记录',
+  }, '交给 AI');
   const HINT_DEFAULT = '捕捉零摩擦：先记下，晚点再整理';
   const hint = el('span', { class: 'hint' }, HINT_DEFAULT);
   const clearAttachment = () => {
@@ -220,6 +235,11 @@ function mountQuickbar() {
       onsubmit: async (e) => {
         e.preventDefault();
         if (!text.value.trim()) return;
+        if (aiToggle.getAttribute('aria-pressed') === 'true') {
+          document.dispatchEvent(new CustomEvent('anjian:agent-global-prompt', { detail: text.value.trim() }));
+          text.value = '';
+          return;
+        }
         const body = { kind: kind.value, text: text.value.trim() };
         if (caseSel.value) body.case_id = Number(caseSel.value);
         if (date.value) body.date = date.value;
@@ -238,12 +258,22 @@ function mountQuickbar() {
         hint.classList.remove('hint-ai');
         document.dispatchEvent(new CustomEvent('anjian:changed'));
       },
-    }, kind, caseSel, text, date, time, location, attachBtn, attachment, tidyBtn, fileInput,
+    }, kind, caseSel, text, date, time, location, attachBtn, attachment, tidyBtn, aiToggle, fileInput,
       el('button', { class: 'btn primary', type: 'submit' }, '记'),
       hint
     )
   );
   document.body.appendChild(bar);
+  let quickAi = false;
+  try { quickAi = localStorage.getItem('anjian-quick-ai') === '1'; } catch {}
+  const syncQuickAi = () => {
+    aiToggle.setAttribute('aria-pressed', String(quickAi));
+    for (const node of [kind, caseSel, date, time, location, attachBtn, attachment, tidyBtn]) node.hidden = quickAi;
+    text.placeholder = quickAi ? '一句话交给 AI：自动拆条、认案、分别记录' : '一句话快录……';
+    bar.querySelector('form > button[type="submit"]').textContent = quickAi ? '交给 AI' : '记';
+  };
+  aiToggle.addEventListener('click', () => { quickAi = !quickAi; try { localStorage.setItem('anjian-quick-ai', quickAi ? '1' : '0'); } catch {} syncQuickAi(); });
+  syncQuickAi();
   kind.addEventListener('change', syncKindFields);
   syncKindFields();
   document.addEventListener('anjian:quick-prefill', (event) => {

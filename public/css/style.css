@@ -1893,6 +1893,8 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .quickbar input[type=text] { flex: 1 1 220px; min-width: 160px; }
 .quickbar select, .quickbar input { min-height: 34px; }
 .quickbar .btn { min-height: 34px; }
+.quick-ai-toggle { min-height: 34px; border: 1px solid var(--green-line); color: var(--green); background: var(--surface-solid); }
+.quick-ai-toggle[aria-pressed="true"] { background: var(--green-bg); font-weight: 650; }
 .quickbar .quick-attachment { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 220px; color: var(--meta); font-size: 12px; }
 .quickbar .quick-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quickbar .quick-attachment-clear { flex: none; border: 0; padding: 2px 4px; background: transparent; color: var(--meta); cursor: pointer; }
@@ -1903,6 +1905,7 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   .quickbar input[type=text] { min-width: 0; flex-basis: 160px; max-width: 100%; }
   .quickbar select, .quickbar input { max-width: 100%; min-width: 0; }
   .quickbar .quick-attachment { max-width: min(100%, 180px); }
+  .quickbar .quick-ai-toggle { flex: 0 0 auto; min-width: 86px; padding: 0 8px; white-space: nowrap; }
 }
 
 /* ── A-23 toast ── */
@@ -2605,6 +2608,9 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   background: var(--chip-bg); border: 1px dashed var(--chip-bd); color: var(--muted);
   font-family: var(--f-case); font-size: 12px;
 }
+.agent-round-record { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; border: 1px solid var(--green-line); border-radius: var(--r-btn); background: var(--green-bg); font-size: 12px; }
+.agent-round-record a { color: var(--green); }
+.agent-round-record.is-revoked { text-decoration: line-through; opacity: .65; }
 .agent-markdown { white-space: normal; }
 .agent-markdown > :first-child { margin-top: 0; }
 .agent-markdown > :last-child { margin-bottom: 0; }
@@ -2695,6 +2701,8 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .agent-command-description { min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.35; text-align: right; }
 .agent-drawer-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .agent-attach-btn { margin-right: auto; }
+.agent-global-entry-slot { display: inline-flex; align-items: center; }
+.ai-mark { color: var(--green); border-color: var(--green-line); }
 
 /* ── A-27 响应式（≥1280 桌面 / 768–1279 平板 / <768 移动） ── */
 @media (max-width: 1279px) {

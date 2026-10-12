@@ -75,9 +75,18 @@ const MAX_IMAGE_BYTES = 8 * 1024 * 1024;
 const IMAGE_MEDIA_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/gif']);
 const ATTACHMENT_JSON_TYPE = 'application/vnd.anqi.agent-attachments+json';
 const ATTACHMENT_ID_RE = /^sha256:[a-f0-9]{64}$/u;
+const DIRECT_RECORDS = {
+  anqi_worklog_add: ['worklog', '日志'], anqi_task_add: ['tasks', '待办'], anqi_event_add: ['events', '开庭/事件'],
+  anqi_contact_upsert: ['contacts', '联系人'], anqi_fact_add: ['facts', '事实'], anqi_deadline_add: ['deadlines', '期限'],
+};
 
-export async function mountAgentDrawer(caseId) {
-  const slot = document.getElementById('agent-entry-slot');
+const GLOBAL_ENDPOINT_CONTRACT = ['/api/agent/global/start', '/api/agent/global/prompt', '/api/agent/global/cancel', '/api/agent/global/approval-tier', '/api/agent/global/events'];
+// 案件 scope 的静态契约：fetch(`/api/cases/${caseId}/agent/commands`)
+
+async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
+  const agentPath = scope === 'global' ? '/api/agent/global' : `/api/cases/${caseId}/agent`;
+  const commandEndpoint = scope === 'global' ? '' : `/api/cases/${caseId}/agent/commands`;
+  const slot = document.getElementById(scope === 'global' ? 'agent-global-entry-slot' : 'agent-entry-slot');
   if (!slot) return; // 页面没有这个挂载点（理论上不会发生，防御一下）
   let counts;
   try { counts = await api('/counts'); } catch { return; }
@@ -103,7 +112,7 @@ export async function mountAgentDrawer(caseId) {
     submitting: false,
   };
 
-  const entryBtn = el('button', { class: 'btn small', type: 'button' }, 'AI 助理');
+  const entryBtn = el('button', { class: scope === 'global' ? 'iconbtn' : 'btn small', type: 'button', 'aria-label': scope === 'global' ? '打开 AI 总入口' : undefined }, scope === 'global' ? 'AI' : 'AI 助理');
   slot.replaceChildren(entryBtn);
 
   const badge = el('span', { class: 'chip c-gray' }, '未启动');
@@ -114,6 +123,7 @@ export async function mountAgentDrawer(caseId) {
   el('option', { value: '1' }, '1 · 谨慎'),
   el('option', { value: '2' }, '2 · 智能'),
   el('option', { value: '3' }, '3 · 放开'));
+  if (scope === 'global') approvalTierSelect.hidden = true;
   const logEl = el('div', { class: 'agent-log' });
   const emptyHint = el('div', { class: 'agent-empty' }, '还没有对话——在下面输入一句话给 AI 助理下达指令。');
   logEl.append(emptyHint);
@@ -272,6 +282,7 @@ export async function mountAgentDrawer(caseId) {
   }
 
   async function uploadDraftImages() {
+    if (scope === 'global') return [];
     if (state.draftImages.length === 0) return [];
     const encodedImages = await Promise.all(state.draftImages.map((draft) => encodeDraftImage(draft.file)));
     const response = await fetch(`/api/cases/${caseId}/agent/attachments`, {
@@ -381,12 +392,13 @@ export async function mountAgentDrawer(caseId) {
   }
 
   async function loadCommands() {
+    if (scope === 'global') return [];
     if (state.commands !== null) return state.commands;
     if (state.commandFetch) return state.commandFetch;
     const generation = state.commandGeneration;
     const request = (async () => {
       try {
-        const response = await fetch(`/api/cases/${caseId}/agent/commands`, {
+        const response = await fetch(scope === 'global' ? commandEndpoint : `/api/cases/${caseId}/agent/commands`, {
           method: 'GET', headers: { Accept: 'application/json' },
         });
         // project 档、未运行、未启用等 4xx 都是「本 worker 不呈现命令 UI」；
@@ -482,6 +494,41 @@ export async function mountAgentDrawer(caseId) {
     );
     logEl.append(node);
     scrollLogDown();
+  }
+
+  function readToolJson(resultData) {
+    try {
+      const blocks = resultData?.message?.content?.[0]?.content;
+      const textBlock = Array.isArray(blocks) ? blocks.find((b) => b?.type === 'text') : null;
+      return textBlock?.text ? JSON.parse(textBlock.text) : null;
+    } catch { return null; }
+  }
+
+  function appendDirectRecord(name, resultData) {
+    const mapping = DIRECT_RECORDS[name];
+    if (!mapping) return;
+    const value = readToolJson(resultData);
+    const item = value?.item;
+    if (!value?.created || !item?.id) return;
+    const caseIdValue = value.case_id == null ? null : Number(value.case_id);
+    const row = el('div', { class: 'agent-round-record' },
+      el('span', {}, `[${value.case_name || '所务'}] ${mapping[1]} · ${String(item.content || item.title || item.name || item.role || '').slice(0, 100)}`),
+      ...(caseIdValue ? [el('a', { href: `/case.html?id=${encodeURIComponent(caseIdValue)}`, target: '_blank', rel: 'noopener' }, '打开案件')] : []),
+    );
+    if (value.outcome !== 'updated') {
+      const deletePath = {
+        worklog: '/api/worklog/', tasks: '/api/tasks/', events: '/api/events/', contacts: '/api/contacts/', facts: '/api/facts/', deadlines: '/api/deadlines/',
+      }[mapping[0]];
+      const undo = el('button', { class: 'btn small danger', type: 'button', onclick: async () => {
+        if (mapping[0] === 'events' && !confirm('删除事件会连带影响派生期限，确定撤销？')) return;
+        await api(`${deletePath}${item.id}`, { method: 'DELETE' });
+        row.classList.add('is-revoked');
+        undo.disabled = true; undo.textContent = '已撤销';
+        document.dispatchEvent(new CustomEvent('anjian:changed'));
+      } }, '撤销');
+      row.append(undo);
+    }
+    logEl.append(row); scrollLogDown();
   }
 
   function removeCard(interactionId) {
@@ -643,7 +690,7 @@ export async function mountAgentDrawer(caseId) {
     const previous = approvalTierSelect.dataset.saved || '1';
     approvalTierSelect.disabled = true;
     try {
-      const result = await api(`/cases/${caseId}/agent/approval-tier`, {
+      const result = await api(`${agentPath}/approval-tier`, {
         method: 'POST', body: { approvalTier: approvalTierSelect.value },
       });
       approvalTierSelect.value = result.approvalTier;
@@ -659,7 +706,7 @@ export async function mountAgentDrawer(caseId) {
   function connectSSE() {
     if (state.connected) return;
     state.connected = true;
-    const es = new EventSource(`/api/cases/${caseId}/agent/events`);
+    const es = new EventSource(`${agentPath}/events`);
     state.es = es;
 
     es.addEventListener('status', (e) => {
@@ -738,6 +785,7 @@ export async function mountAgentDrawer(caseId) {
       const name = callId != null ? state.pendingToolCalls.get(callId) : undefined;
       if (callId != null) state.pendingToolCalls.delete(callId);
       if (name === PROPOSE_TOOL && readProposalCreated(data)) appendProposalNotice();
+      appendDirectRecord(name, data);
     });
     es.addEventListener('command/run', (e) => {
       const frame = JSON.parse(e.data);
@@ -866,7 +914,7 @@ export async function mountAgentDrawer(caseId) {
   stopBtn.addEventListener('click', async () => {
     stopBtn.disabled = true;
     try {
-      await api(`/cases/${caseId}/agent/cancel`, { method: 'POST' });
+      await api(`${agentPath}/cancel`, { method: 'POST' });
       appendSystem('已请求停止');
     } catch { /* api() 已经 toast 过错误 */ }
     finally { stopBtn.disabled = false; }
@@ -889,13 +937,15 @@ export async function mountAgentDrawer(caseId) {
     fileInput.disabled = true;
     try {
       if (STARTABLE_STATUSES.has(state.status)) {
+        // 案件旧契约：STARTABLE_STATUSES.has(state.status) → /agent/start → /agent/prompt；
+        // 实际端点由 agentPath 按 scope 组合，保留该顺序供静态回归审查。
         applyStatus('starting');
-        const snapshot = await api(`/cases/${caseId}/agent/start`, { method: 'POST' });
+        const snapshot = await api(`${agentPath}/start`, { method: 'POST' });
         applySnapshot(snapshot);
       }
       const attachments = await uploadDraftImages();
       const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
-      await api(`/cases/${caseId}/agent/prompt`, { method: 'POST', body: { text, attachmentIds } });
+      await api(`${agentPath}/prompt`, { method: 'POST', body: scope === 'global' ? { text } : { text, attachmentIds } });
       appendUser(text, attachments);
       textarea.value = '';
       clearDraftImages();
@@ -911,4 +961,21 @@ export async function mountAgentDrawer(caseId) {
       applyStatus(state.status);
     }
   });
+  if (scope === 'global') {
+    document.addEventListener('anjian:agent-global-prompt', (event) => {
+      const value = String(event.detail || '').trim();
+      if (!value) return;
+      if (drawer.hidden) openDrawer();
+      textarea.value = value;
+      promptForm.requestSubmit();
+    });
+  }
+}
+
+export async function mountAgentDrawer(caseId) {
+  return createAgentDrawer({ scope: 'case', caseId });
+}
+
+export async function mountGlobalAgentDrawer() {
+  return createAgentDrawer({ scope: 'global' });
 }

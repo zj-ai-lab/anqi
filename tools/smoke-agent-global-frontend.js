@@ -1,0 +1,12 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+const nav = fs.readFileSync('public/js/nav.js', 'utf8');
+const drawer = fs.readFileSync('public/js/agent-drawer.js', 'utf8');
+const caseJs = fs.readFileSync('public/js/case.js', 'utf8');
+const css = fs.readFileSync('public/css/style.css', 'utf8');
+assert.match(nav, /mountGlobalAgentDrawer/); assert.match(nav, /c\.agent/); assert.match(nav, /quick-ai-toggle/); assert.match(nav, /anjian-quick-ai/);
+for (const endpoint of ['/api/agent/global/start', '/api/agent/global/prompt', '/api/agent/global/cancel', '/api/agent/global/approval-tier', '/api/agent/global/events']) assert.ok(drawer.includes(endpoint));
+for (const endpoint of ['/api/worklog/', '/api/tasks/', '/api/events/', '/api/contacts/', '/api/facts/', '/api/deadlines/']) assert.ok(drawer.includes(endpoint));
+assert.match(drawer, /DIRECT_RECORDS/); assert.doesNotMatch(drawer, /images_not_supported_global/);
+assert.match(caseJs, /created_by === 'ai'/); assert.match(css, /\.quick-ai-toggle/); assert.match(css, /@media \(max-width: 767px\)/);
+console.log('global agent frontend smoke: gated nav entry, quick AI toggle, drawer routes, undo map and AI worklog mark passed');

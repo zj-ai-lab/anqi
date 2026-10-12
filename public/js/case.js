@@ -1766,6 +1766,7 @@ function render() {
     }),
     ...bundle.worklog.map((w) => ({ kind: 'log', date: w.worked_on, sort2: 3, build: () => tlItem(w.worked_on, 'tl-node-log',
       el('span', { class: 'pill' }, '日志'),
+      w.created_by === 'ai' ? el('span', { class: 'pill ai-mark' }, 'AI 加的') : null,
       [w.content, w.minutes ? el('span', { class: 'tl-note' }, `（${w.minutes} 分钟）`) : null,
         w.artifacts ? el('div', { class: 'tl-note' }, `产物：${w.artifacts}`) : null],
       el('span', {},
