@@ -280,6 +280,8 @@ docker start anqi
 
 案齐还包含一个可选的 AI 助理（进程外 sidecar，基于 [DSH · DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 运行时），能在案件范围内多轮对话、读取案卷并给出建议；它与上面「可选 LLM」的快录/提取按钮是两套独立功能。每个案件的 `folder_path` 对应目录就是该案 Agent 项目：在案件页打开助理会自动把该目录设为 `cwd`，无需再选路径。标准 read/read_image/write/edit/glob/grep 都会解析真实路径并拒绝越出本案目录；指向外部的符号链接同样拒绝。
 
+2.11.0 增加顶栏 AI 总入口和快录「交给 AI」切换。它使用同一个 DSH supervisor 的 global worker，把一句话拆成多条后在服务端本地匹配案件；只有 `anqi_case_resolve` / `anqi_case_select` 刚授予的案件才能被读取或写入。global worker 永远使用 project/read-only 能力，不需要案件夹或新的环境变量；它的 0700 workspace 位于 `DB_PATH` 同级的 `agent-global-workspace/`，首次启动自动创建。v2.12 的 IM 入站可以直接调用相同的 global HTTP prompt 面。
+
 **默认关闭**。不启用时，AI 助理相关的依赖只以文件形式存在于镜像/安装目录中，不会被加载、不占用内存，也不会发起任何网络请求；对绝大多数只用手动案件管理的部署没有任何影响。
 
 开启方式：在设置页把「AI 助理」开关打开，选择能力档位，并按需填写 provider / baseURL / model。默认「案件项目」档只开放本案文件、skill/todo/ask-user 与案齐领域工具；「完整 DSH」档另行开放 shell、后台 jobs、goal、subagent、workflow、Ralph 和 web search。完整档的 shell 进程可能读取当前 OS 用户可读的案件夹外路径，联网查询会把内容发给相应服务，启用前应按执业保密要求判断。服务器部署要开完整档，宿主必须先满足沙箱前置条件，否则整档会在启动前被拒绝，详见下方「[在服务器上开启「完整 DSH」档](#在服务器上开启完整-dsh档)」。API key 的值有两种来源，取值时环境变量优先：

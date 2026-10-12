@@ -115,6 +115,7 @@ CREATE TABLE worklog (
   content TEXT NOT NULL,
   minutes INTEGER,                    -- 可选，不做计费只做自我观察
   artifacts TEXT,                     -- 产物指针（案件夹相对路径/URL，JSON 数组）
+  created_by TEXT NOT NULL DEFAULT 'manual' CHECK (created_by IN ('manual','ai','import')), -- 来源戳；AI 写入可改可撤
   created_at TEXT
 );
 
@@ -340,7 +341,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 **2.2.6 案件详情面板栏头——横边距 16→20px**：`.case-main > .p-head, .case-side > .p-head { padding: 0 20px }`。`.p-head` 默认仍是 `padding: 0 16px`，但 DOM 实测首字左侧 bearing 收缩后视觉仅 ≈12px；20px 后视觉间隙稳定在 16px 上下。**不动 `.p-head` 默认值、不动 `.fold > summary`**，因为其他页面（包括分享页、合同页）的面板栏头 16px 视觉正常；只针对案件详情页的两条选择器加宽。
 
-快录框（1.1.0/P5）：每页常驻。自然语言解析只返回 `task|log` 的表单建议，不写库、不产 deadline；人按「记」后才落 tasks/worklog。异步 LLM 产物仍走收件箱。案件详情页的快录默认挂当前案件（人在本案页记的东西几乎一定是本案的），可手动改回「不挂案件」。
+快录框（1.1.0/P5）：每页常驻。自然语言解析只返回 `task|log` 的表单建议，不写库、不产 deadline；人按「记」后才落 tasks/worklog。异步 LLM 产物仍走收件箱。案件详情页的快录默认挂当前案件（人在本案页记的东西几乎一定是本案的），可手动改回「不挂案件」。2.11.0 增加「交给 AI」切换：输入整句话后交给全局 intake 自动拆条、认案并分别记录；开关由 `counts.agent` 门控，偏好只存本机。
 
 ## 7. API 面
 
@@ -481,6 +482,8 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 案件助理对话的 assistant 文本按安全 Markdown 子集渲染：标题、段落、粗体/斜体/删除线、行内与围栏代码、引用、有序/无序/任务列表、表格及 HTTP(S)/mailto 链接。渲染器只用 DOM 节点组装，不解释原始 HTML；危险协议不生成链接，Markdown 图片只显示为可点击的来源链接而不自动请求远端资源。流式 chunk 可反复重绘当前气泡，最终 `assistant/message` 仍以权威完整文本收口；用户输入、系统行和工具摘要继续按纯文本显示。
 
+2.11.0 起案件助理还可调用 `anqi_worklog_add({content, worked_on?})` 直接写入绑定案件的工作日志，复用 `/api/worklog` 的单一 INSERT helper；记录固定 `created_by='ai'`，时间线显示 AI 标记。案件会话的 session 绑定仍决定案件归属，工具没有可选 `case_id` 参数。
+
 ## 8.9 提醒中枢（2.10.0）
 
 提醒是确定性派生子系统。开庭档位为前一天与当天，期限档位为提前天数与当天，待办档位为带 `due_on + due_time` 的截止前分钟；来源查询与 digest 同口径，只提醒 active 案件、confirmed 且非 advisory 的 pending 期限和 open 待办。`fire_at` 存 UTC ISO，界面输入/展示为北京时间。
@@ -512,6 +515,18 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 到点领取在短事务中最多 50 条，事务提交后调用渠道；残留 sending 启动时置 unknown，不自动重发。超过 24 小时未 ack 的 queued delivery 置 expired。
 
 渠道插件注册表导出 `id / label / configured(settings) / deliver(reminder, delivery, ctx)`；2.10 只实现 `inapp`，deliver 不联网而返回 queued。worker 通过进程内事件广播给 SSE；客户端连接时补发 24 小时内 queued，ack 后变 shown。网页与 macOS Electron 使用 Web Notification API，Android WebView 只显示页内铃铛；Web Push、Service Worker 和企业微信/飞书/钉钉留到后续版本。提醒正文只含案件名、事项标题、时间、开庭地点，不含联系人、金额或案件文件。
+
+## 8.10 AI 总入口（2.11.0）
+
+全局总入口是一个 scope=`global` 的 DSH worker，不绑定具体案件；它与案件助理共用 AgentSupervisor、JSON-RPC、SSE、审批与提问回路。workspace 固定为 `path.join(path.dirname(DB_PATH), 'agent-global-workspace')`，首次启动创建为 0700 并复用；global 永远 project/read-only，跳过 bash 探针，不要求 `ANJIAN_FILES_ROOT`，仍执行数据库重叠校验。
+
+全局会话的案件信任锚点是 session registry：`anqi_case_resolve` 用服务端本地数据按「当事人名 → 案号 → 办案机关」匹配；唯一命中自动 grant，多候选只把最多十个安全字段候选 offer 给当前会话，再由 `anqi_case_select` 从这批候选中选择。`case_id` 永远不能从模型正文直接带入；`anqi_case_get`、联系人、事件、事实、期限和 inbox 工具都只接受已 grant 的 active 案件。`task` 与 `worklog` 可以省略 `case_id`，表示所务记录。联系人姓名只用于本地匹配，不会出现在 resolve 返回值。
+
+工具集由 scope 决定：案件面保留原有八个工具并增加 `anqi_worklog_add`；全局面提供 resolve/select/get、worklog、task、event、contact、fact、deadline、inbox，明确不提供 digest、文件工具、图片、slash 命令、shell、联网或 subagent。`anqi_worklog_add` 复用统一的 `createWorklogRecord`，AI 记录写入 `created_by='ai'`，律师可改可撤；期限仍只能记律师明说的日期，法定期限由确定性引擎派生。
+
+全局 persona 和 `anqi-global-intake` skill 规定五步规则：解析一句话、逐条本地认案、对歧义一次性提问、分别写日志/待办/事件/联系人，并逐条报告写入结果。该规则是合作律师真实记录习惯的改写，不允许猜案或把推断包装成事实。v2.12 的 IM 入站消息直接复用 global HTTP prompt 面；这个版本不做全所 digest、不把未经 resolve/select 的案件喂给模型，也不在刷新后重建本轮记录。
+
+前端在顶栏提供 AI 入口，快录条提供「交给 AI」切换；抽屉展示本轮记录、案件链接与撤销按钮，撤销调用既有人类删除端点，联系人更新只保留打开案件链接。全局抽屉不渲染图片贴入、slash 命令或审批档位下拉。
 
 ## 9. 外部集成边界
 
