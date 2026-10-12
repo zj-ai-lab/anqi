@@ -30,6 +30,7 @@ const old = { id: 9, source_type: 'event', source_id: 1, tier: 'hearing_day', st
 assert.equal(reconcile([{ ...rows.find((r) => r.tier === 'hearing_day'), title: '新' }], [old]).update.length, 1);
 assert.equal(reconcile([], [old]).cancel.length, 1);
 assert.equal(reconcile([{ ...rows.find((r) => r.tier === 'hearing_day') }], [{ ...old, status: 'cancelled', source_fingerprint: rows.find((r) => r.tier === 'hearing_day').source_fingerprint }]).insert.length, 0);
+assert.equal(reconcile([{ ...rows.find((r) => r.tier === 'hearing_day') }], [{ ...old, status: 'cancelled', status_reason: 'tier_disabled', source_fingerprint: rows.find((r) => r.tier === 'hearing_day').source_fingerprint }]).insert.length, 1);
 
 const plannerUrl = pathToFileURL(path.resolve('src/lib/reminder-plan.js')).href;
 const timezoneScript = `import { beijingToUtcIso, utcIsoToBeijing, planAutoReminders } from ${JSON.stringify(plannerUrl)};

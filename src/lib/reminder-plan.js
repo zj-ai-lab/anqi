@@ -135,7 +135,7 @@ export function reconcile(desired, existingAutoRows) {
   for (const item of desired) {
     const key = `${item.source_type}:${item.source_id}:${item.tier}`; desiredKeys.add(key);
     const row = byKey.get(key);
-    if (!row || (row.status === 'cancelled' && row.source_fingerprint !== item.source_fingerprint)
+    if (!row || (row.status === 'cancelled' && (row.source_fingerprint !== item.source_fingerprint || row.status_reason === 'tier_disabled'))
       || (TERMINAL.has(row.status) && row.source_fingerprint !== item.source_fingerprint)) { insert.push(item); continue; }
     if (row.status === 'cancelled' || TERMINAL.has(row.status)) continue;
     if (row.fire_at !== item.fire_at || row.title !== item.title || row.body !== item.body || row.source_fingerprint !== item.source_fingerprint) update.push({ id: row.id, patch: { ...item, version: Number(row.version || 1) + 1 } });
