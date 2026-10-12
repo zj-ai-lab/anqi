@@ -1323,7 +1323,11 @@ export class AgentSupervisor {
         audit(this.actor, 'agent-start-fail', 'agent-worker', 0, `scope=global cwd_invalid:${error.message}`);
         return { status: 'error', caseId: GLOBAL_SCOPE, error: 'cwd_invalid' };
       }
-      dirContext = { caseRoot: globalRoot, filesRoot: this.filesRoot || globalRoot, exists: true };
+      // 全局 scope 没有案件夹，也不应把宿主的 ANJIAN_FILES_ROOT 带进子进程。
+      // sandbox 配置仍要求一个 filesRoot；把同一个 0700 workspace 作为该根，
+      // 让 global 的所有路径坐标都落在这块空目录内，同时完全绕过
+      // resolveCaseDirectoryFn/案件文件根校验。
+      dirContext = { caseRoot: globalRoot, filesRoot: globalRoot, exists: true };
     } else {
       try {
         dirContext = this.resolveCaseDirectoryFn(this.filesRoot, caseRow);
