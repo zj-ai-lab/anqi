@@ -36,7 +36,7 @@
 - id: agent-presets
   name: '@deepseek-ai/dsh-agent-presets'
   config:
-    default: anqi
+    default: !!js (() => { const scope = String(process.env.DSH_ANQI_SCOPE || ''); if (!['case','global'].includes(scope)) throw new Error('DSH_ANQI_SCOPE must be case or global'); if (scope === 'global') return 'anqi-global'; return 'anqi'; })()
     roots:
       - path: !!js process.cwd() + '/preset'
         trust: system

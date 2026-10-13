@@ -39,8 +39,13 @@ export const Config = Schema.object({
   preflightTimeoutMs: Schema.number().step(1).min(1_000).default(60_000),
 });
 
-const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
-const REQUIRED_SKILL = 'anqi-case-brief';
+// Direct command-bridge unit tests load this plugin without supervisor env;
+// retain the historical案件 default. Production supervisor always injects an
+// explicit scope and the Cordis preset remains fail-closed when it is absent.
+const ANQI_SCOPE = String(process.env.DSH_ANQI_SCOPE || 'case');
+if (!['case', 'global'].includes(ANQI_SCOPE)) throw new Error('DSH_ANQI_SCOPE must be case or global');
+const REQUIRED_MCP_TOOL = ANQI_SCOPE === 'global' ? 'anqi_case_resolve' : 'mcp__anqi-local__case_folder_info';
+const REQUIRED_SKILL = ANQI_SCOPE === 'global' ? 'anqi-global-intake' : 'anqi-case-brief';
 const MAX_COMMAND_CHARS = 8_000;
 const COMMANDS_UNAVAILABLE = Object.freeze({
   ok: false,
@@ -155,7 +160,7 @@ export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
       sessionId: SessionId(sessionId),
       meta: {
         cwd: this.cwd,
-        agentPreset: 'anqi',
+        agentPreset: ANQI_SCOPE === 'global' ? 'anqi-global' : 'anqi',
       },
       agentOptions: {
         provider: this.provider,
@@ -163,7 +168,7 @@ export class AnqiJsonRpcServer extends HarnessSdkJsonRpcServer {
         ...(this.maxTokens === undefined ? {} : { maxTokens: this.maxTokens }),
       },
       setup: async (agentCtx) => {
-        await this.ctx.agentPresets.mount(agentCtx, 'anqi');
+        await this.ctx.agentPresets.mount(agentCtx, ANQI_SCOPE === 'global' ? 'anqi-global' : 'anqi');
         agentCtx.on('approval/request', (request, next) => {
           if (liveAgent === undefined || request.agent !== liveAgent) return next();
           return this.relayApproval(sessionId, request, next);

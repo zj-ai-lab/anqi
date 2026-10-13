@@ -68,6 +68,8 @@
 
 **它是什么：** 打开某个案件，页面上的「AI 助理」抽屉就是一个绑定本案的 agent 会话——这个案件的案件夹就是它的工作区，它只看得到、动得了这一个案件；无论对话里怎么说，都切换不到别的案件。引擎是内置的 [DSH（DeepSeek Harness）](https://github.com/deepseek-ai/deepseek-harness)——DeepSeek 开源的 agent 运行时（BSD-3-Clause），案齐把它作为进程外 sidecar 随包分发、统一钉版本，并在其上加装案件工具、案件夹边界与审批回路；供应商不写死，DeepSeek 官方或任何 OpenAI 兼容端点都可以。
 
+2.11.0 起全站只有一个 AI 抽屉，标题栏有「项目」选择器：「总入口」不绑定案件（只有案齐领域工具与本地认案，会把一句话拆成多条后分别记录），或选某个在办案件（案件夹即项目）。案件页默认本案，其它页默认总入口；切换项目不会停止任何助理。快录条也可切换为「交给 AI」，把当前这句话送给选中的项目；每条写入仍带 AI 标记，可在本轮面板撤销。
+
 **它能做什么：**
 
 - **读案卷、答问题。** 读取本案的台账投影（阶段、事件、期限、待办、日志、联系人、收费）和案件夹里的文件，回答「这案子现在什么状态」「下一步该做什么」，或按你的指令梳理材料。
@@ -101,8 +103,8 @@
 
 | 你的 Mac | 下载 |
 |---|---|
-| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.10.0-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.10.0/anqi-2.10.0-arm64.dmg)** |
-| Intel 芯片 | **[anqi-2.10.0-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.10.0/anqi-2.10.0-x64.dmg)** |
+| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.11.0-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.11.0/anqi-2.11.0-arm64.dmg)** |
+| Intel 芯片 | **[anqi-2.11.0-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.11.0/anqi-2.11.0-x64.dmg)** |
 
 > 不确定是哪种芯片：点左上角  → 「关于本机」，「芯片」一栏写 Apple M 开头的选 arm64，写 Intel 的选 x64。历史版本与校验文件在 [Releases 页面](https://github.com/zj-ai-lab/anqi/releases)。
 
@@ -281,10 +283,10 @@ flowchart LR
 
 ## 服务器 / Docker 部署
 
-推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.10.0`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.10.0 新增确定性提醒中枢与应用内通知（开庭 / 已确认期限 / 带时刻待办按档位自动提醒，人工单条提醒，反向代理需放行 `/api/notifications/stream` 的 SSE，见 SELF-HOSTING.md）。2.9.0 新增开庭时刻与地点、快录直接记开庭、传票上传识别（PDF 文字层 / 系统 OCR / 视觉模型，识别结果只回填表单）、手机日历优化与节前顺延提示，含 migration 029；2.9.1 为依赖安全补丁，无 migration；2.9.2 升级 AI 助理运行时（DSH 0.1.5-rc.3），无 migration；2.9.3 修复 AI 助理沙箱放宽请求可被自动放行的问题，无 migration；2.9.4 修复启用 Landlock 的 Linux 服务器无法开启完整档的问题，无 migration。升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
+推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.11.0`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.11.0 新增 AI 总入口（一个 AI 抽屉加项目选择器：总入口在服务端本地认案、一句话拆多条记录；选中案件即在案件夹项目里对话），含 migration 031，无新环境变量。2.10.0 新增确定性提醒中枢与应用内通知（开庭 / 已确认期限 / 带时刻待办按档位自动提醒，人工单条提醒，反向代理需放行 `/api/notifications/stream` 的 SSE，见 SELF-HOSTING.md）。2.9.0 新增开庭时刻与地点、快录直接记开庭、传票上传识别（PDF 文字层 / 系统 OCR / 视觉模型，识别结果只回填表单）、手机日历优化与节前顺延提示，含 migration 029；2.9.1 为依赖安全补丁，无 migration；2.9.2 升级 AI 助理运行时（DSH 0.1.5-rc.3），无 migration；2.9.3 修复 AI 助理沙箱放宽请求可被自动放行的问题，无 migration；2.9.4 修复启用 Landlock 的 Linux 服务器无法开启完整档的问题，无 migration。升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
 
 ```sh
-IMAGE=ghcr.io/zj-ai-lab/anqi:2.10.0
+IMAGE=ghcr.io/zj-ai-lab/anqi:2.11.0
 mkdir -p anqi/data anqi/case-files
 cd anqi
 docker pull "$IMAGE"

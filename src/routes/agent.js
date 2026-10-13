@@ -78,6 +78,7 @@ import {
   validateBaseURL,
 } from '../agent/config.js';
 import { fetchProviderModels, modelsErrorToHttpStatus } from '../agent/models-client.js';
+import { GLOBAL_SCOPE } from '../agent/supervisor.js';
 
 // 一次 prompt 的文本上限：不是纯粹的展示限制,也是成本/滥用防线——案件事实
 // 本身已经通过 anqi-owned MCP 工具传给模型,用户手打的这一句话没有理由超过
@@ -229,6 +230,13 @@ export function createAgentRouter(supervisor, {
     // +来源枚举，从不含 key 值本身（agentKeyStatus() 内部实现同样保证这一
     // 点）。
     const apiKey = agentKeyStatus();
+    if (req.query.scope === 'global') {
+      const worker = supervisor.publicStatus(GLOBAL_SCOPE);
+      return res.json({
+        status: worker.status, enabled: true, error: null, configured, worker: { ...worker, scope: GLOBAL_SCOPE, caseId: null, caseName: '' }, apiKey,
+        supportsImages: false,
+      });
+    }
     const caseIdRaw = req.query.case_id;
     if (caseIdRaw === undefined || caseIdRaw === '') {
       return res.json({
@@ -249,6 +257,69 @@ export function createAgentRouter(supervisor, {
       // 设置刚改而旧 worker 尚未重启时，把“将启用的模型”误报成“正在跑的模型”。
       supportsImages: worker.supportsImages === true,
     });
+  });
+
+  r.post('/agent/global/start', async (req, res) => {
+    const config = loadAgentConfig();
+    if (!config.enabled) return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled', status: 'disabled' });
+    let result;
+    try { result = await supervisor.start(GLOBAL_SCOPE); }
+    catch { return res.status(500).json({ error: 'AI 助理启动失败', code: 'internal_error' }); }
+    if (result.status === 'disabled') return res.status(409).json({ error: result.error || 'AI 助理未启用', code: 'agent_disabled', status: result.status });
+    if (result.status === 'error') return res.status(502).json({ error: result.error || 'AI 助理启动失败', code: 'agent_start_failed', status: result.status });
+    return res.json(supervisor.publicStatus(GLOBAL_SCOPE));
+  });
+
+  r.post('/agent/global/prompt', (req, res) => {
+    const config = loadAgentConfig();
+    if (!config.enabled) return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    const raw = req.body?.text;
+    const text = typeof raw === 'string' ? raw.trim() : '';
+    if (!text) return res.status(400).json({ error: 'text 不能为空' });
+    if (text.length > MAX_PROMPT_CHARS) return res.status(400).json({ error: `text 过长（上限 ${MAX_PROMPT_CHARS} 字符）` });
+    if (req.body?.attachmentIds !== undefined) {
+      return res.status(400).json({ error: '全局会话不支持图片', code: 'images_not_supported_global' });
+    }
+    if (!supervisor.isLive(GLOBAL_SCOPE)) return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: 'worker_not_running' });
+    audit(req.actor, 'agent-prompt', 'agent-worker', 0, `scope=global chars=${text.length}`);
+    const dispatched = supervisor.prompt(GLOBAL_SCOPE, text, []);
+    dispatched.catch(() => {});
+    return res.status(202).json({ accepted: true });
+  });
+
+  r.post('/agent/global/cancel', (req, res) => {
+    const config = loadAgentConfig();
+    if (!config.enabled) return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    const cancelled = supervisor.cancelTurn(GLOBAL_SCOPE, `cancelled by ${req.actor}`);
+    audit(req.actor, 'agent-cancel', 'agent-worker', 0, 'scope=global');
+    return res.json({ cancelled });
+  });
+
+  r.post('/agent/global/approval-tier', (req, res) => {
+    const config = loadAgentConfig();
+    if (!config.enabled) return res.status(409).json({ error: config.error || 'AI 助理未启用', code: 'agent_disabled' });
+    const approvalTier = String(req.body?.approvalTier ?? '').trim();
+    if (!ALLOWED_AGENT_APPROVAL_TIERS.has(approvalTier)) return res.status(400).json({ error: 'approvalTier 必须是 1、2 或 3', code: 'invalid_tier' });
+    const result = supervisor.setApprovalTier(GLOBAL_SCOPE, approvalTier);
+    if (!result.ok) return res.status(409).json({ error: 'AI 助理当前不在运行状态', code: result.reason || 'unavailable' });
+    return res.json(result);
+  });
+
+  r.get('/agent/global/events', (req, res) => {
+    const config = loadAgentConfig();
+    res.writeHead(200, { 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', Connection: 'keep-alive', 'X-Accel-Buffering': 'no' });
+    const send = (type, data) => res.write(`event: ${type}\ndata: ${JSON.stringify({ ...data, scope: GLOBAL_SCOPE, caseId: null })}\n\n`);
+    if (!config.enabled) {
+      send('status', { status: 'disabled', error: config.error || null });
+      const hb = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
+      req.on('close', () => { clearInterval(hb); res.end(); });
+      return;
+    }
+    const snapshot = supervisor.publicStatus(GLOBAL_SCOPE);
+    send('status', { ...snapshot, scope: GLOBAL_SCOPE, caseId: null, caseName: '' });
+    const unsubscribe = supervisor.onEvent(GLOBAL_SCOPE, (event) => send(event.type, { type: event.type, at: event.at, origin: event.origin, data: event.data }));
+    const hb = setInterval(() => res.write(': ping\n\n'), SSE_HEARTBEAT_MS);
+    req.on('close', () => { clearInterval(hb); unsubscribe(); res.end(); });
   });
 
   // POST /api/agent/models——设置页"拉取该 key 可用的模型列表"这一步的

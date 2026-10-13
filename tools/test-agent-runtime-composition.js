@@ -11,7 +11,7 @@ const ASSETS = path.join(ROOT, 'src/agent/assets');
 const CONFIG = path.join(ASSETS, 'anqi.cordis.yml');
 const BIN = path.join(ASSETS, 'bin.mjs');
 
-async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
+async function bootAndPreflight(mode, { pluginPatch = '', onReady, scope = 'case' } = {}) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), `anqi-dsh-${mode}-`));
   const cwd = path.join(scratch, 'case');
   const sessionRoot = path.join(scratch, 'sessions');
@@ -21,6 +21,10 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
   fs.mkdirSync(sessionRoot);
   fs.mkdirSync(sandboxTemp);
   fs.writeFileSync(databasePath, 'composition-boundary-placeholder');
+  const skillRoot = path.join(scratch, 'skills');
+  const skillName = scope === 'global' ? 'anqi-global-intake' : 'anqi-case-brief';
+  fs.mkdirSync(path.join(skillRoot, skillName), { recursive: true });
+  fs.copyFileSync(path.join(ASSETS, 'skills', skillName, 'SKILL.md'), path.join(skillRoot, skillName, 'SKILL.md'));
 
   const sessionId = `composition-${mode}`;
   const child = spawn(process.execPath, ['--expose-internals', BIN, CONFIG], {
@@ -35,13 +39,14 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
       DEEPSEEK_API_KEY: 'composition-test-key',
       DSH_BASE_URL: 'https://api.deepseek.com',
       DSH_MODEL: 'deepseek-chat',
-      DSH_CAPABILITY_MODE: mode,
-      DSH_PERMISSION_MODE: mode === 'full' ? 'workspace-write' : 'read-only',
+      DSH_CAPABILITY_MODE: scope === 'global' ? 'project' : mode,
+      DSH_ANQI_SCOPE: scope,
+      DSH_PERMISSION_MODE: scope === 'global' || mode !== 'full' ? 'read-only' : 'workspace-write',
       DSH_CWD: cwd,
       DSH_ANQI_FILES_ROOT: scratch,
       DSH_ANQI_DB_PATH: databasePath,
       DSH_ANQI_SANDBOX_TMP: sandboxTemp,
-      DSH_ANQI_SKILLS_ROOT: path.join(ASSETS, 'skills'),
+      DSH_ANQI_SKILLS_ROOT: skillRoot,
       DSH_SESSION_ROOT: sessionRoot,
       DSH_PREFLIGHT_TIMEOUT_MS: '8000',
       ANQI_BASE_URL: 'http://127.0.0.1:9',
@@ -80,7 +85,7 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
     await rpc('session/create', { sessionId });
     const preflight = await rpc('session/preflight', { sessionId });
     assert.equal(preflight.ready, true);
-    assert.deepEqual(preflight.skills.names, ['anqi-case-brief']);
+    assert.deepEqual(preflight.skills.names, [skillName]);
     const readyResult = onReady
       ? await onReady({ rpc, preflight, sessionId })
       : new Set(preflight.tools.visibleNames);
@@ -100,7 +105,7 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady } = {}) {
 }
 
 const projectTools = await bootAndPreflight('project');
-for (const name of ['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'skill', 'todo_write']) {
+for (const name of ['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'skill', 'todo_write', 'anqi_worklog_add']) {
   assert.ok(projectTools.has(name), `project 档缺少案件项目工具 ${name}`);
 }
 for (const name of ['bash', 'web_search', 'subagent', 'workflow', 'ralph']) {
@@ -117,6 +122,15 @@ for (const name of [
 }
 
 console.log('agent runtime composition tests: project/full real boot + scoped tools + trusted skill passed');
+
+const globalTools = await bootAndPreflight('full', { scope: 'global' });
+for (const name of ['anqi_case_resolve', 'anqi_case_select', 'anqi_case_get', 'anqi_worklog_add', 'anqi_task_add', 'anqi_event_add', 'anqi_contact_upsert', 'anqi_fact_add', 'anqi_deadline_add', 'anqi_inbox_propose', 'ask_user_question', 'skill', 'todo_write']) {
+  assert.ok(globalTools.has(name), `global scope 缺少工具 ${name}`);
+}
+for (const name of ['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'bash', 'web_search', 'subagent']) {
+  assert.equal(globalTools.has(name), false, `global scope 不应发布 ${name}`);
+}
+console.log('agent runtime composition global scope: project-only tools + global skill passed');
 
 const hotRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-dsh-plugin-hot-'));
 try {

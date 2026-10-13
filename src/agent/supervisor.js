@@ -67,7 +67,7 @@ import {
   createRiskClassifier,
   riskActionText,
 } from './risk-classifier.js';
-import { bindSession, unbindSession } from './session-registry.js';
+import { bindSession, bindGlobalSession, unbindSession } from './session-registry.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -202,8 +202,11 @@ const AGENT_DIR_IS_PACKAGED = ASSETS_DIR !== path.join(__dirname, 'assets');
 const CORDIS_CONFIG = path.join(ASSETS_DIR, 'anqi.cordis.yml');
 const DSH_BIN = path.join(ASSETS_DIR, 'bin.mjs');
 const TRUSTED_SKILLS_ROOT = path.join(ASSETS_DIR, 'skills');
+export const GLOBAL_SCOPE = 'global';
 const REQUIRED_SKILL_NAME = 'anqi-case-brief';
+const GLOBAL_SKILL_NAME = 'anqi-global-intake';
 const REQUIRED_SKILL_FILE = path.join(TRUSTED_SKILLS_ROOT, REQUIRED_SKILL_NAME, 'SKILL.md');
+const GLOBAL_SKILL_FILE = path.join(TRUSTED_SKILLS_ROOT, GLOBAL_SKILL_NAME, 'SKILL.md');
 
 // ---- assets/node_modules：运行时确保，不再依赖提交进 git 的符号链接 ----
 // cordis 加载的插件（plugins/dsh-anqi、plugins/dsh-anqi-jsonrpc）与
@@ -313,6 +316,7 @@ function readDshVersion() {
 }
 const DSH_VERSION = readDshVersion();
 const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
+const GLOBAL_REQUIRED_TOOL = 'anqi_case_resolve';
 
 // session/preflight 的返回值必须被宿主逐字段核验——设计稿 §3.1「session/
 // preflight → exact scoped MCP registry + exact skill snapshot」与 §6 门禁 4
@@ -321,18 +325,20 @@ const REQUIRED_MCP_TOOL = 'mcp__anqi-local__case_folder_info';
 // dsh-anqi-jsonrpc/index.js 只校验了 tool 一侧，"唯一 anqi skill" 那一半此前
 // 完全没有宿主侧机械约束（只剩子进程自证）。逐字段核验照抄参考实现
 // driver.mjs 的 assertFirstRequestReadiness/preflight 断言块。
-function isPreflightReady(preflight) {
+function isPreflightReady(preflight, scope = 'case') {
+  const requiredTool = scope === GLOBAL_SCOPE ? GLOBAL_REQUIRED_TOOL : REQUIRED_MCP_TOOL;
+  const requiredSkill = scope === GLOBAL_SCOPE ? GLOBAL_SKILL_NAME : REQUIRED_SKILL_NAME;
   const visibleToolNames = preflight?.tools?.visibleNames;
   const skillNames = preflight?.skills?.names;
   return preflight?.ready === true
-    && preflight.tools?.required === REQUIRED_MCP_TOOL
+    && preflight.tools?.required === requiredTool
     && preflight.tools?.ready === true
     && Array.isArray(visibleToolNames)
-    && visibleToolNames.includes(REQUIRED_MCP_TOOL)
+    && visibleToolNames.includes(requiredTool)
     && preflight.skills?.complete === true
     && Array.isArray(skillNames)
     && skillNames.length === 1
-    && skillNames[0] === REQUIRED_SKILL_NAME
+    && skillNames[0] === requiredSkill
     && preflight.skills?.ready === true;
 }
 
@@ -566,21 +572,22 @@ function verifyTrustedSkillsRoot() {
       }
     }
   }
-  if (!existsSync(REQUIRED_SKILL_FILE)) {
-    throw new Error(`required anqi skill not found: ${REQUIRED_SKILL_FILE}`);
+  for (const skillFile of [REQUIRED_SKILL_FILE, GLOBAL_SKILL_FILE]) {
+    if (!existsSync(skillFile)) throw new Error(`required anqi skill not found: ${skillFile}`);
   }
   return root;
 }
 
-function materializeTrustedSkillsRoot(sourceRoot) {
+function materializeTrustedSkillsRoot(sourceRoot, scope = 'case') {
   const runtimeRoot = mkdtempSync(path.join(tmpdir(), 'anqi-dsh-skills-'));
   try {
     chmodSync(runtimeRoot, 0o700);
-    const runtimeSkillDir = path.join(runtimeRoot, REQUIRED_SKILL_NAME);
+    const skillName = scope === GLOBAL_SCOPE ? GLOBAL_SKILL_NAME : REQUIRED_SKILL_NAME;
+    const runtimeSkillDir = path.join(runtimeRoot, skillName);
     mkdirSync(runtimeSkillDir, { mode: 0o700 });
     chmodSync(runtimeSkillDir, 0o700);
     copyFileSync(
-      path.join(sourceRoot, REQUIRED_SKILL_NAME, 'SKILL.md'),
+      path.join(sourceRoot, skillName, 'SKILL.md'),
       path.join(runtimeSkillDir, 'SKILL.md')
     );
     chmodSync(path.join(runtimeSkillDir, 'SKILL.md'), 0o600);
@@ -659,6 +666,7 @@ function buildSpawnEnv({
   sessionId,
   sessionRoot,
   skillsRoot,
+  scope = 'case',
 }) {
   return {
     ...baseSpawnEnv(),
@@ -678,10 +686,11 @@ function buildSpawnEnv({
     [config.canonicalKeyEnv]: apiKeyValue,
     DSH_BASE_URL: config.baseURL,
     DSH_MODEL: config.model,
-    DSH_CAPABILITY_MODE: config.capabilityMode,
+    DSH_ANQI_SCOPE: scope,
+    DSH_CAPABILITY_MODE: scope === GLOBAL_SCOPE ? 'project' : config.capabilityMode,
     // project 档只读文件；full 档沿用上游默认 workspace-write + ask。
     // anqi filesystem provider 无论哪档都继续拒绝标准文件工具越出案件夹。
-    DSH_PERMISSION_MODE: config.capabilityMode === 'full' ? 'workspace-write' : 'read-only',
+    DSH_PERMISSION_MODE: scope === GLOBAL_SCOPE || config.capabilityMode !== 'full' ? 'read-only' : 'workspace-write',
     ...(config.pluginPatch ? { DSH_PLUGIN_PATCH: config.pluginPatch } : {}),
     DSH_CWD: caseCwd,
     // 只供 dsh-anqi-sandbox 构造严格 profile；provider 挂载后会立即从 DSH
@@ -890,9 +899,10 @@ class Worker {
   // 器挂在实例上就会被孤儿化，SSE 连接从此永久收不到任何后续事件；且如果
   // onEvent() 在 worker 尚未创建时调用（浏览器先连 events、再点启动的自然顺
   // 序），挂在实例上的写法会直接返回一个假的空订阅，整条下行通路形同虚设。
-  constructor(caseId, caseName, sessionId, dispatch) {
+  constructor(caseId, caseName, sessionId, dispatch, scope = 'case') {
     this.caseId = caseId;
     this.caseName = caseName;
+    this.scope = scope;
     this.cwd = null;
     this.sessionId = sessionId;
     this.status = 'starting';
@@ -940,7 +950,7 @@ class Worker {
   // 因为绝大多数 emit() 调用点都是宿主自己的生命周期事件；唯一的 wire 转发点
   // （_handleNotification 里的 session.event 分支）显式传 'wire'。
   emit(type, data, origin = 'supervisor') {
-    const event = { type, caseId: this.caseId, sessionId: this.sessionId, at: nowIso(), origin, data };
+    const event = { type, scope: this.scope, caseId: this.scope === GLOBAL_SCOPE ? null : this.caseId, sessionId: this.sessionId, at: nowIso(), origin, data };
     this.dispatch(event);
   }
 }
@@ -1010,11 +1020,12 @@ export class AgentSupervisor {
   // ---- 对外只读状态 ----
   status(caseId) {
     const worker = this.workers.get(caseId);
-    if (!worker) return { status: 'stopped', caseId };
+    if (!worker) return { status: 'stopped', scope: caseId === GLOBAL_SCOPE ? GLOBAL_SCOPE : 'case', caseId: caseId === GLOBAL_SCOPE ? null : caseId, caseName: caseId === GLOBAL_SCOPE ? '' : undefined };
     return {
       status: worker.status,
-      caseId: worker.caseId,
-      caseName: worker.caseName,
+      scope: worker.scope,
+      caseId: worker.scope === GLOBAL_SCOPE ? null : worker.caseId,
+      caseName: worker.scope === GLOBAL_SCOPE ? '' : worker.caseName,
       cwd: worker.cwd,
       sessionId: worker.sessionId,
       pid: worker.pid,
@@ -1042,6 +1053,7 @@ export class AgentSupervisor {
       : full.supportsImages;
     return {
       status: full.status,
+      scope: full.scope || (caseId === GLOBAL_SCOPE ? GLOBAL_SCOPE : 'case'),
       caseId: full.caseId,
       caseName: full.caseName,
       dshVersion: full.dshVersion,
@@ -1237,6 +1249,7 @@ export class AgentSupervisor {
   }
 
   async _startWorker(caseId) {
+    const scope = caseId === GLOBAL_SCOPE ? GLOBAL_SCOPE : 'case';
     // 同一案件的上一个 worker 可能正在 stop()（异步、最多 30s shutdown 往返
     // + 10s 强杀等待）——'stopping' 不在 LIVE_STATUSES 里，start() 顶部那个
     // 判断会直接放过，走到下面重新 spawn 一个全新 worker，而旧 worker 的子
@@ -1259,7 +1272,7 @@ export class AgentSupervisor {
     // 真正通过后才允许继续。门禁故意放在 resolveAgentApiKey()、案件 DB 查询、
     // workspace 解析与 spawn 之前；不支持的容器既拿不到模型 key，也不会出现
     // “worker 看似 ready，第一条 bash 才突然 SANDBOX_UNAVAILABLE”的静默失败。
-    if (config.capabilityMode === 'full') {
+    if (scope !== GLOBAL_SCOPE && config.capabilityMode === 'full') {
       try {
         this.bashSandboxCapability ??= this.bashSandboxProbeFn();
       } catch {
@@ -1295,21 +1308,37 @@ export class AgentSupervisor {
 
     // 2) 案件夹校验：必须在 ANJIAN_FILES_ROOT 下、与 case.folder_path 精确对应、不是
     //    symlink——复用既有的 secure-files.resolveCaseDirectory，不重新发明。
-    const caseRow = db.prepare('SELECT id, name, folder_path FROM cases WHERE id = ?').get(caseId);
+    const caseRow = scope === GLOBAL_SCOPE
+      ? { id: null, name: '', folder_path: '' }
+      : db.prepare('SELECT id, name, folder_path FROM cases WHERE id = ?').get(caseId);
     if (!caseRow) {
       audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'case_not_found');
       return { status: 'error', caseId, error: 'case_not_found' };
     }
     let dirContext;
-    try {
-      dirContext = this.resolveCaseDirectoryFn(this.filesRoot, caseRow);
-    } catch (error) {
-      audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `cwd_invalid:${error.code || error.message}`);
-      return { status: 'error', caseId, error: 'cwd_invalid' };
-    }
-    if (!dirContext.exists) {
-      audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'case_folder_missing');
-      return { status: 'error', caseId, error: 'case_folder_missing' };
+    if (scope === GLOBAL_SCOPE) {
+      const globalRoot = path.join(path.dirname(path.resolve(db.name)), 'agent-global-workspace');
+      try { mkdirSync(globalRoot, { recursive: true, mode: 0o700 }); chmodSync(globalRoot, 0o700); }
+      catch (error) {
+        audit(this.actor, 'agent-start-fail', 'agent-worker', 0, `scope=global cwd_invalid:${error.message}`);
+        return { status: 'error', caseId: GLOBAL_SCOPE, error: 'cwd_invalid' };
+      }
+      // 全局 scope 没有案件夹，也不应把宿主的 ANJIAN_FILES_ROOT 带进子进程。
+      // sandbox 配置仍要求一个 filesRoot；把同一个 0700 workspace 作为该根，
+      // 让 global 的所有路径坐标都落在这块空目录内，同时完全绕过
+      // resolveCaseDirectoryFn/案件文件根校验。
+      dirContext = { caseRoot: globalRoot, filesRoot: globalRoot, exists: true };
+    } else {
+      try {
+        dirContext = this.resolveCaseDirectoryFn(this.filesRoot, caseRow);
+      } catch (error) {
+        audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `cwd_invalid:${error.code || error.message}`);
+        return { status: 'error', caseId, error: 'cwd_invalid' };
+      }
+      if (!dirContext.exists) {
+        audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, 'case_folder_missing');
+        return { status: 'error', caseId, error: 'case_folder_missing' };
+      }
     }
 
     // 2.5) 正式库绝不能落入 DSH workspace。仅靠“默认部署通常把 /app/data 与
@@ -1334,7 +1363,7 @@ export class AgentSupervisor {
     let materializedSkillsRoot;
     try {
       trustedSkillsSource = verifyTrustedSkillsRoot();
-      materializedSkillsRoot = materializeTrustedSkillsRoot(trustedSkillsSource);
+      materializedSkillsRoot = materializeTrustedSkillsRoot(trustedSkillsSource, scope);
     } catch (error) {
       audit(this.actor, 'agent-start-fail', 'agent-worker', caseId, `skills_root_invalid:${error.message}`.slice(0, 200));
       return { status: 'error', caseId, error: 'skills_root_invalid' };
@@ -1366,8 +1395,8 @@ export class AgentSupervisor {
     // agent-proposals 等路由才能按 session_id 反查、不再信任请求体里的
     // case_id。在 spawn 之前登记，保证子进程第一次能发起 HTTP 请求时绑定
     // 已经存在，不留任何"session 已注入子进程但服务端还查不到"的窗口。
-    bindSession(sessionId, caseId);
-    const worker = new Worker(caseId, caseRow.name, sessionId, (event) => this._dispatch(caseId, event));
+    if (scope === GLOBAL_SCOPE) bindGlobalSession(sessionId); else bindSession(sessionId, caseId);
+    const worker = new Worker(caseId, caseRow.name, sessionId, (event) => this._dispatch(caseId, event), scope);
     worker.provider = config.provider;
     worker.model = config.model;
     worker.supportsImages = config.supportsImages === true;
@@ -1395,6 +1424,7 @@ export class AgentSupervisor {
       sessionId,
       sessionRoot: this.sessionRoot,
       skillsRoot: materializedSkillsRoot,
+      scope,
     });
 
     let child;
@@ -1410,7 +1440,7 @@ export class AgentSupervisor {
     }
     worker.child = child;
     worker.pid = child.pid ?? null;
-    audit(this.actor, 'agent-start', 'agent-worker', caseId, `session=${sessionId} pid=${worker.pid}`);
+    audit(this.actor, 'agent-start', 'agent-worker', scope === GLOBAL_SCOPE ? 0 : caseId, `scope=${scope} session=${sessionId} pid=${worker.pid}`);
 
     this._wireChild(worker, child);
 
@@ -1447,7 +1477,7 @@ export class AgentSupervisor {
       throw new Error('session/create returned the wrong session identity');
     }
     const preflight = await this._request(worker, 'session/preflight', { sessionId: worker.sessionId }, this.preflightTimeoutMs);
-    if (!isPreflightReady(preflight)) {
+    if (!isPreflightReady(preflight, worker.scope)) {
       throw new Error('session/preflight did not establish the required scoped tools and skill');
     }
     worker.status = 'ready';
@@ -2212,7 +2242,7 @@ export class AgentSupervisor {
         worker._firstRequestHeader = event.data;
       }
     } else if (event.type === 'tool/call') {
-      if (event.data?.name === REQUIRED_MCP_TOOL) worker._sawRequiredMcpCall = true;
+      if (event.data?.name === (worker.scope === GLOBAL_SCOPE ? GLOBAL_REQUIRED_TOOL : REQUIRED_MCP_TOOL)) worker._sawRequiredMcpCall = true;
     } else if (event.type === 'turn/end') {
       if (worker._turnResolvers) {
         worker._turnResolvers.sawEnd = true;
@@ -2239,9 +2269,10 @@ export class AgentSupervisor {
       // firstRequestHeader.header?.tools 才是正确路径。
       const requestHeader = worker._firstRequestHeader;
       const tools = requestHeader?.header?.tools;
+      const requiredTool = worker.scope === GLOBAL_SCOPE ? GLOBAL_REQUIRED_TOOL : REQUIRED_MCP_TOOL;
       const ready = requestHeader?.reason === 'initial'
-        && Array.isArray(tools) && tools.some((tool) => tool?.name === REQUIRED_MCP_TOOL)
-        && worker._sawRequiredMcpCall === true;
+        && Array.isArray(tools) && tools.some((tool) => tool?.name === requiredTool)
+        && (worker.scope === GLOBAL_SCOPE || worker._sawRequiredMcpCall === true);
       if (!ready) {
         // firstTurnChecked 只有在门禁真正通过之后才置 true——之前这里无条件
         // 置 true，一次失败的首个 turn 会让门禁对第二个 turn 永久失效（一次
@@ -2627,7 +2658,7 @@ export class AgentSupervisor {
       rmSync(worker.sandboxTempRoot, { recursive: true, force: true });
       worker.sandboxTempRoot = null;
     }
-    audit(this.actor, `agent-${status}`, 'agent-worker', worker.caseId, worker.redact(String(detail || '')).slice(0, 200));
+    audit(this.actor, `agent-${status}`, 'agent-worker', worker.scope === GLOBAL_SCOPE ? 0 : worker.caseId, `scope=${worker.scope} ${worker.redact(String(detail || ''))}`.slice(0, 200));
     worker.emit('worker/exit', { status, detail: worker.redact(String(detail || '')) });
   }
 }

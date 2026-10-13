@@ -1894,6 +1894,19 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .quickbar input[type=text] { flex: 1 1 220px; min-width: 160px; }
 .quickbar select, .quickbar input { min-height: 34px; }
 .quickbar .btn { min-height: 34px; }
+.quick-ai-toggle { min-height: 34px; border: 1px solid var(--green-line); color: var(--green); background: var(--surface-solid); }
+.quick-ai-toggle[aria-pressed="true"] { background: var(--green-bg); font-weight: 650; }
+/* 「交给 AI」当前目标小字：点它打开抽屉换项目 */
+.quick-ai-target { display: inline-block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; color: var(--meta); font-size: 12px; cursor: pointer; }
+.quick-ai-target:hover { color: var(--green); }
+/* 「交给 AI」模式：只留一句话输入框、切换钮、目标与提交钮；不改各控件自己的 hidden。 */
+.quickbar.quick-ai-active select,
+.quickbar.quick-ai-active input[type=date],
+.quickbar.quick-ai-active input[type=time],
+.quickbar.quick-ai-active input[aria-label="开庭地点"],
+.quickbar.quick-ai-active .quick-attach,
+.quickbar.quick-ai-active .quick-attachment,
+.quickbar.quick-ai-active .quick-tidy { display: none !important; }
 .quickbar .quick-attachment { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 220px; color: var(--meta); font-size: 12px; }
 .quickbar .quick-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quickbar .quick-attachment-clear { flex: none; border: 0; padding: 2px 4px; background: transparent; color: var(--meta); cursor: pointer; }
@@ -1904,6 +1917,7 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   .quickbar input[type=text] { min-width: 0; flex-basis: 160px; max-width: 100%; }
   .quickbar select, .quickbar input { max-width: 100%; min-width: 0; }
   .quickbar .quick-attachment { max-width: min(100%, 180px); }
+  .quickbar .quick-ai-toggle { flex: 0 0 auto; min-width: 86px; padding: 0 8px; white-space: nowrap; }
 }
 
 /* ── A-23 toast ── */
@@ -2575,10 +2589,12 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 }
 .agent-drawer-head {
   display: flex; align-items: center; gap: 10px;
-  min-height: 48px; padding: 0 12px 0 16px;
+  min-height: 48px; padding: 6px 12px 6px 16px;
   border-bottom: 1px solid var(--border);
 }
-.agent-drawer-title { display: flex; align-items: center; gap: 8px; font: 650 14.5px/1.3 var(--sans); color: var(--ink); }
+.agent-drawer-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; font: 650 14.5px/1.3 var(--sans); color: var(--ink); }
+/* 标题栏「项目」选择器：总入口 / 在办案件；长案件名省略号 */
+.agent-project-select { min-height: 28px; min-width: 0; max-width: 220px; padding: 3px 24px 3px 8px; font-size: 12px; font-weight: 500; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .agent-approval-tier { min-height: 28px; padding: 3px 24px 3px 8px; font-size: 12px; font-weight: 500; }
 .agent-classifier-note { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .agent-drawer-head .iconbtn { margin-left: auto; }
@@ -2607,6 +2623,12 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   background: var(--chip-bg); border: 1px dashed var(--chip-bd); color: var(--muted);
   font-family: var(--f-case); font-size: 12px;
 }
+/* 「本轮记录」：AI 直写的待办/事件/联系人等紧凑清单，压在对话日志上方 */
+.agent-round-records { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.agent-round-title { color: var(--meta); font-size: 12px; font-weight: 600; }
+.agent-round-record { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; border: 1px solid var(--green-line); border-radius: var(--r-btn); background: var(--green-bg); font-size: 12px; }
+.agent-round-record a { color: var(--green); }
+.agent-round-record.is-revoked { text-decoration: line-through; opacity: .65; }
 .agent-markdown { white-space: normal; }
 .agent-markdown > :first-child { margin-top: 0; }
 .agent-markdown > :last-child { margin-bottom: 0; }
@@ -2697,6 +2719,7 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .agent-command-description { min-width: 0; color: var(--muted); font-size: 12px; line-height: 1.35; text-align: right; }
 .agent-drawer-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .agent-attach-btn { margin-right: auto; }
+.agent-global-entry-slot { display: inline-flex; align-items: center; }
 
 /* ── A-27 响应式（≥1280 桌面 / 768–1279 平板 / <768 移动） ── */
 @media (max-width: 1279px) {
@@ -2785,6 +2808,8 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 @media (max-width: 767px) {
   :root { --gap: 12px; }
   body { font-size: 14px; }
+  /* AI 抽屉标题栏：项目选择器独占一行 */
+  .agent-project-select { flex: 1 1 100%; max-width: 100%; min-height: 36px; }
 
   /* 顶栏 → 汉堡下拉 */
   .topnav { gap: 8px; }
@@ -4007,3 +4032,10 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .notify-wrap{position:relative;display:flex;align-items:center}.notify-button{position:relative}.notify-count{position:absolute;top:-.2rem;right:-.2rem;min-width:1.1rem;padding:0 .2rem;border-radius:999px;background:var(--red,#b42318);color:#fff;font:11px/1.1 var(--mono,monospace);text-align:center}.notify-dropdown{position:absolute;right:0;top:calc(100% + .5rem);z-index:20;width:min(360px,calc(100vw - 24px));padding:.75rem;background:var(--surface-solid,#fff);border:1px solid var(--line,#ddd);box-shadow:0 10px 30px rgba(0,0,0,.16);border-radius:.6rem}.notify-dropdown[hidden]{display:none}.notify-state{display:flex;justify-content:space-between;gap:.5rem;align-items:center;margin-bottom:.5rem;font-size:.85rem}.notify-off{color:var(--amber,#9a6700)}.notify-list{display:grid;gap:.45rem;max-height:320px;overflow:auto}.notify-item{display:flex;justify-content:space-between;gap:.5rem;padding:.45rem 0;border-bottom:1px solid var(--line,#eee);font-size:.82rem}.notify-item small{display:block;color:var(--muted,#6b7280)}.notify-status{margin-left:.4rem}.notify-status.queued{color:var(--amber,#9a6700)}.notify-status.shown{color:var(--green,#16794c)}.reminder-list{display:grid;gap:.45rem}.reminder-row{display:flex;align-items:center;gap:.6rem;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid var(--line,#eee)}
 
 .precondition-hint.is-flip-no{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 12%,transparent)}
+
+/* 2.11：顶栏多了「AI」入口（44px），375–430px 手机上放不下会把「退出」挤出屏幕、整页横向溢出。
+   窄屏只留印章图标、收紧间距，腾出约 50px；平板宽度不受影响。放在文件末尾，确保晚于 767px 块生效。 */
+@media (max-width: 440px) {
+  .topnav { gap: 6px; }
+  .topnav .brand b { display: none; }
+}

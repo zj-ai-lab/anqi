@@ -1,6 +1,6 @@
 # AI 助理 sidecar · 交付门禁证据台账
 
-> 本文对应设计稿 `anqi-spike-dsh/spikes/dsh-agent/docs/mainline-plan.md` §6 的十条交付门禁，
+> 本文对应设计稿 `anqi-spike-dsh/spikes/dsh-agent/docs/mainline-plan.md` §6 的十条交付门禁，并在 2.11.0 新增全局 scope 第十一条，
 > 逐条登记**证据在哪个文件的哪一段**，以及这条证据的强度属于哪一档。
 >
 > 本文只登记证据，不替代证据：任何一条的判定都必须能被读者顺着下面的文件路径自己复核。
@@ -17,7 +17,7 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 66 步；下面按当前实际步号记录：
+`npm run check` 当前 98 步；下面按当前实际步号记录：
 
 - 第 31–37 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
@@ -56,6 +56,7 @@
 - 第 66 步：`tools/test-agent-image-frontend.js`——图片专项前端 smoke，覆盖 vision-only
   贴图入口、剪贴板/文件草稿、上传后 prompt 仅传 id、即时与刷新历史缩略图；任务白名单
   禁止改既有 `tools/smoke-agent-frontend.js`，因此该步用独立图片专项文件承载新增断言。
+- 第 93–98 步：2.11.0 的 migration 031、本地 case-match、global internal HTTP、global HTTP、全局前端静态契约，以及 `case_folder_info` 下发北京时间日期（真 stdio MCP 进程）；第 46 步同时覆盖案件/global 的真实 DSH composition，第 35 步保留 supervisor 生命周期门禁。
 
 > **2026-08-24 现行口径**：本文后部保留的 rc.7、无文件工具与“read 没有 containment”文字是
 > 当时取证的历史记录。基线 2026-08-24 升至 `0.1.1-rc.2`（2026-10 再升至 `0.1.5-rc.3`），并恢复文件工具：案齐自有 filesystem
@@ -116,6 +117,8 @@
   containment，`dsh-anqi-workspace-guard` 再拦截绕过 provider 直调 ripgrep 的 glob/grep。
   `tools/test-agent-workspace-guard.js` 对相对、绝对、`..` 与外链符号链接逐项实跑；
   `tools/test-agent-runtime-composition.js` 真实启动 project/full 两档并核对发布工具集合。
+
+- **global scope 对应证据（2.11.0）** — 全局会话不使用案件绑定的 `caseIdForSession()`：`/internal/agent-case-view?case_id=` 只接受 session registry 中已 grant 的 active 案件；`agent-case-resolve` 唯一命中自动 grant，多候选只能用刚 offer 的候选执行 select。`tools/test-agent-global-internal-http.js` 断言未 resolve/select 的案件读不到、写不进，且 resolve 返回行不含联系人电话/证件等字段；`tools/test-agent-runtime-composition.js` 断言 global visible tools 不含文件、shell、联网或 subagent。
 
 ## 门禁 2 · `enabled=false` 在 credential、MCP、prewarm、spawn 之前短路
 
@@ -262,6 +265,8 @@
   文件读取能力，必须先给 read 路径补上显式 containment，不能只靠 persona
   约束重新打开这条面。
 
+- **global scope 对应证据（2.11.0）** — global workspace 不走案件夹解析，`tools/test-agent-supervisor.js` 的 global 场景（以及 `test-agent-runtime-composition.js`）核对 `DSH_CWD` 为数据库同级 0700 目录、`DSH_CAPABILITY_MODE=project`、`DSH_PERMISSION_MODE=read-only`，并确认 full 设置不会触发 bash 探针；global session 在 spawn 前登记，worker 终态注销。
+
 ## 门禁 4 · 首个 `request/header` 含唯一 anqi skill 与精确 MCP 工具，且同一 turn 实际调用该工具
 
 - **结构** — 「唯一 anqi skill」在 **preflight** 一侧核验：`isPreflightReady()`
@@ -270,6 +275,8 @@
 - **结构** — 「精确 MCP 工具 + 同 turn 实际调用」在 **首 turn** 一侧核验：`_maybeResolveTurn()`
   要求 `_firstRequestHeader.reason === 'initial'`、`header.tools` 含
   `mcp__anqi-local__case_folder_info`，且 `_sawRequiredMcpCall === true`。
+- **global scope 分叉（2.11.0）** — global preflight 的唯一 skill/tool 是
+  `anqi-global-intake` / `anqi_case_resolve`；首个 header 只要求出现 `anqi_case_resolve`，不要求同一 turn 实际调用它（首句可以只是问候）。案件 scope 的原有 skill/tool 与实际调用门禁保持不变。
 - ⚠️ **口径说明**：设计稿原文是「首个 `request/header` **同时**含唯一 anqi skill 和精确 MCP 工具」。
   实现把 skill 那一半放在 preflight 的逐字段核验里，而不是从首个 header 里读 —— 两处合起来覆盖了
   同一组不变量，但**不是逐字照做**。改动这两处任何一处时必须同时看另一处。
@@ -636,3 +643,11 @@
    （worker 启动路径从未有过钉住），只是不再对它视而不见。**GA 前可评估**：对
    `agent_base_url` 变更加二次确认、或 baseURL 变更后要求已存 key 重新确认，但这是产品行为
    取舍，不是本轮范围。
+
+## 门禁 11 · 全局会话只能读写服务端解析并授予的案件，`case_id` 永不来自模型文本
+
+- **结构** — `session-registry.js` 为 global session 单独维护 offered/granted 集合；`caseIdForSession()` 对 global 永远返回 `null`，`unbindSession()` 同时清理 offer 与 grant。
+- **结构** — `POST /internal/agent-case-resolve` 只接受 global session，匹配完全在服务端完成；唯一命中才自动 grant，多候选覆盖式 offer 最多 10 个，`agent-case-select` 只能选择本次 offer 的 active 案件。联系人姓名只作为匹配输入，resolve 白名单返回值不含 phone/id_no/note。
+- **结构** — global `agent-case-view` 与直写/软建议路由都调用 `sessionCaseGranted()`；`contact/event/fact/deadline` 无授予案件即拒绝，`task/worklog` 省略 case_id 时只允许写 NULL 所务记录。案件 scope 的直写仍由 `caseIdForSession()` 反查并忽略 body.case_id。
+- **结构+机械** — global preset 只挂 resolve/select/get、记录工具与 ask/skill/todo；`test-agent-runtime-composition.js` 断言看不到文件、shell、联网、subagent、digest；`test-agent-global-internal-http.js` 覆盖未授予读写、offer 覆盖、select 越界、unbind 失效、审计脱敏及六张记录表行数边界；`test-agent-global-http.js` 覆盖 HTTP scope/status/SSE/附件拒绝；`test-agent-supervisor.js` 与 composition 覆盖 global project/read-only、workspace、首 turn required tool。
+- **取舍** — global 首句可以只是问候，因此首 turn 只要求 `request/header` 含 `anqi_case_resolve`，不要求该 turn 实际调用；案件 scope 的实际调用门禁不变。
