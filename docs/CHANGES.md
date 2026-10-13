@@ -81,7 +81,7 @@
 - **形态**：新增一个 scope=`global` 的 DSH worker，与案件助理共用 supervisor、JSON-RPC、SSE、审批和提问回路。全局 workspace 固定为 `DB_PATH` 同级的 `agent-global-workspace/`，权限 0700；无论设置选择什么能力档位，全局永远是 project/read-only，也不跑 bash 探针。
 - **信任模型**：全局会话先调用本地 `anqi_case_resolve`，唯一命中自动授予；多候选只能从服务端刚提供的候选中 `anqi_case_select`。`case_id` 不来自模型自由文本，未授予案件的读取和写入均拒绝；task/worklog 可选择成为不挂案件的所务记录。
 - **工具与记录**：全局工具覆盖认案、选择、白名单案件读取、工作日志、待办、开庭/程序事件、联系人、事实、待核期限和收件箱建议；不开放 digest、文件、shell、联网或 subagent。`anqi_worklog_add` 同时补到案件会话，所有 AI 工作日志写入 `created_by='ai'`。
-- **前端**：顶栏增加 AI 总入口；快录条增加「交给 AI」切换，可把一句话交给全局会话拆成多条。抽屉提供本轮记录、案件链接和撤销入口；刷新后不重建本轮记录，案件页时间线显示「AI 加的」。
+- **前端**：全站一个 AI 抽屉，标题栏有「项目」选择器——「总入口 · 不挂案件」（不绑案件，只有案齐领域工具与本地认案）或某个在办案件（案件夹即项目）；案件页默认本案，其它页默认总入口，切换项目不停止任何 worker。顶栏「AI」与案件页「AI 助理」开同一个抽屉；快录条增加「交给 AI」切换，发往当前选中项目并标明「→ 目标」。抽屉提供本轮记录、案件链接和撤销入口；刷新后不重建本轮记录，案件页时间线显示「AI 加的」。
 - **测试与数据**：新增本地匹配、全局内部 HTTP、全局 HTTP、真实 DSH global composition 和前端静态契约；migration 031 为 worklog 增加 `created_by`，存量行默认为 `manual`，不改 `change_log` 触发器。
 
 **升级注意**：migration 031 会为现有 `worklog` 行填入 `manual`。全局 workspace 在首次启动时自动创建于数据库同级目录；v2.12 的 IM 入站可直接复用全局 HTTP prompt 面。回退前请保留数据库备份，旧版本不会识别全局 worker 相关界面和新增列。

@@ -87,13 +87,12 @@ export async function mountNav() {
   // counts 只是徽标——用 .then 不用 await，别让顶栏和整页渲染陪着网络一起等
   api('/counts').then((c) => {
     if (c.version) versionBadge.textContent = `v${c.version}`;
+    document.dispatchEvent(new CustomEvent('anjian:agent-capability', { detail: { enabled: c.agent === true } }));
     if (c.agent) {
       globalAgentSlot.hidden = false;
       mountGlobalAgentDrawer();
-      document.querySelector('.quick-ai-toggle')?.removeAttribute('hidden');
     } else {
       globalAgentSlot.hidden = true;
-      document.querySelector('.quick-ai-toggle')?.setAttribute('hidden', '');
     }
     // 快录条的「整理」按钮：服务端配了 DEEPSEEK_API_KEY 才亮出来（搭 counts 顺风车，零额外请求）
     const tidy = document.querySelector('.quickbar .btn.ghost');
@@ -178,8 +177,18 @@ function mountQuickbar() {
   }, '整理');
   const aiToggle = el('button', {
     class: 'quick-ai-toggle', type: 'button', 'aria-pressed': 'false', hidden: '',
-    title: '把这句话交给 AI 总入口自动拆条、认案并分别记录',
+    title: '把这句话交给当前选中的 AI 项目（总入口或某个案件）自动拆条、认案并分别记录',
   }, '交给 AI');
+  // 当前交给哪个 AI 项目；点它打开抽屉，在抽屉标题栏的「项目」下拉里换
+  const aiTarget = el('span', {
+    class: 'quick-ai-target', role: 'button', tabindex: '0', hidden: '',
+    title: '点此打开 AI 抽屉，切换项目',
+  }, '→ 总入口');
+  const openAgentDrawer = () => document.dispatchEvent(new CustomEvent('anjian:agent-open'));
+  aiTarget.addEventListener('click', openAgentDrawer);
+  aiTarget.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); openAgentDrawer(); }
+  });
   const HINT_DEFAULT = '捕捉零摩擦：先记下，晚点再整理';
   const hint = el('span', { class: 'hint' }, HINT_DEFAULT);
   const clearAttachment = () => {
@@ -235,8 +244,8 @@ function mountQuickbar() {
       onsubmit: async (e) => {
         e.preventDefault();
         if (!text.value.trim()) return;
-        if (aiToggle.getAttribute('aria-pressed') === 'true') {
-          document.dispatchEvent(new CustomEvent('anjian:agent-global-prompt', { detail: text.value.trim() }));
+        if (aiToggle.getAttribute('aria-pressed') === 'true' && agentAvailable) {
+          document.dispatchEvent(new CustomEvent('anjian:agent-prompt', { detail: { text: text.value.trim() } }));
           text.value = '';
           return;
         }
@@ -258,21 +267,40 @@ function mountQuickbar() {
         hint.classList.remove('hint-ai');
         document.dispatchEvent(new CustomEvent('anjian:changed'));
       },
-    }, kind, caseSel, text, date, time, location, attachBtn, attachment, tidyBtn, aiToggle, fileInput,
+    }, kind, caseSel, text, date, time, location, attachBtn, attachment, tidyBtn, aiToggle, aiTarget, fileInput,
       el('button', { class: 'btn primary', type: 'submit' }, '记'),
       hint
     )
   );
   document.body.appendChild(bar);
+  let agentAvailable = false;
+  let rememberedQuickAi = false;
   let quickAi = false;
-  try { quickAi = localStorage.getItem('anjian-quick-ai') === '1'; } catch {}
+  try { rememberedQuickAi = localStorage.getItem('anjian-quick-ai') === '1'; } catch {}
   const syncQuickAi = () => {
-    aiToggle.setAttribute('aria-pressed', String(quickAi));
-    for (const node of [kind, caseSel, date, time, location, attachBtn, attachment, tidyBtn]) node.hidden = quickAi;
-    text.placeholder = quickAi ? '一句话交给 AI：自动拆条、认案、分别记录' : '一句话快录……';
-    bar.querySelector('form > button[type="submit"]').textContent = quickAi ? '交给 AI' : '记';
+    const active = agentAvailable && quickAi;
+    aiToggle.setAttribute('aria-pressed', String(active));
+    aiToggle.hidden = !agentAvailable;
+    aiTarget.hidden = !active;
+    for (const node of [kind, caseSel, date, time, location, attachBtn, attachment, tidyBtn]) node.hidden = active;
+    text.placeholder = active ? '一句话交给 AI：自动拆条、认案、分别记录' : '一句话快录……';
+    bar.querySelector('form > button[type="submit"]').textContent = active ? '交给 AI' : '记';
   };
-  aiToggle.addEventListener('click', () => { quickAi = !quickAi; try { localStorage.setItem('anjian-quick-ai', quickAi ? '1' : '0'); } catch {} syncQuickAi(); });
+  aiToggle.addEventListener('click', () => {
+    if (!agentAvailable) return;
+    quickAi = !quickAi;
+    try { localStorage.setItem('anjian-quick-ai', quickAi ? '1' : '0'); } catch {}
+    syncQuickAi();
+  });
+  document.addEventListener('anjian:agent-capability', (event) => {
+    agentAvailable = event.detail?.enabled === true;
+    quickAi = agentAvailable ? rememberedQuickAi : false;
+    syncQuickAi();
+  });
+  document.addEventListener('anjian:agent-project-changed', (event) => {
+    const label = String(event.detail?.label || '').trim();
+    if (label) aiTarget.textContent = `→ ${label}`;
+  });
   syncQuickAi();
   kind.addEventListener('change', syncKindFields);
   syncKindFields();

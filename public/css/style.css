@@ -1895,6 +1895,9 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .quickbar .btn { min-height: 34px; }
 .quick-ai-toggle { min-height: 34px; border: 1px solid var(--green-line); color: var(--green); background: var(--surface-solid); }
 .quick-ai-toggle[aria-pressed="true"] { background: var(--green-bg); font-weight: 650; }
+/* 「交给 AI」当前目标小字：点它打开抽屉换项目 */
+.quick-ai-target { display: inline-block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; color: var(--meta); font-size: 12px; cursor: pointer; }
+.quick-ai-target:hover { color: var(--green); }
 .quickbar .quick-attachment { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 220px; color: var(--meta); font-size: 12px; }
 .quickbar .quick-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quickbar .quick-attachment-clear { flex: none; border: 0; padding: 2px 4px; background: transparent; color: var(--meta); cursor: pointer; }
@@ -2576,10 +2579,12 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 }
 .agent-drawer-head {
   display: flex; align-items: center; gap: 10px;
-  min-height: 48px; padding: 0 12px 0 16px;
+  min-height: 48px; padding: 6px 12px 6px 16px;
   border-bottom: 1px solid var(--border);
 }
-.agent-drawer-title { display: flex; align-items: center; gap: 8px; font: 650 14.5px/1.3 var(--sans); color: var(--ink); }
+.agent-drawer-title { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; min-width: 0; font: 650 14.5px/1.3 var(--sans); color: var(--ink); }
+/* 标题栏「项目」选择器：总入口 / 在办案件；长案件名省略号 */
+.agent-project-select { min-height: 28px; min-width: 0; max-width: 220px; padding: 3px 24px 3px 8px; font-size: 12px; font-weight: 500; text-overflow: ellipsis; overflow: hidden; white-space: nowrap; }
 .agent-approval-tier { min-height: 28px; padding: 3px 24px 3px 8px; font-size: 12px; font-weight: 500; }
 .agent-classifier-note { margin-top: 6px; color: var(--muted); font-size: 12px; }
 .agent-drawer-head .iconbtn { margin-left: auto; }
@@ -2608,6 +2613,9 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   background: var(--chip-bg); border: 1px dashed var(--chip-bd); color: var(--muted);
   font-family: var(--f-case); font-size: 12px;
 }
+/* 「本轮记录」：AI 直写的待办/事件/联系人等紧凑清单，压在对话日志上方 */
+.agent-round-records { display: flex; flex-direction: column; gap: 6px; margin-bottom: 10px; padding-bottom: 10px; border-bottom: 1px solid var(--line); }
+.agent-round-title { color: var(--meta); font-size: 12px; font-weight: 600; }
 .agent-round-record { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 6px 8px; border: 1px solid var(--green-line); border-radius: var(--r-btn); background: var(--green-bg); font-size: 12px; }
 .agent-round-record a { color: var(--green); }
 .agent-round-record.is-revoked { text-decoration: line-through; opacity: .65; }
@@ -2702,7 +2710,6 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .agent-drawer-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .agent-attach-btn { margin-right: auto; }
 .agent-global-entry-slot { display: inline-flex; align-items: center; }
-.ai-mark { color: var(--green); border-color: var(--green-line); }
 
 /* ── A-27 响应式（≥1280 桌面 / 768–1279 平板 / <768 移动） ── */
 @media (max-width: 1279px) {
@@ -2741,6 +2748,8 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 @media (max-width: 767px) {
   :root { --gap: 12px; }
   body { font-size: 14px; }
+  /* AI 抽屉标题栏：项目选择器独占一行 */
+  .agent-project-select { flex: 1 1 100%; max-width: 100%; min-height: 36px; }
 
   /* 顶栏 → 汉堡下拉 */
   .topnav { gap: 8px; }

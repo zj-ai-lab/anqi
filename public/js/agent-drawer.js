@@ -83,14 +83,42 @@ const DIRECT_RECORDS = {
 const GLOBAL_ENDPOINT_CONTRACT = ['/api/agent/global/start', '/api/agent/global/prompt', '/api/agent/global/cancel', '/api/agent/global/approval-tier', '/api/agent/global/events'];
 // 案件 scope 的静态契约：fetch(`/api/cases/${caseId}/agent/commands`)
 
-async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
-  const agentPath = scope === 'global' ? '/api/agent/global' : `/api/cases/${caseId}/agent`;
-  const commandEndpoint = scope === 'global' ? '' : `/api/cases/${caseId}/agent/commands`;
-  const slot = document.getElementById(scope === 'global' ? 'agent-global-entry-slot' : 'agent-entry-slot');
-  if (!slot) return; // 页面没有这个挂载点（理论上不会发生，防御一下）
+// 全站只有一个抽屉实例（「项目」选择器：总入口 / 在办案件）。两个导出都走同一份
+// sharedCreation；案件页把「本页案件」记在 pageCaseId——它在 mount 函数里同步写入、
+// 在建抽屉的 counts await 之后才被读取，所以无论 nav.js 的 mountGlobalAgentDrawer()
+// 与 case.js 的 mountAgentDrawer() 谁先跑，最终都落在本案。
+const PROJECT_KEY = 'anjian-agent-project';
+let sharedCreation = null;
+let pageCaseId = null;
+
+function readRememberedProject() {
+  try {
+    const remembered = sessionStorage.getItem(PROJECT_KEY) || '';
+    if (/^case:\d+$/u.test(remembered)) return { scope: 'case', caseId: Number(remembered.slice(5)) };
+  } catch { /* sessionStorage 不可用时回到总入口 */ }
+  return { scope: 'global', caseId: null };
+}
+
+async function createAgentDrawer() {
+  let scope = 'global';
+  let caseId = null;
+  let agentPath = '';
+  let commandEndpoint = '';
+  // 页面没有任何 AI 入口挂载点（理论上不会发生，防御一下）
+  if (!document.getElementById('agent-global-entry-slot') && !document.getElementById('agent-entry-slot')) return;
   let counts;
   try { counts = await api('/counts'); } catch { return; }
   if (!counts.agent) return; // 特性探测：未启用/未配置，整块不渲染
+
+  // 默认项目：案件页永远是本案（不读记忆）；其它页读本标签页里用户显式选过的项目，否则总入口。
+  if (pageCaseId != null) { scope = 'case'; caseId = pageCaseId; }
+  else ({ scope, caseId } = readRememberedProject());
+
+  function syncEndpoints() {
+    agentPath = scope === 'global' ? '/api/agent/global' : `/api/cases/${caseId}/agent`;
+    commandEndpoint = scope === 'global' ? '' : `/api/cases/${caseId}/agent/commands`;
+  }
+  syncEndpoints();
 
   const state = {
     es: null,
@@ -112,10 +140,27 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
     submitting: false,
   };
 
-  const entryBtn = el('button', { class: scope === 'global' ? 'iconbtn' : 'btn small', type: 'button', 'aria-label': scope === 'global' ? '打开 AI 总入口' : undefined }, scope === 'global' ? 'AI' : 'AI 助理');
-  slot.replaceChildren(entryBtn);
+  const entryButtons = new Map();
+
+  function mountEntry(slotIdToMount, entryScope, entryCaseId) {
+    const slot = document.getElementById(slotIdToMount);
+    if (!slot || entryButtons.has(slotIdToMount)) return;
+    const entryBtn = el('button', {
+      class: entryScope === 'global' ? 'iconbtn' : 'btn small', type: 'button',
+      'aria-label': entryScope === 'global' ? '打开 AI 总入口' : undefined,
+    }, entryScope === 'global' ? 'AI' : 'AI 助理');
+    slot.replaceChildren(entryBtn);
+    entryBtn.addEventListener('click', () => {
+      if (!drawer.hidden) { closeDrawer(); return; }
+      // 案件页的入口按钮只是多一个入口、把默认项目设为本案——不写 sessionStorage 记忆
+      if (entryScope === 'case') switchProject('case', entryCaseId);
+      openDrawer();
+    });
+    entryButtons.set(slotIdToMount, entryBtn);
+  }
 
   const badge = el('span', { class: 'chip c-gray' }, '未启动');
+  const projectSelect = el('select', { class: 'agent-project-select', 'aria-label': 'AI 项目', title: '选择 AI 项目' });
   const approvalTierSelect = el('select', {
     id: 'agent-approval-tier', class: 'agent-approval-tier', 'aria-label': '审批档位',
     title: '当前案件会话审批档位', disabled: '',
@@ -125,6 +170,9 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
   el('option', { value: '3' }, '3 · 放开'));
   if (scope === 'global') approvalTierSelect.hidden = true;
   const logEl = el('div', { class: 'agent-log' });
+  const roundRecords = el('section', { class: 'agent-round-records', hidden: '' },
+    el('div', { class: 'agent-round-title' }, '本轮记录')
+  );
   const emptyHint = el('div', { class: 'agent-empty' }, '还没有对话——在下面输入一句话给 AI 助理下达指令。');
   logEl.append(emptyHint);
 
@@ -158,14 +206,122 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
   const closeBtn = el('button', { class: 'iconbtn', type: 'button', 'aria-label': '关闭' }, '×');
   const drawer = el('aside', { class: 'agent-drawer', hidden: '', 'aria-hidden': 'true', role: 'complementary', 'aria-label': 'AI 助理' },
     el('header', { class: 'agent-drawer-head' },
-      el('div', { class: 'agent-drawer-title' }, 'AI 助理', badge, approvalTierSelect),
+      el('div', { class: 'agent-drawer-title' }, 'AI 助理', projectSelect, badge, approvalTierSelect),
       closeBtn
     ),
-    el('div', { class: 'agent-drawer-body' }, logEl),
+    el('div', { class: 'agent-drawer-body' }, roundRecords, logEl),
     el('div', { class: 'agent-drawer-foot' }, promptForm)
   );
   const backdrop = el('div', { class: 'agent-drawer-backdrop', hidden: '' });
   document.body.append(backdrop, drawer);
+
+  function projectKey(nextScope = scope, nextCaseId = caseId) {
+    return nextScope === 'global' ? 'global' : `case:${nextCaseId}`;
+  }
+
+  function rememberProject() {
+    try { sessionStorage.setItem('anjian-agent-project', projectKey()); } catch { /* 私密模式等存不了就不记 */ }
+  }
+
+  function currentProjectLabel() {
+    const text = projectSelect.selectedOptions?.[0]?.textContent;
+    if (text) return text;
+    if (scope === 'global') return '总入口';
+    return caseId === pageCaseId ? '本案' : `案件 ${caseId}`;
+  }
+
+  function announceProject() {
+    document.dispatchEvent(new CustomEvent('anjian:agent-project-changed', {
+      detail: { label: currentProjectLabel(), scope, caseId },
+    }));
+  }
+
+  // 选择器里没有当前项目时（案件列表还没拉、或案件已不在「在办」里）补一个占位选项，
+  // 保证下拉显示与实际端点一致。
+  function syncProjectSelect() {
+    const current = projectKey();
+    if (scope === 'case' && ![...projectSelect.options].some((option) => option.value === current)) {
+      projectSelect.append(el('option', { value: current }, caseId === pageCaseId ? '本案' : `案件 ${caseId}`));
+    }
+    projectSelect.value = current;
+  }
+
+  function renderProjects(rows = []) {
+    const options = [el('option', { value: 'global' }, '总入口 · 不挂案件')];
+    for (const row of Array.isArray(rows) ? rows : []) {
+      if (!Number.isInteger(Number(row?.id))) continue;
+      const label = row.folder_path ? String(row.name || `案件 ${row.id}`) : `${row.name || `案件 ${row.id}`}（未绑定案件夹）`;
+      options.push(el('option', { value: `case:${Number(row.id)}` }, label));
+    }
+    projectSelect.replaceChildren(...options);
+    syncProjectSelect();
+    announceProject();
+  }
+
+  let projectsLoaded = false;
+  let projectsLoading = null;
+  async function loadProjects() {
+    if (projectsLoaded) return;
+    if (!projectsLoading) {
+      projectsLoading = api('/cases?status=active')
+        .then((rows) => { renderProjects(rows); projectsLoaded = true; })
+        .catch(() => { renderProjects([]); })
+        .finally(() => { projectsLoading = null; });
+    }
+    await projectsLoading;
+  }
+
+  function clearConversation() {
+    state.es?.close();
+    state.es = null;
+    state.connected = false;
+    state.historyLoaded = false;
+    state.currentBubble = null;
+    state.currentBubbleText = '';
+    state.pendingToolCalls.clear();
+    state.pendingCommands.clear();
+    state.cards.clear();
+    logEl.replaceChildren(emptyHint);
+    roundRecords.replaceChildren(el('div', { class: 'agent-round-title' }, '本轮记录'));
+    roundRecords.hidden = true;
+  }
+
+  // 切换项目只换「看哪个 worker」：关旧 SSE、换端点前缀、（面板开着时）连新 SSE，
+  // 由首帧 status 的 history 回显。绝不 cancel / stop / start 任何 worker——每个
+  // worker 独立存活，切回来还在；进行中的 turn 也不受影响。
+  // persist 仅在用户显式改动下拉时为 true；案件页自动默认与入口按钮都不落 sessionStorage。
+  function switchProject(nextScope, nextCaseId, { persist = false } = {}) {
+    const normalizedScope = nextScope === 'global' ? 'global' : 'case';
+    const normalizedCaseId = normalizedScope === 'global' ? null : Number(nextCaseId);
+    if (normalizedScope === 'case' && !Number.isInteger(normalizedCaseId)) return;
+    if (normalizedScope !== scope || normalizedCaseId !== caseId) {
+      clearConversation();
+      scope = normalizedScope;
+      caseId = normalizedCaseId;
+      syncEndpoints();
+      // 斜杠命令清单、草稿图片、图片能力都属于旧 worker，不跨项目沿用
+      state.commands = null;
+      state.commandFetch = null;
+      state.commandGeneration += 1;
+      hideCommandMenu();
+      clearDraftImages();
+      applyImageCapability(false);
+      state.status = 'stopped';
+      applyStatus('stopped');
+    }
+    approvalTierSelect.hidden = scope === 'global';
+    syncProjectSelect();
+    announceProject();
+    if (persist) rememberProject();
+    if (!drawer.hidden) connectSSE();
+  }
+
+  projectSelect.addEventListener('change', () => {
+    const value = projectSelect.value;
+    if (value === 'global') switchProject('global', null, { persist: true });
+    else if (/^case:\d+$/u.test(value)) switchProject('case', Number(value.slice(5)), { persist: true });
+  });
+  renderProjects();
 
   function scrollLogDown() {
     logEl.scrollTop = logEl.scrollHeight;
@@ -509,10 +665,11 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
     if (!mapping) return;
     const value = readToolJson(resultData);
     const item = value?.item;
-    if (!value?.created || !item?.id) return;
+    if ((!value?.created && value?.outcome !== 'updated') || !item?.id) return;
     const caseIdValue = value.case_id == null ? null : Number(value.case_id);
+    const outcomeLabel = value.outcome === 'updated' ? '已更新 · ' : '';
     const row = el('div', { class: 'agent-round-record' },
-      el('span', {}, `[${value.case_name || '所务'}] ${mapping[1]} · ${String(item.content || item.title || item.name || item.role || '').slice(0, 100)}`),
+      el('span', {}, `[${value.case_name || '所务'}] ${outcomeLabel}${mapping[1]} · ${String(item.content || item.title || item.name || item.role || '').slice(0, 100)}`),
       ...(caseIdValue ? [el('a', { href: `/case.html?id=${encodeURIComponent(caseIdValue)}`, target: '_blank', rel: 'noopener' }, '打开案件')] : []),
     );
     if (value.outcome !== 'updated') {
@@ -528,7 +685,8 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
       } }, '撤销');
       row.append(undo);
     }
-    logEl.append(row); scrollLogDown();
+    roundRecords.hidden = false;
+    roundRecords.append(row); scrollLogDown();
   }
 
   function removeCard(interactionId) {
@@ -631,7 +789,8 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
   }
 
   function applyImageCapability(supportsImages) {
-    state.supportsImages = supportsImages === true;
+    // 总入口没有图片通道：无论快照怎么说都不开
+    state.supportsImages = scope !== 'global' && supportsImages === true;
     attachBtn.hidden = !state.supportsImages;
     if (!state.supportsImages && state.draftImages.length > 0) clearDraftImages();
   }
@@ -847,6 +1006,7 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
     drawer.hidden = false; drawer.setAttribute('aria-hidden', 'false');
     applyLayout();
     try { localStorage.setItem(DOCK_KEY, '1'); } catch { /* 隐私模式等存不了就不记 */ }
+    loadProjects();
     connectSSE();
     scrollLogDown();
   }
@@ -856,8 +1016,7 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
     applyLayout();
     try { localStorage.removeItem(DOCK_KEY); } catch { /* 同上 */ }
   }
-  // 入口按钮是开关：面板停靠后左侧仍可操作，得有一个不进面板也能关它的地方
-  entryBtn.addEventListener('click', () => { if (drawer.hidden) openDrawer(); else closeDrawer(); });
+  // 入口按钮（mountEntry）是开关：面板停靠后左侧仍可操作，得有一个不进面板也能关它的地方
   closeBtn.addEventListener('click', closeDrawer);
   backdrop.addEventListener('click', closeDrawer);
   // Escape 只在悬浮（遮罩）模式关面板：停靠时人在左侧工作台里正常用 Escape
@@ -930,7 +1089,13 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
     }
     hideCommandMenu();
     const statusBeforeSubmit = state.status;
+    // 发送期间锁定项目：prompt 一律发往点「发送」那一刻的项目，哪怕中途被程序切走
+    const submitScope = scope;
+    const submitCaseId = caseId;
+    const submitPath = agentPath;
+    const sameProject = () => submitScope === scope && submitCaseId === caseId;
     state.submitting = true;
+    projectSelect.disabled = true;
     renderImageDrafts();
     sendBtn.disabled = true;
     attachBtn.disabled = true;
@@ -940,43 +1105,65 @@ async function createAgentDrawer({ scope = 'case', caseId = null } = {}) {
         // 案件旧契约：STARTABLE_STATUSES.has(state.status) → /agent/start → /agent/prompt；
         // 实际端点由 agentPath 按 scope 组合，保留该顺序供静态回归审查。
         applyStatus('starting');
-        const snapshot = await api(`${agentPath}/start`, { method: 'POST' });
-        applySnapshot(snapshot);
+        const snapshot = await api(`${submitPath}/start`, { method: 'POST' });
+        if (sameProject()) applySnapshot(snapshot);
       }
-        const attachments = await uploadDraftImages();
-        const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
+      const attachments = await uploadDraftImages();
+      const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
       // image contract: /agent/prompt` carries attachmentIds only; base64 stays in admission upload.
-      await api(`${agentPath}/prompt`, { method: 'POST', body: scope === 'global' ? { text } : { text, attachmentIds } });
-      appendUser(text, attachments);
+      const casePromptEndpoint = `/api/cases/${submitCaseId}/agent/prompt`;
+      const promptEndpoint = submitScope === 'global' ? '/api/agent/global/prompt' : casePromptEndpoint;
+      await api(promptEndpoint, { method: 'POST', body: submitScope === 'global' ? { text } : { text, attachmentIds } });
+      if (sameProject()) appendUser(text, attachments);
       textarea.value = '';
       clearDraftImages();
     } catch {
       // 自动启动失败时恢复原可发送终态，让律师修正配置后可以直接重试；不能
       // 把抽屉永久卡在本地伪造的 starting（服务端其实没有 live worker）。
-      if (state.status === 'starting') applyStatus(statusBeforeSubmit);
+      if (sameProject() && state.status === 'starting') applyStatus(statusBeforeSubmit);
       // api() 已经 toast 过错误，这里不重复。
     }
     finally {
       state.submitting = false;
+      projectSelect.disabled = false;
       renderImageDrafts();
       applyStatus(state.status);
     }
   });
-  if (scope === 'global') {
-    document.addEventListener('anjian:agent-global-prompt', (event) => {
-      const value = String(event.detail || '').trim();
-      if (!value) return;
-      if (drawer.hidden) openDrawer();
-      textarea.value = value;
-      promptForm.requestSubmit();
-    });
-  }
+  const submitExternalPrompt = (value) => {
+    if (!value) return;
+    if (drawer.hidden) openDrawer();
+    textarea.value = value;
+    promptForm.requestSubmit();
+  };
+  document.addEventListener('anjian:agent-prompt', (event) => {
+    const value = String(event.detail?.text ?? event.detail ?? '').trim();
+    submitExternalPrompt(value);
+  });
+  // 快录条「→ 目标」小字点击：只开抽屉，让用户在标题栏换项目
+  document.addEventListener('anjian:agent-open', () => { if (drawer.hidden) openDrawer(); });
+
+  return { mountEntry, switchProject, open: openDrawer, close: closeDrawer };
 }
 
+// 案件页入口：本页案件 = 默认项目（不写 sessionStorage 记忆）。pageCaseId 必须在任何
+// await 之前同步写入，这样即便全局入口的创建先开始，也会在读取默认项目时看到它。
 export async function mountAgentDrawer(caseId) {
-  return createAgentDrawer({ scope: 'case', caseId });
+  const id = Number(caseId);
+  if (!Number.isInteger(id)) return undefined;
+  pageCaseId = id;
+  if (!sharedCreation) sharedCreation = createAgentDrawer();
+  const controller = await sharedCreation;
+  if (!controller) return undefined;
+  controller.mountEntry('agent-entry-slot', 'case', id);
+  controller.switchProject('case', id);
+  return controller;
 }
 
+// 顶栏入口：同一个抽屉实例。案件页上默认项目仍是本案（pageCaseId 优先）。
 export async function mountGlobalAgentDrawer() {
-  return createAgentDrawer({ scope: 'global' });
+  if (!sharedCreation) sharedCreation = createAgentDrawer();
+  const controller = await sharedCreation;
+  controller?.mountEntry('agent-global-entry-slot', 'global', null);
+  return controller;
 }
