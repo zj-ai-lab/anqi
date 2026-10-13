@@ -1754,5 +1754,216 @@ async function startFakeWorker(opts) {
   console.log('  [27/27] global worker：project/read-only + no bash probe + workspace 0700 + stopAll/session cleanup 通过');
 }
 
+// ---- 场景 28-32：global / case 两种 scope 的交叉矩阵（v2.11.0 R5 补齐）----
+// 场景 27 已覆盖 global 的 project/read-only、无 bash 探针、workspace 0700、spawn
+// 前登记与 stopAll 注销；这里补：disabled 短路、skills root 内容、preflight 形状
+// 互相错配、两种 worker 并存时 stopAll、global 首 turn 门禁。
+const GLOBAL_REQUIRED_TOOL_NAME = 'anqi_case_resolve';
+const GLOBAL_SKILL = 'anqi-global-intake';
+const GLOBAL_PREFLIGHT_RESULT = {
+  ready: true,
+  tools: { required: GLOBAL_REQUIRED_TOOL_NAME, ready: true, visibleNames: [GLOBAL_REQUIRED_TOOL_NAME, 'anqi_case_select'] },
+  skills: { complete: true, names: [GLOBAL_SKILL], ready: true },
+};
+
+function enableAgentSettings() {
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'true');
+  setSetting(AGENT_SETTINGS_KEYS.provider, 'deepseek-official');
+  setSetting(AGENT_SETTINGS_KEYS.model, 'deepseek-chat');
+  setSetting(AGENT_SETTINGS_KEYS.apiKeyEnv, 'TEST_DEEPSEEK_FAKE_API_KEY');
+  process.env.TEST_DEEPSEEK_FAKE_API_KEY = 'not-a-real-key';
+  process.env.ANJIAN_INTERNAL_KEY = 'not-a-real-internal-key';
+}
+
+// 起一个用 FakeChild 的 supervisor：capture 记录 spawn 时的 env、session id，以及
+// spawn 时刻 skills root 里的目录清单（finalize 时该目录会被删，必须当场读）。
+function makeScopedSupervisor({ handlersByScope = {}, extra = {} } = {}) {
+  const capture = { envs: [], sessionIds: [], skillsRootListings: [], children: [] };
+  const supervisor = new AgentSupervisor({
+    filesRoot,
+    turnTimeoutMs: 2000,
+    spawnFn: (_command, _args, options) => {
+      const env = options.env;
+      capture.envs.push(env);
+      capture.skillsRootListings.push(fs.readdirSync(env.DSH_ANQI_SKILLS_ROOT).sort());
+      const scope = env.DSH_ANQI_SCOPE === 'global' ? 'global' : 'case';
+      const child = makeFakeChild(undefined, {
+        'session/create': (frame, c) => {
+          capture.sessionIds.push({ scope, sessionId: frame.params.sessionId });
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: { sessionId: frame.params.sessionId } });
+        },
+        ...(scope === 'global' ? { 'session/preflight': (frame, c) => c.sendLine({ jsonrpc: '2.0', id: frame.id, result: GLOBAL_PREFLIGHT_RESULT }) } : {}),
+        ...(handlersByScope[scope] || {}),
+      });
+      capture.children.push(child);
+      return child;
+    },
+    ...extra,
+  });
+  return { supervisor, capture };
+}
+
+function newCaseOnDisk(prefix) {
+  const caseName = `${prefix}-${Math.random().toString(36).slice(2)}`;
+  const caseId = insertCase(caseName);
+  fs.mkdirSync(path.join(filesRoot, caseName));
+  return caseId;
+}
+
+// ---- 场景 28：disabled 时 start(GLOBAL_SCOPE) 短路，spawnFn 不被调用 ----
+{
+  clearAgentSettings();
+  setSetting(AGENT_SETTINGS_KEYS.enabled, 'false');
+  const supervisor = new AgentSupervisor({ filesRoot, spawnFn: neverSpawn() });
+  const result = await supervisor.start(GLOBAL_SCOPE);
+  assert.equal(result.status, 'disabled', 'agent_enabled=false 时 global start 必须返回 disabled');
+  assert.equal(supervisor.isLive(GLOBAL_SCOPE), false);
+  assert.equal(supervisor.workers.has(GLOBAL_SCOPE), false, 'disabled 短路不应创建 global worker 记录');
+  console.log('  [28/32] global start 在 disabled 时短路：ok（spawnFn 未被调用）');
+}
+
+// ---- 场景 29：skills root 按 scope 只拷贝各自的单个 skill ----
+{
+  enableAgentSettings();
+  const { supervisor: gSup, capture: gCap } = makeScopedSupervisor();
+  const gStatus = await gSup.start(GLOBAL_SCOPE);
+  assert.equal(gStatus.status, 'ready', `global worker 必须 ready（实际 ${gStatus.status}/${gStatus.error}）`);
+  assert.deepEqual(gCap.skillsRootListings[0], [GLOBAL_SKILL], 'global skills root 恰为 anqi-global-intake');
+  await gSup.stopAll('scenario 29 global');
+
+  const { supervisor: cSup, capture: cCap } = makeScopedSupervisor();
+  const cStatus = await cSup.start(newCaseOnDisk('自检案-skills-root'));
+  assert.equal(cStatus.status, 'ready', `case worker 必须 ready（实际 ${cStatus.status}/${cStatus.error}）`);
+  assert.deepEqual(cCap.skillsRootListings[0], [REQUIRED_SKILL_NAME], 'case skills root 恰为 anqi-case-brief');
+  await cSup.stopAll('scenario 29 case');
+  console.log('  [29/32] skills root 内容：ok（global=[anqi-global-intake]，case=[anqi-case-brief]）');
+}
+
+// ---- 场景 30：preflight 形状错配（case 形状给 global、global 形状给 case）均启动失败 ----
+{
+  enableAgentSettings();
+  // 30a：global worker 收到 case 形状
+  const { supervisor: gSup, capture: gCap } = makeScopedSupervisor({
+    handlersByScope: { global: { 'session/preflight': (frame, c) => c.sendLine({ jsonrpc: '2.0', id: frame.id, result: VALID_PREFLIGHT_RESULT }) } },
+  });
+  const gStatus = await gSup.start(GLOBAL_SCOPE);
+  assert.equal(gStatus.status, 'error', `global worker 收到 case 形状 preflight 必须失败（实际 ${gStatus.status}）`);
+  assert.match(gStatus.error || '', /^startup_failed/, 'error 必须以 startup_failed 开头');
+  assert.equal(await waitUntil(() => gCap.children[0].killed || gCap.children[0].exitCode !== null), true, '错配后必须终止子进程');
+  assert.equal(isGlobalSession(gCap.sessionIds[0].sessionId), false, '启动失败后 global session 必须注销');
+
+  // 30b：case worker 收到 global 形状
+  const { supervisor: cSup, capture: cCap } = makeScopedSupervisor({
+    handlersByScope: { case: { 'session/preflight': (frame, c) => c.sendLine({ jsonrpc: '2.0', id: frame.id, result: GLOBAL_PREFLIGHT_RESULT }) } },
+  });
+  const caseId = newCaseOnDisk('自检案-preflight-错配');
+  const cStatus = await cSup.start(caseId);
+  assert.equal(cStatus.status, 'error', `case worker 收到 global 形状 preflight 必须失败（实际 ${cStatus.status}）`);
+  assert.match(cStatus.error || '', /^startup_failed/, 'error 必须以 startup_failed 开头');
+  assert.equal(await waitUntil(() => cCap.children[0].killed || cCap.children[0].exitCode !== null), true, '错配后必须终止子进程');
+  assert.equal(caseIdForSession(cCap.sessionIds[0].sessionId), null, '启动失败后 case session 必须注销');
+  console.log('  [30/32] preflight 形状错配：ok（global 收 case 形状 / case 收 global 形状均 startup_failed）');
+}
+
+// ---- 场景 31：案件 worker 与 global worker 并存，stopAll 全部停掉并注销 session ----
+{
+  enableAgentSettings();
+  const { supervisor, capture } = makeScopedSupervisor();
+  const caseId = newCaseOnDisk('自检案-并存');
+  const cStatus = await supervisor.start(caseId);
+  const gStatus = await supervisor.start(GLOBAL_SCOPE);
+  assert.equal(cStatus.status, 'ready', `case worker 必须 ready（实际 ${cStatus.status}/${cStatus.error}）`);
+  assert.equal(gStatus.status, 'ready', `global worker 必须 ready（实际 ${gStatus.status}/${gStatus.error}）`);
+  const caseSession = capture.sessionIds.find((x) => x.scope === 'case').sessionId;
+  const globalSession = capture.sessionIds.find((x) => x.scope === 'global').sessionId;
+  assert.equal(supervisor.isLive(caseId), true);
+  assert.equal(supervisor.isLive(GLOBAL_SCOPE), true);
+  assert.equal(caseIdForSession(caseSession), caseId);
+  assert.equal(isGlobalSession(globalSession), true);
+  assert.equal(caseIdForSession(globalSession), null, 'global session 不应映射到任何案件');
+
+  await supervisor.stopAll('scenario 31');
+  assert.equal(supervisor.isLive(caseId), false, 'stopAll 后案件 worker 不应 live');
+  assert.equal(supervisor.isLive(GLOBAL_SCOPE), false, 'stopAll 后 global worker 不应 live');
+  // 注意：supervisor.workers 保留终态记录（供 status()/publicStatus() 读 stopped/error），
+  // 从不删除条目——所以这里断言「没有任何 worker 处于存活态」，而不是 size===0。
+  assert.deepEqual([...supervisor.workers.values()].map((w) => w.status).sort(), ['stopped', 'stopped'], '两个 worker 都应落终态 stopped');
+  assert.equal(caseIdForSession(caseSession), null, 'case session 必须注销');
+  assert.equal(isGlobalSession(globalSession), false, 'global session 必须注销');
+  console.log('  [31/32] case + global 并存 stopAll：ok（均不 live、均终态 stopped、两个 session 已注销）');
+}
+
+// ---- 场景 32：global 首 turn 门禁 ----
+// global 要求首个 request/header 的 header.tools 含 anqi_case_resolve，但不要求 tool/call；
+// case scope 仍要求 tool/call（场景 5 已覆盖）。
+function sendGlobalTurn(child, sessionId, { toolNames }) {
+  child.sendLine({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'running' } });
+  child.sendLine({
+    jsonrpc: '2.0', method: 'session.event',
+    params: { sessionId, event: { type: 'request/header', data: { reason: 'initial', header: { tools: toolNames.map((name) => ({ name })) } } } },
+  });
+  child.sendLine({ jsonrpc: '2.0', method: 'session.status', params: { sessionId, status: 'idle' } });
+  child.sendLine({
+    jsonrpc: '2.0', method: 'session.event',
+    params: { sessionId, event: { type: 'turn/end', data: { reason: { kind: 'completed' } } } },
+  });
+}
+{
+  // 32a：header.tools 缺 anqi_case_resolve → turn 失败，worker 被终止并有审计行
+  enableAgentSettings();
+  const auditCountBefore = db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE entity = 'agent-worker' AND entity_id = 0 AND detail LIKE '%turn_failed%'`).get().n;
+  const { supervisor, capture } = makeScopedSupervisor({
+    handlersByScope: {
+      global: {
+        'session/prompt': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          sendGlobalTurn(c, frame.params.sessionId, { toolNames: ['anqi_case_select', 'read_file'] });
+        },
+      },
+    },
+  });
+  const status = await supervisor.start(GLOBAL_SCOPE);
+  assert.equal(status.status, 'ready', `global worker 必须 ready（实际 ${status.status}/${status.error}）`);
+  const worker = supervisor.workers.get(GLOBAL_SCOPE);
+  const outcome = await settle(supervisor.prompt(GLOBAL_SCOPE, '缺必需工具的首 turn'));
+  assert.equal(outcome.ok, false, 'header.tools 缺 anqi_case_resolve 时 global 首 turn 必须 reject');
+  assert.match(outcome.error.message, /first turn did not establish the required MCP tool readiness/);
+  assert.equal(await waitUntil(() => !supervisor.isLive(GLOBAL_SCOPE)), true, '门禁失败后 global worker 必须离开 live');
+  assert.equal(await waitUntil(() => capture.children[0].killed || capture.children[0].exitCode !== null), true, '门禁失败后必须终止子进程');
+  assert.equal(worker.firstTurnChecked, false, '失败时 firstTurnChecked 不得置位');
+  assert.equal(await waitUntil(() => db.prepare(`SELECT COUNT(*) AS n FROM audit_log WHERE entity = 'agent-worker' AND entity_id = 0 AND detail LIKE '%turn_failed%'`).get().n > auditCountBefore), true, '门禁失败必须落一条 turn_failed 审计行');
+  const auditRow = db.prepare(`SELECT action, detail FROM audit_log WHERE entity = 'agent-worker' AND entity_id = 0 AND detail LIKE '%turn_failed%' ORDER BY id DESC LIMIT 1`).get();
+  assert.match(auditRow.detail, /scope=global/);
+  assert.match(auditRow.detail, /first turn did not establish/);
+  await supervisor.stopAll('scenario 32a cleanup');
+
+  // 32b：header 含 anqi_case_resolve，整个 turn 没有 tool/call → 通过（global 不要求 tool/call）
+  enableAgentSettings();
+  const toolCallFrames = [];
+  const { supervisor: okSup, capture: okCap } = makeScopedSupervisor({
+    handlersByScope: {
+      global: {
+        'session/prompt': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          sendGlobalTurn(c, frame.params.sessionId, { toolNames: [GLOBAL_REQUIRED_TOOL_NAME, 'anqi_case_select'] });
+        },
+      },
+    },
+  });
+  okSup.onEvent(GLOBAL_SCOPE, (event) => { if (event.type === 'tool/call') toolCallFrames.push(event); });
+  const okStatus = await okSup.start(GLOBAL_SCOPE);
+  assert.equal(okStatus.status, 'ready', `global worker 必须 ready（实际 ${okStatus.status}/${okStatus.error}）`);
+  const okWorker = okSup.workers.get(GLOBAL_SCOPE);
+  const okOutcome = await settle(okSup.prompt(GLOBAL_SCOPE, '有必需工具、没有 tool/call 的首 turn'));
+  assert.equal(okOutcome.ok, true, `global 首 turn 不要求 tool/call，必须通过（实际 ${okOutcome.error?.message}）`);
+  assert.equal(toolCallFrames.length, 0, '本场景的 turn 里确实没有 tool/call 事件');
+  assert.equal(okWorker.firstTurnChecked, true, '门禁通过后 firstTurnChecked 置位');
+  assert.equal(okSup.isLive(GLOBAL_SCOPE), true, '通过后 worker 仍 live');
+  assert.equal(okCap.children[0].killed, false);
+  await okSup.stopAll('scenario 32b cleanup');
+  console.log('  [32/32] global 首 turn 门禁：ok（缺 anqi_case_resolve → 失败+审计；有且无 tool/call → 通过）');
+}
+
 clearAgentSettings();
 console.log('agent supervisor 自检全部通过');
