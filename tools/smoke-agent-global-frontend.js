@@ -6,9 +6,21 @@ const caseJs = fs.readFileSync('public/js/case.js', 'utf8');
 const css = fs.readFileSync('public/css/style.css', 'utf8');
 assert.match(nav, /mountGlobalAgentDrawer/); assert.match(nav, /c\.agent/); assert.match(nav, /quick-ai-toggle/); assert.match(nav, /anjian-quick-ai/);
 for (const endpoint of ['/api/agent/global/start', '/api/agent/global/prompt', '/api/agent/global/cancel', '/api/agent/global/approval-tier', '/api/agent/global/events']) assert.ok(drawer.includes(endpoint));
-for (const endpoint of ['/api/worklog/', '/api/tasks/', '/api/events/', '/api/contacts/', '/api/facts/', '/api/deadlines/']) assert.ok(drawer.includes(endpoint));
+// 撤销走既有人类删除端点；api() 帮手会自己补 /api，所以映射里必须是相对路径。
+for (const endpoint of ["worklog: '/worklog/'", "tasks: '/tasks/'", "events: '/events/'", "contacts: '/contacts/'", "facts: '/facts/'", "deadlines: '/deadlines/'"]) assert.ok(drawer.includes(endpoint), `undo map must use api()-relative path ${endpoint}`);
+// 防线（2026-10-13 真机验收抓到 /api/api/... 404）：api() 永远不能收到带 /api 前缀的路径。
+for (const source of [drawer, nav, caseJs]) {
+  assert.doesNotMatch(source, /\bapi\(\s*[`'"]\/api\//u, 'api() 的路径不得以 /api 开头（帮手会再补一次）');
+  assert.doesNotMatch(source, /\bapi\(\s*`\$\{agentPath\}/u, 'api() 不得使用带 /api 前缀的 agentPath');
+}
+assert.match(drawer, /apiAgentPath = scope === 'global' \? '\/agent\/global' : `\/cases\/\$\{caseId\}\/agent`/u);
+assert.match(drawer, /new EventSource\(`\$\{agentPath\}\/events`\)/u, 'EventSource 仍须用带 /api 的 agentPath');
 assert.match(drawer, /DIRECT_RECORDS/); assert.doesNotMatch(drawer, /images_not_supported_global/);
-assert.match(caseJs, /created_by === 'ai'/); assert.match(css, /\.quick-ai-toggle/); assert.match(css, /@media \(max-width: 767px\)/);
+// 顶栏多了「AI」入口后，375–430px 手机要收起品牌文字，否则「退出」被挤出屏幕、整页横向溢出（2026-10-13 真机抓到）。
+assert.match(css, /@media \(max-width: 440px\)\s*\{\s*\.topnav \{ gap: 6px; \}\s*\.topnav \.brand b \{ display: none; \}/u, 'narrow phones must hide the brand text to fit the AI entry');
+assert.match(caseJs, /created_by === 'ai'/);
+// 日志行的 AI 标签必须在 tlItem 第 4 参（正文数组）里；插成独立位置参数会让整页时间线崩溃（2026-10-13 真机抓到）。
+assert.match(caseJs, /'日志'\),\s*(?:\/\/[^\n]*\n\s*)*\[w\.created_by === 'ai' \? el\(/u, 'worklog AI pill must be inside the body array passed to tlItem'); assert.match(css, /\.quick-ai-toggle/); assert.match(css, /@media \(max-width: 767px\)/);
 
 // 统一抽屉 + 「项目」选择器（1.14-A）：一个实例，标题栏下拉在总入口与在办案件间切换
 assert.match(drawer, /agent-project-select/, '抽屉标题栏必须有项目选择器');

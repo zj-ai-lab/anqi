@@ -3930,3 +3930,10 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 .notify-wrap{position:relative;display:flex;align-items:center}.notify-button{position:relative}.notify-count{position:absolute;top:-.2rem;right:-.2rem;min-width:1.1rem;padding:0 .2rem;border-radius:999px;background:var(--red,#b42318);color:#fff;font:11px/1.1 var(--mono,monospace);text-align:center}.notify-dropdown{position:absolute;right:0;top:calc(100% + .5rem);z-index:20;width:min(360px,calc(100vw - 24px));padding:.75rem;background:var(--surface-solid,#fff);border:1px solid var(--line,#ddd);box-shadow:0 10px 30px rgba(0,0,0,.16);border-radius:.6rem}.notify-dropdown[hidden]{display:none}.notify-state{display:flex;justify-content:space-between;gap:.5rem;align-items:center;margin-bottom:.5rem;font-size:.85rem}.notify-off{color:var(--amber,#9a6700)}.notify-list{display:grid;gap:.45rem;max-height:320px;overflow:auto}.notify-item{display:flex;justify-content:space-between;gap:.5rem;padding:.45rem 0;border-bottom:1px solid var(--line,#eee);font-size:.82rem}.notify-item small{display:block;color:var(--muted,#6b7280)}.notify-status{margin-left:.4rem}.notify-status.queued{color:var(--amber,#9a6700)}.notify-status.shown{color:var(--green,#16794c)}.reminder-list{display:grid;gap:.45rem}.reminder-row{display:flex;align-items:center;gap:.6rem;justify-content:space-between;padding:.45rem 0;border-bottom:1px solid var(--line,#eee)}
 
 .precondition-hint.is-flip-no{border-color:var(--amber);background:color-mix(in srgb,var(--amber) 12%,transparent)}
+
+/* 2.11：顶栏多了「AI」入口（44px），375–430px 手机上放不下会把「退出」挤出屏幕、整页横向溢出。
+   窄屏只留印章图标、收紧间距，腾出约 50px；平板宽度不受影响。放在文件末尾，确保晚于 767px 块生效。 */
+@media (max-width: 440px) {
+  .topnav { gap: 6px; }
+  .topnav .brand b { display: none; }
+}

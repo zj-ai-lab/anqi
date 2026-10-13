@@ -65,6 +65,8 @@ const STARTABLE_STATUSES = new Set(['stopped', 'error', 'crashed']);
 // 任何 tool/call 事件里，这里同步去掉，避免留一份指向不存在工具的死配置。
 const READONLY_TOOLS = new Set([
   'mcp__anqi-local__case_folder_info', 'anqi_case_get', 'anqi_digest',
+  // 总入口的认案 / 选案只在会话里登记授权，不写任何案件数据。
+  'anqi_case_resolve', 'anqi_case_select',
   'skill', 'ask_user_question', 'todo_write',
 ]);
 const PROPOSE_TOOL = 'anqi_inbox_propose';
@@ -102,7 +104,10 @@ function readRememberedProject() {
 async function createAgentDrawer() {
   let scope = 'global';
   let caseId = null;
+  // agentPath 带 /api 前缀，只给 EventSource 与原生 fetch 用；api() 帮手自己会补 /api，
+  // 一律走 apiAgentPath，否则请求会变成 /api/api/... 直接 404（2026-10-13 真机验收抓到）。
   let agentPath = '';
+  let apiAgentPath = '';
   let commandEndpoint = '';
   // 页面没有任何 AI 入口挂载点（理论上不会发生，防御一下）
   if (!document.getElementById('agent-global-entry-slot') && !document.getElementById('agent-entry-slot')) return;
@@ -116,6 +121,7 @@ async function createAgentDrawer() {
 
   function syncEndpoints() {
     agentPath = scope === 'global' ? '/api/agent/global' : `/api/cases/${caseId}/agent`;
+    apiAgentPath = scope === 'global' ? '/agent/global' : `/cases/${caseId}/agent`;
     commandEndpoint = scope === 'global' ? '' : `/api/cases/${caseId}/agent/commands`;
   }
   syncEndpoints();
@@ -674,7 +680,7 @@ async function createAgentDrawer() {
     );
     if (value.outcome !== 'updated') {
       const deletePath = {
-        worklog: '/api/worklog/', tasks: '/api/tasks/', events: '/api/events/', contacts: '/api/contacts/', facts: '/api/facts/', deadlines: '/api/deadlines/',
+        worklog: '/worklog/', tasks: '/tasks/', events: '/events/', contacts: '/contacts/', facts: '/facts/', deadlines: '/deadlines/',
       }[mapping[0]];
       const undo = el('button', { class: 'btn small danger', type: 'button', onclick: async () => {
         if (mapping[0] === 'events' && !confirm('删除事件会连带影响派生期限，确定撤销？')) return;
@@ -849,7 +855,7 @@ async function createAgentDrawer() {
     const previous = approvalTierSelect.dataset.saved || '1';
     approvalTierSelect.disabled = true;
     try {
-      const result = await api(`${agentPath}/approval-tier`, {
+      const result = await api(`${apiAgentPath}/approval-tier`, {
         method: 'POST', body: { approvalTier: approvalTierSelect.value },
       });
       approvalTierSelect.value = result.approvalTier;
@@ -1073,7 +1079,7 @@ async function createAgentDrawer() {
   stopBtn.addEventListener('click', async () => {
     stopBtn.disabled = true;
     try {
-      await api(`${agentPath}/cancel`, { method: 'POST' });
+      await api(`${apiAgentPath}/cancel`, { method: 'POST' });
       appendSystem('已请求停止');
     } catch { /* api() 已经 toast 过错误 */ }
     finally { stopBtn.disabled = false; }
@@ -1092,7 +1098,7 @@ async function createAgentDrawer() {
     // 发送期间锁定项目：prompt 一律发往点「发送」那一刻的项目，哪怕中途被程序切走
     const submitScope = scope;
     const submitCaseId = caseId;
-    const submitPath = agentPath;
+    const submitPath = apiAgentPath;
     const sameProject = () => submitScope === scope && submitCaseId === caseId;
     state.submitting = true;
     projectSelect.disabled = true;
@@ -1111,8 +1117,8 @@ async function createAgentDrawer() {
       const attachments = await uploadDraftImages();
       const attachmentIds = attachments.map((attachment) => attachment.attachmentId);
       // image contract: /agent/prompt` carries attachmentIds only; base64 stays in admission upload.
-      const casePromptEndpoint = `/api/cases/${submitCaseId}/agent/prompt`;
-      const promptEndpoint = submitScope === 'global' ? '/api/agent/global/prompt' : casePromptEndpoint;
+      const casePromptEndpoint = `/cases/${submitCaseId}/agent/prompt`;
+      const promptEndpoint = submitScope === 'global' ? '/agent/global/prompt' : casePromptEndpoint;
       await api(promptEndpoint, { method: 'POST', body: submitScope === 'global' ? { text } : { text, attachmentIds } });
       if (sameProject()) appendUser(text, attachments);
       textarea.value = '';
