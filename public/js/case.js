@@ -826,9 +826,9 @@ function feeWaiverButton(f, refreshFinancials) {
 // 款项账本行（规格 §4）：一行 7 列 = 款项/状态/触发节点/金额/分成/凭证/动作。
 // 取消 2.2.4 的每笔款独立折叠——收起态就能读出触发节点与分成对象金额（回归点）。
 // 低频的合同条款/收款记录/凭证列表走行内「明细」按钮，同一时间只展开一笔。
-// 状态列 116px：装下「逾期 · 2026-04-27」带日期 chip（与 fees.js FEE_ITEM_GRID 同病同修）。
-// 列最小值合计 ≤ 面板可用宽（1440 视口实测 ~918px），超了动作列会被 overflow 裁掉。
-const CASE_FEE_GRID = 'minmax(140px,1.1fr) 116px minmax(130px,1.15fr) 92px minmax(110px,.9fr) 52px 148px';
+// 状态列 140px：装下带来源前缀的日期 chip（与 fees.js FEE_ITEM_GRID 同步）。
+// 桌面按当前轨道核算；内容不足时由共享窄屏骨架降为两行，不能让动作列被 overflow 裁掉。
+const CASE_FEE_GRID = 'minmax(140px,1.1fr) 140px minmax(130px,1.15fr) 92px minmax(110px,.9fr) 52px 148px';
 let feeDetailId = null;   // 当前展开明细的款项 id（单值，非 map）
 
 function feeStatusChip(f) {
@@ -876,7 +876,7 @@ function feeRow(f) {
     style: `grid-template-columns:${CASE_FEE_GRID}`,
   },
     el('span', { class: 'ledger-item-label', style: 'grid-column:1' },
-      f.label,
+      el('span', { class: 'ledger-item-label-name' }, f.label),
       f.is_external_collected ? el('span', { class: 'chip c-blue' }, '他方基数') : null),
     el('span', { style: 'grid-column:2;justify-self:start' }, feeStatusChip(f)),
     el('span', { class: 'ledger-item-node', style: 'grid-column:3', title: f.node || '' }, f.node || '未填写'),

@@ -205,9 +205,9 @@ function amountNodes(f) {
 // 款项账本行（规格 §3）：一行 6 列 = 款项/状态/触发节点/金额/分成/动作。
 // 凭证给份数（0 份红字「缺」）；动作列只放「主按钮 + 到案件详情」两个按钮，
 // 完整结算操作（这笔怎么分/减免/凭证管理）在案件详情页处理，不在费用台账行内堆叠。
-// 状态列 116px：要装下「逾期 · 2026-04-27」这种带日期的 chip（600 11px 实测 ~111px），92px 会溢出压到触发节点列。
-// 各列最小值合计须 ≤ 卡内可用宽（1440 视口实测 ~888px），否则动作列被卡片 overflow:hidden 裁掉。
-const FEE_ITEM_GRID = 'minmax(170px,1.1fr) 116px minmax(120px,1fr) minmax(110px,1fr) minmax(80px,.7fr) 160px';
+// 状态列 140px：要装下带来源前缀的「他方已收 · 2026-09-23」chip，避免溢出压到触发节点列。
+// 桌面按当前轨道核算；内容不足时由平板断点降为两行，不能让动作列被卡片 overflow:hidden 裁掉。
+const FEE_ITEM_GRID = 'minmax(170px,1.1fr) 140px minmax(120px,1fr) minmax(110px,1fr) minmax(80px,.7fr) 160px';
 function itemRow(f, c) {
   const voucherCount = (f.vouchers || []).length;
   // 分成摘要：取首条 share 的方向+对象+金额，或「无分成」
@@ -228,10 +228,10 @@ function itemRow(f, c) {
     style: `grid-template-columns:${FEE_ITEM_GRID}`,
   },
     el('span', { class: 'ledger-item-label', style: 'grid-column:1' },
-      f.label,
+      el('span', { class: 'ledger-item-label-name' }, f.label),
       f.is_external_collected ? el('span', { class: 'chip c-blue' }, '他方基数') : null),
     el('span', { style: 'grid-column:2;justify-self:start' }, statusChip(f)),
-    el('span', { class: 'ledger-item-node', style: 'grid-column:3' }, f.node || '未填写'),
+    el('span', { class: 'ledger-item-node', style: 'grid-column:3', title: f.node || '' }, f.node || '未填写'),
     el('span', { class: 'ledger-item-amt', style: 'grid-column:4' }, amountNodes(f)),
     el('span', {
       class: `ledger-item-share${firstShare ? '' : ' is-faint'}`,
@@ -348,22 +348,24 @@ function caseLedgerRow(c, index) {
     class: 'ledger-row fee-ledger-row',
     style: `grid-template-columns:${CASE_GRID}`,
   },
-    el('span', { class: 'ledger-caret', style: 'grid-column:1', 'data-caret': '' }, '▸'),
-    el('span', { class: 'ledger-name', style: 'grid-column:2;display:flex;align-items:baseline;gap:8px;min-width:0' },
+    el('span', { class: 'ledger-caret', 'data-caret': '' }, '▸'),
+    el('span', { class: 'ledger-name', style: 'display:flex;align-items:baseline;gap:8px;min-width:0' },
       el('span', { style: 'min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap' }, c.case_name),
       c.stage ? el('span', { class: 'ledger-stage' }, c.stage) : null,
     ),
-    el('span', { class: 'ledger-bar', style: 'grid-column:3', role: 'img', 'aria-label': `律师费已收 ${fmt(c.paid)}，待收 ${fmt(c.unpaid)}` },
+    el('span', { class: 'ledger-bar', role: 'img', 'aria-label': `律师费已收 ${fmt(c.paid)}，待收 ${fmt(c.unpaid)}` },
       total ? el('span', { class: 'is-paid', style: `flex:${Math.max(0,c.paid) || 0}` }) : null,
       total ? el('span', { class: `is-unpaid ${c.over > 0 ? 'danger' : 'warn'}`, style: `flex:${Math.max(0,c.unpaid) || 0}` }) : null,
     ),
-    el('span', { class: 'ledger-num', style: 'grid-column:4;justify-self:end;font:500 12.5px/1 var(--f-num);color:var(--ink-2)' }, fmt(c.paid)),
-    el('span', { class: 'ledger-num', style: `grid-column:5;justify-self:end;font:${c.unpaid ? 600 : 400} 12.5px/1 var(--f-num);color:${c.unpaid ? 'var(--ink)' : 'var(--faint)'}` },
-      c.unpaid ? fmt(c.unpaid) : '—'),
-    c.over
-      ? el('span', { class: 'ledger-num', style: 'grid-column:6;justify-self:end;font:600 12.5px/1 var(--f-num);color:var(--red-dot)' }, fmt(c.over))
-      : el('span', { style: 'grid-column:6;visibility:hidden' }),
-    el('span', { style: 'grid-column:7;justify-self:end;font:450 11.5px/1.5 var(--sans);color:var(--faint);white-space:nowrap' }, `${c.items.length} 项`),
+    el('span', { class: 'ledger-row-metrics' },
+      el('span', { 'data-slot': 'paid', style: 'justify-self:end;font:500 12.5px/1 var(--f-num);color:var(--ink-2)' }, fmt(c.paid)),
+      el('span', { 'data-slot': 'unpaid', style: `justify-self:end;font:${c.unpaid ? 600 : 400} 12.5px/1 var(--f-num);color:${c.unpaid ? 'var(--ink)' : 'var(--faint)'}` },
+        c.unpaid ? fmt(c.unpaid) : '—'),
+      el('span', { 'data-slot': 'overdue', style: c.over
+        ? 'justify-self:end;font:600 12.5px/1 var(--f-num);color:var(--red-dot)'
+        : 'visibility:hidden' }, c.over ? fmt(c.over) : '—'),
+      el('span', { 'data-slot': 'count', style: 'justify-self:end;font:450 11.5px/1.5 var(--sans);color:var(--faint);white-space:nowrap' }, `${c.items.length} 项`),
+    ),
   );
 }
 

@@ -386,6 +386,9 @@ npm run dev
 | [SELF-HOSTING.md](SELF-HOSTING.md) | Docker 与裸 Node 部署、反向代理、可信代理范围、环境变量逐项说明、备份恢复、升级、Android 连接规则、故障排查 |
 | [docs/DESIGN.md](docs/DESIGN.md) | 数据模型、期限引擎、阶段引擎、文件桥、分成结算、LLM 边界等设计约束 |
 | [docs/DESIGN-TOKENS.md](docs/DESIGN-TOKENS.md) | 三皮肤设计令牌与 UI 骨架不变量 |
+| [docs/UI-COMPONENTS.md](docs/UI-COMPONENTS.md) | UI 组件目录、组件契约、问题记录模板与验收标准 |
+| [docs/UI-AGENT-WORKFLOW.md](docs/UI-AGENT-WORKFLOW.md) | 多 agent 协作的 UI 盘点、实现、迁移与视觉验收流程 |
+| [docs/UI-ROADMAP.md](docs/UI-ROADMAP.md) | UI 一致性阶段路线、优先级与全站验收门槛 |
 | [docs/CHANGES.md](docs/CHANGES.md) | 完整版本史（含开源前的历史版本） |
 | [docs/RELEASING.md](docs/RELEASING.md) | 三条发行线（macOS / Docker / Android）的发版手册 |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | 参与方式与「不收 PR」的说明 |

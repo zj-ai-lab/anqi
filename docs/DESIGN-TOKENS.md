@@ -35,7 +35,7 @@ v5.1 的 `.fold` 把每个低频块都做成 48px 的门，密度省了但认知
 
 ### 三种手法
 
-1. **事实条 `.factstrip`**：填一次就固定、一行装得下的事实（分成约定、当事人、送达地址、口径）。不给箭头，点「改/设置」就地展开同一条内的录入区 `.factstrip-more`（不是新折叠块）。行网格 `52px minmax(0,1fr) 58px`；第三列 58px + `white-space:nowrap` 是实测值（46px 时「收起」两字竖排）。可换行长事实变体 `.factstrip.is-wrap`（统计口径用）。
+1. **事实条 `.factstrip`**：填一次就固定、一行装得下的事实（分成约定、当事人、送达地址、口径）。不给箭头，点「改/设置」就地展开同一条内的录入区 `.factstrip-more`（不是新折叠块）。通用行网格仍为 `52px minmax(0,1fr) 58px`；动作统一 `inline-flex` 居中，桌面最小高度 32px、窄屏 44px。联系人摘要使用 `.factstrip--contacts`，首列 64px、动作列按内容取宽，并保持字段名不换行。可换行长事实变体 `.factstrip.is-wrap`（统计口径用）。
 2. **账本行 `.ledger`**：同构重复集合（费用按案、每笔款）。收起态本身是可读的数据行，数字列右对齐等宽字体；一组共用一张连续表，无卡间空隙。需要处理的那条自己展开（费用：`over>0`），展开态从表面抬起：`border-top/bottom` + 白底 + `inset 3px 0 0` 状态色条。⚠ 网格里每项写死 `grid-column`；空单元格用 `visibility:hidden` 不 `display:none`（后者让列塌陷错位）。
 3. **归档门 `.archive-door`**：已完结/已忽略/已归档的整段。**一页只留一道，永远放最后**。虚线框（`1px dashed var(--border)`）与在办内容分层；复用 `<details>` + `fold.js` 持久化，但不依赖 `.fold` 母题。费用页表底实底变体 `.archive-door.is-solid`。
 
@@ -70,7 +70,7 @@ v5.2 的展开态（白底 + border-top/bottom + 组级 inset 栏杆）实测两
 - **栏杆全高连续**：井里各层（`.fee-items`、`.p-foot`）保持透明底让组级 `inset 3px` 状态条从头画到底；案头带不透明，栏杆在带内以同规格重画一次（`.is-over[open]`/`.is-ok[open]` 行级 inset）。
 - **款项卡**：`.fee-item-block` 从细线分隔改为白卡（`1px var(--border)` + `--r-btn` 圆角），主行/备注/分成/凭证四层同卡，卡间 10px gap；`.fee-item-note` 补齐 `7px 14px` 内边距（修复贴边）；新增 `.fee-item-voucher-line` 骨架样式。
 - **小计条**：`.fee-ledger-group > .p-foot` 透明底走井色，`本案净额`（`.fee-case-net`）升 `13.5px/700` 为第一强调；「打开本案资金区」并入小计条尾部，删除独立 `.fee-case-open` 条。
-- **状态列 116px**：`FEE_ITEM_GRID` 与案件页 `CASE_FEE_GRID` 的 chip 列 92/90px 装不下「逾期 · 2026-04-27」（600 11px 实测 ~111px，溢出压触发节点列），统一放宽到 116px。⚠ 放宽后两张表的**列最小值合计必须重新对账**（fees 卡内 ~888px / case 面板内 ~918px，1440 视口实测），超了末列动作按钮被 `overflow:hidden` 裁掉——本次已把其余列最小值相应收回。
+- **状态列 140px**：`FEE_ITEM_GRID` 与案件页 `CASE_FEE_GRID` 的 chip 列原为 116px，遇到「他方已收 · 2026-09-23」会压到触发节点列；统一放宽到 140px，并让款项名称与外部基数标签分别处理截断。⚠ 放宽后两张表的**列最小值合计必须重新对账**；内容区不足时在平板断点切为单列或两行布局，不能靠 `overflow:hidden` 裁掉末列动作。
 - **粘性抬头下滑收缩**：费用页 `.context-header` 的 sticky `top` 由 fees.js 设为 `calc(var(--h-top) − 导航行 offsetTop)`（ResizeObserver 量取，总账高度随数据/断点变）——标题与 56px 总账随滚动自然滚走（藏进 z-60 顶栏后面），只钉住锚点导航行（~51px）。关键数字 `.fee-context-mini`（净额/要追）是导航行右侧的 absolute overlay，不占布局高度，完全收起（`scrollY ≥ 收缩量`，class `is-condensed`）后淡入——全程零内容跳动、无阈值抖动循环。<900px 隐藏 mini；`prefers-reduced-motion` 下无过渡。
 
 只复用既有语义令牌，零新增颜色；三皮肤仍共享同一 DOM 与断点，border 恒 1px、粗线仍走 inset box-shadow。

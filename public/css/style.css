@@ -49,9 +49,10 @@
 }
 
 /* 通讯录与案件参与人：保持一行摘要，低频管理才展开。 */
-.case-participant-box { margin: 14px 0 18px; padding: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface-solid); }
+.case-participant-box { margin: 14px 0 18px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-panel); background: var(--surface-solid); }
 .case-participant-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-.case-participant-head > div { display: grid; gap: 3px; }
+.case-participant-head > div { display: grid; gap: 3px; flex: 1 1 auto; min-width: 0; }
+.case-participant-head > .btn { flex: none; }
 .case-participant-head .meta { font-size: 12px; }
 .participant-form { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--line); }
 .participant-row, .person-row { gap: 10px; }
@@ -2401,8 +2402,9 @@ html .login-card { backdrop-filter: var(--bf); -webkit-backdrop-filter: var(--bf
   border-bottom: 1px solid var(--line);
 }
 .timeline-filters button {
+  display: inline-flex; align-items: center; justify-content: center;
   min-height: 28px; padding: 0 10px; border: 1px solid transparent;
-  border-radius: var(--r-btn); background: transparent; color: var(--meta); font-size: 12px;
+  border-radius: var(--r-btn); background: transparent; color: var(--meta); font: 500 12px/1.2 var(--sans);
 }
 .timeline-filters button:hover { background: var(--hover); color: var(--ink); }
 .timeline-filters button.is-active { background: var(--green-bg); color: var(--green); border-color: var(--green-line); }
@@ -2723,6 +2725,10 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 @media (max-width: 1279px) {
   :root { --w-right: 340px; }
 }
+@media (max-width: 1370px) {
+  /* 费用页款项行的最小六列在双栏下需要约 868px；不足时先保留整行语义，再把右栏移到下方。 */
+  .fee-layout { grid-template-columns: 1fr; }
+}
 @media (max-width: 1180px) {
   .workbench { grid-template-columns: 1fr; }
   .today-workbench, .case-layout, .fee-layout { grid-template-columns: 1fr; }
@@ -2753,6 +2759,52 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .fee-ledger { grid-template-columns: minmax(0, 1fr) 230px; }
   .fee-chase { grid-column: 1 / -1; border-left: none; border-top: 1px solid var(--line); }
 }
+@media (min-width: 768px) and (max-width: 1000px) {
+  /* 1000px 以下仍是平板视口，但账本六/七列已经没有足够宽度，复用窄屏两行骨架避免整页横滚。 */
+  .topnav .navbadge.counts { display: none; }
+  .fee-ledger-table > .ledger-head,
+  .case-fee-ledger > .ledger-head { display: none; }
+  .fee-ledger-row {
+    grid-template-columns: minmax(0, 1fr) auto !important;
+    grid-template-areas: "name count" "bar nums";
+    row-gap: 4px; padding: 10px 14px; min-height: 0;
+  }
+  .fee-ledger-row > .ledger-caret { grid-area: 1 / 1; }
+  .fee-ledger-row > .ledger-name { grid-area: 1 / 1; padding-left: 14px; }
+  .fee-ledger-row > .ledger-bar { grid-area: 2 / 1; }
+  .fee-ledger-row > .ledger-row-metrics {
+    display: flex;
+    grid-area: 2 / 2;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    min-width: 0;
+  }
+  .case-fee-ledger-item,
+  .fee-ledger-item {
+    display: flex !important;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 6px 10px;
+    padding: 10px 14px 10px 20px;
+  }
+  .case-fee-ledger-item > *,
+  .fee-ledger-item > * { width: auto; min-width: 0; }
+  .case-fee-ledger-item > [style*="grid-column:1"],
+  .fee-ledger-item > [style*="grid-column:1"] { flex: 1 1 100%; font-weight: 600; }
+  .case-fee-ledger-item > [style*="grid-column:4"],
+  .fee-ledger-item > [style*="grid-column:4"] { margin-left: auto; }
+  .case-fee-ledger-item > [style*="grid-column:3"],
+  .fee-ledger-item > [style*="grid-column:3"],
+  .case-fee-ledger-item > [style*="grid-column:5"],
+  .fee-ledger-item > [style*="grid-column:5"] { display: none; }
+  .case-fee-ledger-item .ledger-item-acts,
+  .fee-ledger-item .ledger-item-acts { margin-left: auto; }
+  .case-fee-ledger-item .ledger-btn,
+  .case-fee-ledger-item .ledger-btn.ghost,
+  .fee-ledger-item .ledger-btn,
+  .fee-ledger-item .ledger-btn.ghost { min-height: 44px; height: 44px; padding: 0 12px; }
+}
 @media (max-width: 767px) {
   :root { --gap: 12px; }
   body { font-size: 14px; }
@@ -2777,6 +2829,8 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .dmodal-form input, .dmodal-form select, .dmodal-form textarea { min-height: 44px; }
   .settlement-modal input:not([type="checkbox"]):not([type="radio"]),
   .settlement-modal select, .settlement-modal textarea { min-height: 44px; }
+  details.adder summary { min-height: 44px; }
+  .step { min-height: 44px; }
   .p-head { min-height: 56px; }
   .work-group + .work-group { margin-top: 28px; }
   .group-title { margin-top: 28px; }
@@ -2791,7 +2845,7 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .fee-section-head { align-items: flex-start; flex-wrap: wrap; gap: 4px 8px; }
   .fee-section-head .group-title { flex-basis: calc(100% - 92px); margin-bottom: 4px; }
   .fee-toolbar { width: 100%; justify-content: flex-end; }
-  .fee-toolbar .btn { min-height: 40px; }
+  .fee-toolbar .btn { min-height: 44px; }
   .fees-agreement-fold > summary,
   .case-money-fold > summary,
   .case-share-list-fold > summary,
@@ -3425,8 +3479,12 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   min-height: 36px;
   padding: 0 12px;
 }
+.factstrip--contacts .factstrip-row {
+  grid-template-columns: 64px minmax(0, 1fr) max-content;
+}
 .factstrip-label {
   grid-column: 1;
+  white-space: nowrap;
   font: 600 11px/1.5 var(--sans);
   letter-spacing: .06em;
   color: var(--faint);
@@ -3445,10 +3503,14 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   grid-column: 3;
   justify-self: end;
   white-space: nowrap;                               /* ⚠ 必写，否则两字按钮会竖排 */
-  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  height: 32px;
   padding: 0 8px;
   border: 1px solid var(--border);
-  border-radius: 5px;
+  border-radius: var(--r-btn);
   background: var(--surface-solid);
   color: var(--meta);
   font: 500 11.5px/1 var(--sans);
@@ -3519,12 +3581,20 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   color: var(--faint);
 }
 .ledger-name {
+  grid-column: 2;
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   font: 550 13.5px/1.5 var(--sans); color: var(--ink);
 }
+.ledger-caret { grid-column: 1; }
 .ledger-stage { flex: none; font: 450 11px/1.5 var(--sans); color: var(--faint); }
 .ledger-num { font-family: var(--f-num); }
+.ledger-row-metrics { display: contents; }
+.ledger-row-metrics > [data-slot="paid"] { grid-column: 4; }
+.ledger-row-metrics > [data-slot="unpaid"] { grid-column: 5; }
+.ledger-row-metrics > [data-slot="overdue"] { grid-column: 6; }
+.ledger-row-metrics > [data-slot="count"] { grid-column: 7; }
 .ledger-bar {
+  grid-column: 3;
   display: flex; height: 4px; border-radius: 2px; overflow: hidden; background: var(--line);
 }
 .ledger-bar > span { display: block; height: 100%; }
@@ -3606,8 +3676,12 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   align-items: center;
 }
 .ledger-item-label {
-  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  display: flex; align-items: center; gap: 6px;
+  min-width: 0; overflow: hidden;
   font: 600 13px/1.5 var(--sans); color: var(--ink);
+}
+.ledger-item-label-name {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ledger-item-node {
   min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -3637,10 +3711,14 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 
 /* 状态 chip（账本行内专用，复用 .pill 视觉但更紧凑：padding 2px 7px / radius 5px） */
 .ledger-chip {
+  display: inline-flex;
+  align-items: center;
+  box-sizing: border-box;
   justify-self: start;
+  min-height: 20px;
   padding: 2px 7px;
   border-radius: 5px;
-  font: 600 11px/1.5 var(--sans);
+  font: 600 11px/1.25 var(--sans);
   white-space: nowrap;
 }
 .ledger-chip.is-ok { background: var(--fill-ok-soft); color: var(--ok-dot); }
@@ -3734,8 +3812,11 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
 @media (max-width: 767px) {
   /* 事实条：长事实换行不截断；第三列按钮宽度收一点 */
   .factstrip-row { grid-template-columns: 48px minmax(0, 1fr) 52px; gap: 8px; padding: 0 10px; }
+  .factstrip--contacts .factstrip-row { grid-template-columns: 64px minmax(0, 1fr) max-content; }
   .factstrip-fact { white-space: normal; text-overflow: clip; overflow: visible; }
   .factstrip.is-wrap .factstrip-row { grid-template-columns: 44px minmax(0, 1fr) 40px; }
+  .factstrip-edit { min-height: 44px; height: 44px; padding: 0 10px; }
+  .timeline-filters button { min-height: 44px; }
 
   /* 账本表头窄屏隐藏（列定义在窄屏两行化后失去锚意义，靠行的两行布局自解释） */
   .fee-ledger-table > .ledger-head,
@@ -3747,14 +3828,19 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
     grid-template-areas: "name count" "bar nums";
     row-gap: 4px; padding: 10px 14px; min-height: 0;
   }
-  .fee-ledger-row > [style*="grid-column:1"] { grid-area: 1 / 1; }       /* 箭头并入案件名行 */
-  .fee-ledger-row > [style*="grid-column:2"] { grid-area: 1 / 1; padding-left: 14px; } /* 案件名 */
-  .fee-ledger-row > [style*="grid-column:3"] { grid-area: 2 / 1; }       /* 进度条 */
-  .fee-ledger-row > [style*="grid-column:4"],
-  .fee-ledger-row > [style*="grid-column:5"],
-  .fee-ledger-row > [style*="grid-column:6"],
-  .fee-ledger-row > [style*="grid-column:7"] { grid-area: 2 / 2; justify-self: end; font-size: 11.5px; }
-  .fee-ledger-row > [style*="grid-column:7"] { white-space: nowrap; }
+  .fee-ledger-row > .ledger-caret { grid-area: 1 / 1; }       /* 箭头并入案件名行 */
+  .fee-ledger-row > .ledger-name { grid-area: 1 / 1; padding-left: 14px; } /* 案件名 */
+  .fee-ledger-row > .ledger-bar { grid-area: 2 / 1; }       /* 进度条 */
+  .fee-ledger-row > .ledger-row-metrics {
+    display: flex;
+    grid-area: 2 / 2;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    min-width: 0;
+    font-size: 11.5px;
+  }
+  .fee-ledger-row > .ledger-row-metrics > [data-slot="count"] { white-space: nowrap; }
 
   /* 款项行窄屏两行化（案件详情 7 列 / 费用页 6 列统一处理）：
      第1行 = 款项名 + 金额；第2行 = 状态chip + 凭证 + 动作。触发节点/分成窄屏藏（进明细看）。 */
@@ -3781,6 +3867,14 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   /* 状态 chip / 凭证 / 动作 自然排在第二行 */
   .case-fee-ledger-item .ledger-item-acts,
   .fee-ledger-item .ledger-item-acts { margin-left: auto; }
+  .case-fee-ledger-item .ledger-btn,
+  .case-fee-ledger-item .ledger-btn.ghost,
+  .fee-ledger-item .ledger-btn,
+  .fee-ledger-item .ledger-btn.ghost {
+    min-height: 44px;
+    height: 44px;
+    padding: 0 12px;
+  }
 
   /* fees 页款项卡窄屏：井区与卡内边距收紧，小计条对齐井边 */
   .fee-items { padding: 10px 12px; gap: 8px; }
