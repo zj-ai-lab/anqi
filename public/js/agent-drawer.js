@@ -675,7 +675,7 @@ async function createAgentDrawer() {
     const caseIdValue = value.case_id == null ? null : Number(value.case_id);
     const outcomeLabel = value.outcome === 'updated' ? '已更新 · ' : '';
     const row = el('div', { class: 'agent-round-record' },
-      el('span', {}, `[${value.case_name || '所务'}] ${outcomeLabel}${mapping[1]} · ${String(item.content || item.title || item.name || item.role || '').slice(0, 100)}`),
+      el('span', {}, `[${value.case_name || '所务'}] ${outcomeLabel}${mapping[1]} · ${String(item.content || item.title || item.name || [item.occurred_on, item.occurred_time, item.location].filter(Boolean).join(' ') || item.role || '').slice(0, 100)}`),
       ...(caseIdValue ? [el('a', { href: `/case.html?id=${encodeURIComponent(caseIdValue)}`, target: '_blank', rel: 'noopener' }, '打开案件')] : []),
     );
     if (value.outcome !== 'updated') {
