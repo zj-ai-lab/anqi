@@ -2842,8 +2842,13 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .fee-case-panel > summary .fee-case-identity { grid-column: 2; }
   .fee-case-panel > summary .fee-case-scale { display: none; }
   .fee-case-panel > summary .fold-summary { grid-column: 3; max-width: 46vw; }
-  .fee-section-head { align-items: flex-start; flex-wrap: wrap; gap: 4px 8px; }
-  .fee-section-head .group-title { flex-basis: calc(100% - 92px); margin-bottom: 4px; }
+  /* 计数与标题同一行、按基线对齐；工具条独占第二行。
+     ⚠ 标题别再写死给计数留宽（旧 calc(100% - 92px)）：.fee-case-count 走 --f-num，
+       pro=SF Mono 86.6px / paper·jade=Songti 65.8px（「8 案 · 展开 2」），两位数案件更宽，
+       超出预留就整块掉到第二行，pro 比另两皮肤高 16px。basis 0 让标题吃剩余宽度，
+       计数按自身字宽排在右侧，行高只由标题决定 → 三皮肤包围盒恒等。 */
+  .fee-section-head { align-items: baseline; flex-wrap: wrap; gap: 4px 8px; }
+  .fee-section-head .group-title { flex-basis: 0; margin-bottom: 4px; }
   .fee-toolbar { width: 100%; justify-content: flex-end; }
   .fee-toolbar .btn { min-height: 44px; }
   .fees-agreement-fold > summary,

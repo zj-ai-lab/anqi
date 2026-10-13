@@ -279,6 +279,7 @@ font-size · letter-spacing · line-height · border-width
 **已记录的实测：**
 - D-merged 原型（ARCHITECTURE.md，Playwright 2026-07-13）：134 个布局容器零位移，三皮肤页面总高全部 1235px，jade 的 `backdrop-filter` 仅 10 个元素。
 - 落地到 9 页时修掉的 3 处位移（均已在 CSS 注释中留档）：`.brand .ver` 字体锁、`.cal-head .page-title` 吃 flex 余量、`.set-ctl` 钉死 `width`。
+- 2026-10-13 费用页窄屏 `.fee-section-head`：标题写死给 `.fee-case-count`（走 `--f-num`）留 92px，pro 的 SF Mono 计数 86.6px 放不下而整块换行，组头比 paper/jade 高 16px。改为标题 `flex-basis: 0` 吃剩余宽度、计数按基线与标题同行——同属「吃 flex 余量」，保留各皮肤数字字体。
 
 > **改页/加组件后必须重跑此验证。** 任何一处非零位移都说明层 B 越界了。
 
