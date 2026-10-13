@@ -8,6 +8,14 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 
+// DSH 会话本身不知道「今天」；案件会话首轮必调本工具，顺带下发北京时间日期与星期，
+// 让「下周三」「明天」这类相对日期能被换算，而不是停下来问律师。
+function beijingToday() {
+  const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date());
+  const weekday = ['日', '一', '二', '三', '四', '五', '六'][new Date(`${today}T12:00:00Z`).getUTCDay()];
+  return { today, weekday: `星期${weekday}` };
+}
+
 const server = new McpServer({
   name: 'anqi-local',
   version: '0.0.0',
@@ -19,7 +27,7 @@ server.registerTool('case_folder_info', {
 }, async () => ({
   content: [{
     type: 'text',
-    text: JSON.stringify({ cwd: process.cwd() }),
+    text: JSON.stringify({ cwd: process.cwd(), ...beijingToday() }),
   }],
 }));
 

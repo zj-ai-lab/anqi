@@ -7,6 +7,7 @@ import {
   sessionCaseGranted,
 } from '../agent/session-registry.js';
 import { matchCaseByHints } from '../lib/case-match.js';
+import { todayCN, weekdayCN } from '../lib/dates.js';
 import { upsertContactRecord } from './contacts.js';
 import { createDeadlineRecord, createEventRecord, createTaskRecord, createWorklogRecord } from './records.js';
 import { createFactRecord } from './legalrag.js';
@@ -180,7 +181,9 @@ r.post('/agent-case-resolve', (req, res) => {
     offerSessionCases(sessionId, result.candidates.map((row) => row.id));
   }
   audit(req.actor, 'agent-case-resolve', 'agent-session', null, `match=${result.match} candidates=${result.candidates.length}`);
-  return res.json({ ...result, ...(granted_case_id === undefined ? {} : { granted_case_id }) });
+  // DSH 会话不知道「今天」；总入口每条事都要先 resolve，顺带下发北京时间日期，跨零点也是新的。
+  const today = todayCN();
+  return res.json({ ...result, today, weekday: weekdayCN(today), ...(granted_case_id === undefined ? {} : { granted_case_id }) });
 });
 
 r.post('/agent-case-select', (req, res) => {

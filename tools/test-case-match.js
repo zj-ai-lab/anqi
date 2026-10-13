@@ -62,4 +62,18 @@ assert.equal(containsCaseNo.candidates[0].id, 22);
 assert.deepEqual(Object.keys(agency.candidates[0]), CANDIDATE_FIELDS);
 assert.equal(matchCaseByHints({ cases, contacts, hints: { parties: '李四' } }).match, 'unique');
 assert.equal(matchCaseByHints({ cases, contacts }).match, 'none');
+// 同一条事点名多个当事人 → 取同时命中的案件（覆盖度最高），不是任一沾边的并集。
+const bothParties = matchCaseByHints({ cases: [
+  { id: 31, name: '张三诉李四借款纠纷', client: '张三', opponent: '李四', status: 'active', updated_at: '2026-10-01' },
+  { id: 32, name: '张三诉孙七合同纠纷', client: '张三', opponent: '孙七', status: 'active', updated_at: '2026-10-02' },
+], hints: { parties: ['张三', '孙七'] } });
+assert.equal(bothParties.match, 'unique'); assert.deepEqual(bothParties.candidates.map((row) => row.id), [32]);
+const onlyZhang = matchCaseByHints({ cases: [
+  { id: 31, name: '张三诉李四借款纠纷', client: '张三', opponent: '李四', status: 'active', updated_at: '2026-10-01' },
+  { id: 32, name: '张三诉孙七合同纠纷', client: '张三', opponent: '孙七', status: 'active', updated_at: '2026-10-02' },
+], hints: { parties: ['张三'] } });
+assert.equal(onlyZhang.match, 'multiple'); assert.deepEqual(onlyZhang.candidates.map((row) => row.id), [32, 31]);
+// 通称机关名不是线索：只给「法院」→ none；「测试人民检察院」照常命中。
+assert.equal(matchCaseByHints({ cases, contacts, hints: { agency: '法院' } }).match, 'none');
+assert.equal(matchCaseByHints({ cases, contacts, hints: { agency: ['看守所', '测试人民检察院'] } }).candidates[0].id, 3);
 console.log('case-match: local hints normalization, intersection/conflict, contact roles, inactive count and safe projection passed');

@@ -132,6 +132,8 @@ const CASE_RESOLVE_SCHEMA = {
     },
     inactive_hits: { type: 'number', required: true },
     conflict: { type: 'boolean', required: true },
+    today: { type: 'string', required: true },
+    weekday: { type: 'string', required: true },
     granted_case_id: { type: 'number' },
   },
 };
@@ -331,7 +333,7 @@ export function apply(ctx, config = {}) {
         });
         return {
           match: String(value?.match || 'none'), candidates: pickRows(value?.candidates, CASE_RESOLVE_CANDIDATE_FIELDS),
-          inactive_hits: Number(value?.inactive_hits || 0), conflict: value?.conflict === true,
+          inactive_hits: Number(value?.inactive_hits || 0), conflict: value?.conflict === true, today: String(value?.today || ''), weekday: String(value?.weekday || ''),
           ...(value?.granted_case_id === undefined ? {} : { granted_case_id: Number(value.granted_case_id) }),
         };
       },

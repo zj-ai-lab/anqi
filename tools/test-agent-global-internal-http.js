@@ -12,6 +12,9 @@ const { db } = await import('../src/db.js');
 const router = (await import('../src/routes/internal.js')).default;
 const { internalAuth } = await import('../src/middleware/auth.js');
 const registry = await import('../src/agent/session-registry.js');
+const { todayCN, weekdayCN } = await import('../src/lib/dates.js');
+// weekdayCN 只看日期字符串本身，与进程时区无关。
+assert.equal(weekdayCN('2026-10-13'), '星期二'); assert.equal(weekdayCN('2099-11-04'), '星期三'); assert.equal(weekdayCN('2026-02-30x'), '');
 registry._resetSessionRegistryForTest();
 
 const app = express();
@@ -72,6 +75,8 @@ try {
   // A later unique resolve grants 李四 without revoking the earlier 张三 grant.
   out = await post('/internal/agent-case-resolve', { session_id: sessionId, parties: ['李四'] });
   assert.equal(out.status, 200); assert.equal(out.data.match, 'unique'); assert.equal(out.data.granted_case_id, two);
+  // 总入口靠 resolve 拿「今天」：北京时间日期 + 星期，模型不必问律师。
+  assert.equal(out.data.today, todayCN()); assert.equal(out.data.weekday, weekdayCN(todayCN())); assert.match(out.data.weekday, /^星期[日一二三四五六]$/u);
   out = await req(`/internal/agent-case-view?session_id=${sessionId}&case_id=${selected}`);
   assert.equal(out.status, 200); assert.equal(out.data.case.id, selected);
   out = await post('/internal/agent-case-resolve', { session_id: sessionId, parties: ['不存在'] });

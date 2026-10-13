@@ -482,7 +482,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 案件助理对话的 assistant 文本按安全 Markdown 子集渲染：标题、段落、粗体/斜体/删除线、行内与围栏代码、引用、有序/无序/任务列表、表格及 HTTP(S)/mailto 链接。渲染器只用 DOM 节点组装，不解释原始 HTML；危险协议不生成链接，Markdown 图片只显示为可点击的来源链接而不自动请求远端资源。流式 chunk 可反复重绘当前气泡，最终 `assistant/message` 仍以权威完整文本收口；用户输入、系统行和工具摘要继续按纯文本显示。
 
-2.11.0 起案件助理还可调用 `anqi_worklog_add({content, worked_on?})` 直接写入绑定案件的工作日志，复用 `/api/worklog` 的单一 INSERT helper；记录固定 `created_by='ai'`，时间线显示 AI 标记。案件会话的 session 绑定仍决定案件归属，工具没有可选 `case_id` 参数。
+2.11.0 起案件助理还可调用 `anqi_worklog_add({content, worked_on?})` 直接写入绑定案件的工作日志，复用 `/api/worklog` 的单一 INSERT helper；记录固定 `created_by='ai'`，时间线显示 AI 标记。案件会话的 session 绑定仍决定案件归属，工具没有可选 `case_id` 参数。 同版把案件人设与 `anqi-case-brief` 对齐直写工具：律师口述的已办 / 待办 / 开庭 / 联系方式直接记入本案，口述期限只用 `anqi_deadline_add` 记为待核草稿，收件箱建议只留给需要律师本人判断的事项。
 
 ## 8.9 提醒中枢（2.10.0）
 
@@ -524,7 +524,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 工具集由 scope 决定：案件面保留原有八个工具并增加 `anqi_worklog_add`；全局面提供 resolve/select/get、worklog、task、event、contact、fact、deadline、inbox，明确不提供 digest、文件工具、图片、slash 命令、shell、联网或 subagent。`anqi_worklog_add` 复用统一的 `createWorklogRecord`，AI 记录写入 `created_by='ai'`，律师可改可撤；期限仍只能记律师明说的日期，法定期限由确定性引擎派生。
 
-全局 persona 和 `anqi-global-intake` skill 规定五步规则：解析一句话、逐条本地认案、对歧义一次性提问、分别写日志/待办/事件/联系人，并逐条报告写入结果。该规则是合作律师真实记录习惯的改写，不允许猜案或把推断包装成事实。v2.12 的 IM 入站消息直接复用 global HTTP prompt 面；这个版本不做全所 digest、不把未经 resolve/select 的案件喂给模型，也不在刷新后重建本轮记录。
+全局 persona 和 `anqi-global-intake` skill 规定五步规则：解析一句话、逐条本地认案、对歧义一次性提问、分别写日志/待办/事件/联系人，并逐条报告写入结果。该规则是合作律师真实记录习惯的改写，不允许猜案或把推断包装成事实。v2.12 的 IM 入站消息直接复用 global HTTP prompt 面；这个版本不做全所 digest、不把未经 resolve/select 的案件喂给模型，也不在刷新后重建本轮记录。 DSH 会话本身不知道当天日期：总入口由每次 `anqi_case_resolve` 返回北京时间 `today` / `weekday`，案件会话由首轮必调的 `case_folder_info` 返回同样两项；两份 skill 都要求以此换算「明天 / 下周X」，不得向律师询问今天几号。
 
 前端全站只有一个 AI 抽屉，标题栏带「项目」选择器：第一项「总入口 · 不挂案件」（global worker，仅案齐领域工具与本地认案），其后是在办案件（案件夹即项目，走案件 worker，图片贴入、slash 命令、审批档位照旧）；案件列表在第一次打开抽屉时才拉。选总入口走 `/api/agent/global/*`，选案件走 `/api/cases/:id/agent/*`；切换只关旧 SSE、换端点前缀、连新 SSE 并用首帧 `history` 回显，不停止也不取消任何 worker，各 worker 独立存活、切回来仍在，同时重置斜杠命令清单与草稿图片。案件页默认选中本案（不读也不写记忆），其它页默认总入口；只有用户显式改动下拉才写 `sessionStorage['anjian-agent-project']`，同一标签页内沿用。顶栏「AI」与案件页「AI 助理」按钮开的是同一个抽屉实例；快录条「交给 AI」发往当前选中的项目。抽屉对两种项目都展示本轮记录、案件链接与撤销按钮，撤销调用既有人类删除端点，联系人更新只保留打开案件链接；总入口不渲染图片贴入、slash 命令或审批档位下拉。
 

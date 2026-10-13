@@ -17,7 +17,7 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 97 步；下面按当前实际步号记录：
+`npm run check` 当前 98 步；下面按当前实际步号记录：
 
 - 第 31–37 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
@@ -56,7 +56,7 @@
 - 第 66 步：`tools/test-agent-image-frontend.js`——图片专项前端 smoke，覆盖 vision-only
   贴图入口、剪贴板/文件草稿、上传后 prompt 仅传 id、即时与刷新历史缩略图；任务白名单
   禁止改既有 `tools/smoke-agent-frontend.js`，因此该步用独立图片专项文件承载新增断言。
-- 第 93–97 步：2.11.0 的 migration 031、本地 case-match、global internal HTTP、global HTTP 与全局前端静态契约；第 46 步同时覆盖案件/global 的真实 DSH composition，第 35 步保留 supervisor 生命周期门禁。
+- 第 93–98 步：2.11.0 的 migration 031、本地 case-match、global internal HTTP、global HTTP、全局前端静态契约，以及 `case_folder_info` 下发北京时间日期（真 stdio MCP 进程）；第 46 步同时覆盖案件/global 的真实 DSH composition，第 35 步保留 supervisor 生命周期门禁。
 
 > **2026-08-24 现行口径**：本文后部保留的 rc.7、无文件工具与“read 没有 containment”文字是
 > 当时取证的历史记录。基线 2026-08-24 升至 `0.1.1-rc.2`（2026-10 再升至 `0.1.5-rc.3`），并恢复文件工具：案齐自有 filesystem

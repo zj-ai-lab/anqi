@@ -114,7 +114,7 @@ try {
             court: '虚构区法院', handling_agency: '', case_type: '民事', procedure: '一审', stage: '立案',
             phone: '13800138000', id_no: '000000000000000000', note: '不应透传',
           }],
-          inactive_hits: 0, conflict: false, granted_case_id: 7, debug: { sql: 'drop' },
+          inactive_hits: 0, conflict: false, granted_case_id: 7, today: '2030-01-02', weekday: '星期三', debug: { sql: 'drop' },
         }), { status: 200, headers: { 'Content-Type': 'application/json' } });
       }
       return caseScopeFetch(url, options);
@@ -125,7 +125,8 @@ try {
     const before = calls.length;
     const resolved = await globalByName.get('anqi_case_resolve').execute({ parties: ['甲'] }, gExec);
     assert.equal(calls.length, before + 1);
-    assert.deepEqual(Object.keys(resolved).sort(), ['candidates', 'conflict', 'granted_case_id', 'inactive_hits', 'match']);
+    assert.deepEqual(Object.keys(resolved).sort(), ['candidates', 'conflict', 'granted_case_id', 'inactive_hits', 'match', 'today', 'weekday']);
+    assert.equal(resolved.today, '2030-01-02'); assert.equal(resolved.weekday, '星期三');
     assert.deepEqual(Object.keys(resolved.candidates[0]).sort(), [
       'case_no', 'case_type', 'client', 'court', 'handling_agency', 'id', 'name', 'opponent', 'procedure', 'stage',
     ]);

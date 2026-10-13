@@ -1,5 +1,13 @@
 // 全系统日期 = 北京时间 'YYYY-MM-DD' 字符串。容器 TZ 可能是 UTC，
 // 所以「今天」必须显式按 Asia/Shanghai 求值，不信任宿主时区。
+const WEEKDAY_CN = ['日', '一', '二', '三', '四', '五', '六'];
+
+/** YYYY-MM-DD → 「星期X」。取该日 UTC 正午，避免服务器时区把日期推到前后一天。 */
+export function weekdayCN(date) {
+  const d = new Date(`${date}T12:00:00Z`);
+  return Number.isNaN(d.getTime()) ? '' : `星期${WEEKDAY_CN[d.getUTCDay()]}`;
+}
+
 export function todayCN() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
 }
