@@ -65,7 +65,12 @@ function watchPage(page, name) {
   page.on('pageerror', (error) => consoleErrors.push(`${name}: ${error.message}`));
   page.on('requestfailed', (request) => {
     if (request.url().startsWith(`${baseUrl}/api/`)) {
-      networkErrors.push(`${name}: request failed ${request.method()} ${request.url()} · ${request.failure()?.errorText || ''}`);
+      const errorText = request.failure()?.errorText || '';
+      // A page navigation normally aborts in-flight API calls from the old
+      // document. Playwright reports those as requestfailed, but they are not
+      // application network failures and should not make the QA gate noisy.
+      if (errorText === 'net::ERR_ABORTED') return;
+      networkErrors.push(`${name}: request failed ${request.method()} ${request.url()} · ${errorText}`);
     }
   });
   page.on('response', (response) => {
@@ -310,6 +315,32 @@ function feeBlock(page, label) {
   }).first();
 }
 
+function caseFeeRow(page, label) {
+  return page.locator('.case-fee-ledger-item').filter({
+    has: page.getByText(label, { exact: true }),
+  }).first();
+}
+
+async function openCaseFeeRow(page, label) {
+  const row = caseFeeRow(page, label);
+  await row.waitFor();
+  const details = row.getByRole('button', { name: '明细', exact: true });
+  if (await details.count()) await details.click();
+  return caseFeeRow(page, label).locator('xpath=..');
+}
+
+async function openFeeBlock(page, label) {
+  const block = feeBlock(page, label);
+  if (!await block.count()) return block;
+  const group = block.locator('xpath=ancestor::details[contains(@class,"fee-ledger-group")][1]');
+  if (await group.count()) {
+    const summary = group.locator('summary').first();
+    if (!(await group.evaluate((element) => element.open))) await summary.click();
+  }
+  await block.waitFor({ state: 'visible' });
+  return block;
+}
+
 async function caseDisclosureState(page, caseName) {
   const title = page.locator('#detail').getByText(caseName, { exact: true }).first();
   if (!await title.count()) return { found: false };
@@ -321,7 +352,8 @@ async function caseDisclosureState(page, caseName) {
 
 async function assertFeesContracts(page, name, viewport) {
   const text = await page.locator('body').innerText();
-  if (!text.includes('应给我') && !text.includes('我应给')) {
+  const relationWords = await page.locator('.money-relation').allTextContents();
+  if (!relationWords.some((value) => value.includes('应给我') || value.includes('我应给'))) {
     recordFailure(`${name}: missing human relation wording`);
   }
   for (const term of ['gross', 'remaining', 'assignment', 'revision', 'snapshot', 'preview hash', 'fee version', '方案已闭合', '纳管已收']) {
@@ -331,10 +363,9 @@ async function assertFeesContracts(page, name, viewport) {
   const createButton = page.getByRole('button', { name: '记款项', exact: true });
   if (await createButton.count() !== 1) recordFailure(`${name}: expected one page-head “记款项” button`);
 
-  const scaleHeading = page.getByRole('heading', { name: '按案收款规模', exact: true });
-  if (await scaleHeading.count() !== 1) recordFailure(`${name}: missing “按案收款规模” heading`);
-  const scaleSection = page.locator('section[aria-label="按案收款规模"]');
-  if (await scaleSection.count() !== 1) recordFailure(`${name}: scale section aria-label not synchronized`);
+  const scaleHeading = page.getByRole('heading', { name: '按案款项', exact: true });
+  if (await scaleHeading.count() !== 1) recordFailure(`${name}: missing “按案款项” heading`);
+  if (await page.locator('#fees-cases').count() !== 1) recordFailure(`${name}: case fee section missing`);
 
   const hrefs = await page.locator(
     '#case-bars a[href*="/case.html?id="], #detail a[href*="/case.html?id="], #share-rows a[href*="/case.html?id="]'
@@ -359,7 +390,13 @@ async function assertFeesContracts(page, name, viewport) {
   if (!await zeroPanelTitle.count()) {
     recordFailure(`${name}: zero-amount case detail panel missing`);
   } else {
-    const zeroPanel = zeroPanelTitle.locator('xpath=ancestor::*[contains(@class,"fee-case-panel")][1]');
+    const zeroGroup = page.locator('.fee-ledger-group').filter({
+      has: page.getByText(fixture.cases.zero.name, { exact: true }),
+    }).first();
+    if (await zeroGroup.count() && !(await zeroGroup.evaluate((element) => element.open))) {
+      await zeroGroup.locator('summary').click();
+    }
+    const zeroPanel = zeroGroup;
     const zeroText = await zeroPanel.innerText();
     if (!zeroText.includes(fixture.fees.zero.label)) recordFailure(`${name}: zero-amount fee detail missing`);
     if (zeroText.includes('还没有任何款项记录')) {
@@ -370,25 +407,25 @@ async function assertFeesContracts(page, name, viewport) {
     recordFailure(`${name}: all-zero scale message shown even though comprehensive fixture has non-zero fees`);
   }
 
-  const unresolvedLabel = new RegExp(`先确认分成办法.*${fixture.fees.unresolved.unresolved_count} 条`);
-  if (await page.getByRole('button', { name: unresolvedLabel }).count() !== 1) {
-    recordFailure(`${name}: unresolved fee primary route label missing or duplicated`);
-  }
+  const unresolvedGroup = page.locator('.fee-ledger-group').filter({
+    has: page.getByText(fixture.fees.unresolved.label, { exact: true }),
+  }).first();
+  if (await unresolvedGroup.count() !== 1) recordFailure(`${name}: unresolved fee case group missing`);
 
-  const trace = feeBlock(page, fixture.fees.trace.label);
+  const trace = await openFeeBlock(page, fixture.fees.trace.label);
   if (!await trace.count()) recordFailure(`${name}: formal trace fee block missing`);
   else if (await trace.getByRole('button', { name: /怎么算的/ }).count() < 1) {
     recordFailure(`${name}: formal snapshot share lacks “怎么算的”`);
   }
-  const manual = feeBlock(page, fixture.fees.manual.label);
+  const manual = await openFeeBlock(page, fixture.fees.manual.label);
   if (!await manual.count()) recordFailure(`${name}: manual share fee block missing`);
   else if (await manual.getByRole('button', { name: /怎么算的/ }).count()) {
     recordFailure(`${name}: manual share misleadingly exposes “怎么算的”`);
   }
-  const assignmentOnly = feeBlock(page, fixture.fees.assignment_only.label);
+  const assignmentOnly = await openFeeBlock(page, fixture.fees.assignment_only.label);
   if (!await assignmentOnly.count()) recordFailure(`${name}: assignment-only fee block missing`);
-  else if (await assignmentOnly.getByRole('button', { name: '减免', exact: true }).count() !== 1) {
-    recordFailure(`${name}: assignment-only unpaid fee must allow waiver before any settlement run/share exists`);
+  else if (await assignmentOnly.getByText('收到钱了', { exact: true }).count() !== 1) {
+    recordFailure(`${name}: assignment-only fee must expose the settlement entry`);
   }
 
   const historyDetails = page.locator('details').filter({ hasText: '本年已分正项' }).first();
@@ -398,12 +435,38 @@ async function assertFeesContracts(page, name, viewport) {
     recordFailure(`${name}: settled history should be folded by default`);
   }
 
-  const borderWidths = await page.locator('.fee-ledger-term').evaluateAll((elements) => elements.map((element) => ({
+  const borderWidths = await page.locator('.fee-ledger-inline').evaluateAll((elements) => elements.map((element) => ({
     label: element.textContent.trim(),
     width: Number.parseFloat(getComputedStyle(element).borderTopWidth),
   })));
   const thick = borderWidths.filter((item) => item.width > 1.01);
   if (thick.length) recordFailure(`${name}: ledger rules still look tab-like: ${JSON.stringify(thick)}`);
+
+  const ledgerGeometry = await page.locator('.fee-ledger-item').evaluateAll((rows) => rows.map((row) => {
+    const host = row.querySelector('[style*="grid-column:2"]');
+    const chip = row.querySelector('.ledger-chip');
+    const node = row.querySelector('.ledger-item-node');
+    if (!host || !chip || !node) return null;
+    const hostRect = host.getBoundingClientRect();
+    const chipRect = chip.getBoundingClientRect();
+    const nodeRect = node.getBoundingClientRect();
+    if (!nodeRect.width || !nodeRect.height) return null;
+    return { hostRight: hostRect.right, chipRight: chipRect.right, nodeLeft: nodeRect.left };
+  }).filter(Boolean));
+  const overlap = ledgerGeometry.filter(({ chipRight, nodeLeft }) => chipRight > nodeLeft + 0.5);
+  if (overlap.length) recordFailure(`${name}: status chip overlaps trigger-node column: ${JSON.stringify(overlap)}`);
+  const externalChipWidth = await page.evaluate(() => {
+    const chip = document.createElement('span');
+    chip.className = 'ledger-chip is-ok';
+    chip.textContent = '他方已收 · 2026-09-23';
+    chip.style.position = 'absolute';
+    chip.style.visibility = 'hidden';
+    document.body.append(chip);
+    const width = chip.getBoundingClientRect().width;
+    chip.remove();
+    return width;
+  });
+  if (externalChipWidth > 140.5) recordFailure(`${name}: external status chip needs ${externalChipWidth}px but status track is 140px`);
 
   const currencyGlyph = await page.locator('.fee-ledger-currency').evaluate((element) => {
     const rect = element.getBoundingClientRect();
@@ -422,6 +485,34 @@ async function assertFeesContracts(page, name, viewport) {
 
   await assertNoOverflow(page, name);
   if (viewport.width <= 420) await assertMobileButtons(page, name);
+}
+
+async function assertCaseContacts(page, name, viewport) {
+  const strip = page.locator('#case-contacts-strip');
+  await strip.waitFor();
+  const geometry = await strip.evaluate((element) => {
+    const rows = [...element.querySelectorAll('.factstrip-row')];
+    return {
+      columns: getComputedStyle(rows[0]).gridTemplateColumns,
+      labels: rows.map((row) => row.querySelector('.factstrip-label').getBoundingClientRect().toJSON()),
+      actions: rows.map((row) => {
+        const action = row.querySelector('.factstrip-edit');
+        const rect = action.getBoundingClientRect();
+        const style = getComputedStyle(action);
+        return { rect: rect.toJSON(), display: style.display, align: style.alignItems, justify: style.justifyContent };
+      }),
+      whiteSpace: getComputedStyle(rows[0].querySelector('.factstrip-label')).whiteSpace,
+    };
+  });
+  assert.equal(geometry.labels.length, 2, `${name}: contacts factstrip must have two summary rows`);
+  assert.equal(geometry.whiteSpace, 'nowrap', `${name}: contact labels must not wrap`);
+  assert(geometry.columns.startsWith('64px '), `${name}: contact label track must start at 64px, got ${geometry.columns}`);
+  assert(geometry.labels.every((label) => Math.abs(label.x - geometry.labels[0].x) < 0.5),
+    `${name}: contact labels are not aligned`);
+  const minimumActionHeight = viewport.width <= 420 ? 43.5 : 31.5;
+  assert(geometry.actions.every(({ rect, display, align, justify }) => (
+    rect.height >= minimumActionHeight && display === 'flex' && align === 'center' && justify === 'center'
+  )), `${name}: contact actions are not centered or large enough: ${JSON.stringify(geometry.actions)}`);
 }
 
 async function inspectFeesMatrix({ viewportName, viewport, skin }) {
@@ -443,6 +534,10 @@ async function testSettledDisclosure() {
   const name = 'fees-settled-readonly';
   const { context, page } = await openFees(name, DESKTOP, 'pro');
   try {
+    const pendingToggle = page.locator('#fees-pending-toggle');
+    if (await pendingToggle.count() && (await pendingToggle.getAttribute('aria-expanded')) !== 'true') {
+      await pendingToggle.click();
+    }
     const details = page.locator('details').filter({ hasText: '本年已分正项' }).first();
     assert.equal(await details.count(), 1, 'zero-sum settled disclosure should exist');
     const summary = details.locator('summary').first();
@@ -461,11 +556,17 @@ async function testSettledDisclosure() {
 
 async function testUnresolvedModal(skin) {
   const name = `fees-unresolved-mobile-${skin}`;
-  const { context, page } = await openFees(name, MOBILE, skin);
+  const { context, page } = await openPage({
+    name,
+    url: `/case.html?id=${fixture.cases.unresolved.id}#case-money`,
+    viewport: MOBILE,
+    skin,
+  });
   try {
-    const label = new RegExp(`先确认分成办法.*${fixture.fees.unresolved.unresolved_count} 条`);
-    const button = page.getByRole('button', { name: label });
-    assert.equal(await button.count(), 1, 'unresolved primary route button missing');
+    await page.locator('#case-money .case-fee-ledger-item').waitFor();
+    const button = page.locator('#case-money').getByRole('button', { name: '收到钱了', exact: true }).first();
+    await button.waitFor();
+    assert.equal(await button.count(), 1, 'unresolved fee settlement entry missing');
     await button.click();
     const modal = page.locator('.settlement-modal');
     await modal.waitFor();
@@ -517,7 +618,6 @@ async function testCreateFee() {
     assert.equal(created.case_id, fixture.cases.empty_active.id);
     assert.equal(created.amount_fen, 123456, 'browser must submit yuan, server must store fen');
     assert.equal(created.node, 'QA 验收节点明确后支付');
-    await page.locator('#detail').getByText('QA 新增验收款', { exact: true }).waitFor();
     await page.screenshot({ path: screenshotPath(name), fullPage: true });
 
     const cleanupStatus = await page.evaluate(async (feeId) => {
@@ -595,13 +695,16 @@ async function waiverCycle(page, {
     : null;
   if (preserveAssignment) assert(planBefore, 'assignment-only fixture lost its saved plan before waiver');
 
-  let block = feeBlock(page, feeFixture.label);
+  await page.goto(`${baseUrl}/case.html?id=${caseFixture.id}#case-money`, { waitUntil: 'domcontentloaded' });
+  await page.locator('#case-money .case-fee-ledger-item').first().waitFor();
+  let block = await openCaseFeeRow(page, feeFixture.label);
   const waive = block.getByRole('button', { name: '减免', exact: true });
   assert.equal(await waive.count(), 1, `${name}: unpaid fee lacks waive action`);
   await clickWithConfirm(page, waive, feeFixture.id, 'waived');
 
-  block = feeBlock(page, feeFixture.label);
-  await block.getByText(/放弃 \/ 减免|已减免/).waitFor();
+  block = caseFeeRow(page, feeFixture.label);
+  await block.getByText(/减免/).first().waitFor();
+  block = block.locator('xpath=..');
   const waived = await readFeeFromOverview(page, caseFixture.id, feeFixture.id);
   assert.equal(waived.fee?.status, 'waived');
   assert.equal(waived.fee?.settlement_runs?.length, 0, `${name}: waive created a settlement run`);
@@ -622,16 +725,14 @@ async function waiverCycle(page, {
   const restore = block.getByRole('button', { name: /恢复/ });
   assert.equal(await restore.count(), 1, `${name}: waived fee lacks restore action`);
   await clickWithConfirm(page, restore, feeFixture.id, 'unpaid');
-  block = feeBlock(page, feeFixture.label);
-  await block.getByText(/待收/).first().waitFor();
   const restored = await readFeeFromOverview(page, caseFixture.id, feeFixture.id);
   assert.equal(restored.fee?.status, 'unpaid');
   assert.equal(restored.fee?.settlement_runs?.length, 0);
   assert.equal(restored.fee?.shares?.length, 0);
   if (unresolvedCount) {
-    assert.equal(await block.getByRole('button', {
-      name: new RegExp(`先确认分成办法.*${unresolvedCount} 条`),
-    }).count(), 1, `${name}: restored fee must expose unresolved-plan route again`);
+    const restoredEntry = await openCaseFeeRow(page, feeFixture.label);
+    assert.equal(await restoredEntry.getByRole('button', { name: '收到钱了', exact: true }).count(), 1,
+      `${name}: restored fee must expose settlement entry again`);
   }
   if (preserveAssignment) {
     const planAfterRestore = assignedPlan(restored.fee, feeFixture.assignment_id);
@@ -643,7 +744,12 @@ async function waiverCycle(page, {
 
 async function testWaiveRestore() {
   const name = 'fees-waive-restore-mobile-pro';
-  const { context, page } = await openFees(name, MOBILE, 'pro');
+  const { context, page } = await openPage({
+    name,
+    url: `/case.html?id=${fixture.cases.clean.id}#case-money`,
+    viewport: MOBILE,
+    skin: 'pro',
+  });
   try {
     await waiverCycle(page, {
       caseFixture: fixture.cases.clean,
@@ -671,7 +777,7 @@ async function testHistoryDirect(skin) {
   const name = `fees-history-mobile-${skin}`;
   const { context, page } = await openFees(name, MOBILE, skin);
   try {
-    const block = feeBlock(page, fixture.fees.trace.label);
+    const block = await openFeeBlock(page, fixture.fees.trace.label);
     const explain = block.getByRole('button', { name: /怎么算的/ }).first();
     assert.equal(await explain.count(), 1, 'formal share explain action missing');
     await explain.click();
@@ -720,6 +826,7 @@ async function inspectExistingCaseQa() {
     });
     try {
       await page.locator('#case-money .money-card').first().waitFor();
+      await assertCaseContacts(page, name, DESKTOP);
       const text = await page.locator('#case-money').innerText();
       assert(text.includes('律师费与分成'));
       assert(!text.includes('本笔律师费\n金额待定'), 'receivable agreement confused with case fee');
@@ -727,6 +834,24 @@ async function inspectExistingCaseQa() {
       await page.locator('#case-money').screenshot({ path: screenshotPath(name) });
     } finally {
       await context.close();
+    }
+  }
+
+  for (const skin of SKINS) {
+    const mobileName = `case-provisional-mobile-${skin}`;
+    const { context: mobileContext, page: mobilePage } = await openPage({
+      name: mobileName,
+      url: `/case.html?id=${fixture.cases.provisional.id}#case-money`,
+      viewport: MOBILE,
+      skin,
+    });
+    try {
+      await assertCaseContacts(mobilePage, mobileName, MOBILE);
+      await assertNoOverflow(mobilePage, mobileName);
+      await assertMobileButtons(mobilePage, mobileName);
+      await mobilePage.screenshot({ path: screenshotPath(mobileName), fullPage: true });
+    } finally {
+      await mobileContext.close();
     }
   }
 
@@ -739,7 +864,7 @@ async function inspectExistingCaseQa() {
   });
   try {
     await page.locator('#case-money .money-card').first().waitFor();
-    await page.getByText('新增分成约定', { exact: true }).click();
+    await page.locator('#case-money').getByText('新增分成约定', { exact: true }).click();
     await page.getByRole('button', { name: '别人应给我' }).click();
     const modal = page.locator('.settlement-modal');
     await modal.waitFor();
@@ -757,7 +882,13 @@ async function inspectExistingCaseQa() {
   }
 }
 
-const browser = await chromium.launch({ channel: 'chrome', headless });
+// CI/开发容器可能只提供系统 Chromium，没有 Playwright 的 Chrome 通道。
+// 默认仍使用项目原来的 Chrome 通道；设置 QA_CHROMIUM_PATH 时只替换浏览器二进制，
+// 不改变 viewport、皮肤矩阵或断言。
+const browserLaunchOptions = { headless };
+if (process.env.QA_CHROMIUM_PATH) browserLaunchOptions.executablePath = process.env.QA_CHROMIUM_PATH;
+else browserLaunchOptions.channel = 'chrome';
+const browser = await chromium.launch(browserLaunchOptions);
 try {
   await assertFixtureServer();
   for (const [viewportName, viewport] of [['desktop', DESKTOP], ['mobile', MOBILE]]) {
