@@ -87,6 +87,120 @@ try {
   console.log(`EVIDENCE_TOOL_NAMES ${JSON.stringify(tools.map((tool) => tool.name))}`);
   console.log(`EVIDENCE_PLUGIN_CASE_GET ${JSON.stringify({ contacts: caseView.contacts, facts: caseView.facts })}`);
   console.log('agent direct tools: worklog + visible contacts/facts + server-forced session/source/review contract passed');
+
+  // ---- global scope（DSH_ANQI_SCOPE=global）：工具集、case_id 提前失败、resolve 白名单 ----
+  const previousScope = process.env.DSH_ANQI_SCOPE;
+  const caseScopeFetch = globalThis.fetch;
+  try {
+    process.env.DSH_ANQI_SCOPE = 'global';
+    const globalTools = [];
+    apply({ tools: { register(tool) { globalTools.push(tool); } } }, { baseURL: 'http://127.0.0.1:3007' });
+    const globalByName = new Map(globalTools.map((tool) => [tool.name, tool]));
+    assert.deepEqual([...globalByName.keys()].sort(), [
+      'anqi_case_resolve', 'anqi_case_select', 'anqi_case_get', 'anqi_worklog_add', 'anqi_inbox_propose',
+      'anqi_contact_upsert', 'anqi_task_add', 'anqi_event_add', 'anqi_fact_add', 'anqi_deadline_add',
+    ].sort());
+    assert.equal(globalTools.length, 10, '工具名不得重复注册');
+    assert.equal(globalByName.has('anqi_digest'), false, 'global scope 不得有 anqi_digest');
+
+    // resolve 响应带多余字段：插件必须只透出白名单键。
+    globalThis.fetch = async (url, options = {}) => {
+      if (String(url).endsWith('/internal/agent-case-resolve')) {
+        calls.push({ url: String(url), options, body: options.body ? JSON.parse(options.body) : undefined });
+        return new Response(JSON.stringify({
+          match: 'unique',
+          candidates: [{
+            id: 7, name: '甲诉乙合同纠纷', case_no: '(2030)粤0304民初1号', client: '甲', opponent: '乙',
+            court: '虚构区法院', handling_agency: '', case_type: '民事', procedure: '一审', stage: '立案',
+            phone: '13800138000', id_no: '000000000000000000', note: '不应透传',
+          }],
+          inactive_hits: 0, conflict: false, granted_case_id: 7, debug: { sql: 'drop' },
+        }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      }
+      return caseScopeFetch(url, options);
+    };
+
+    const gExec = { signal: new AbortController().signal, callId: 'call-g', rootCallId: 'root-g' };
+
+    const before = calls.length;
+    const resolved = await globalByName.get('anqi_case_resolve').execute({ parties: ['甲'] }, gExec);
+    assert.equal(calls.length, before + 1);
+    assert.deepEqual(Object.keys(resolved).sort(), ['candidates', 'conflict', 'granted_case_id', 'inactive_hits', 'match']);
+    assert.deepEqual(Object.keys(resolved.candidates[0]).sort(), [
+      'case_no', 'case_type', 'client', 'court', 'handling_agency', 'id', 'name', 'opponent', 'procedure', 'stage',
+    ]);
+    assert.equal(resolved.granted_case_id, 7);
+    assert.equal(Object.hasOwn(resolved, 'debug'), false);
+    assert.equal(JSON.stringify(resolved).includes('13800138000'), false);
+
+    // 七个必须带 case_id 的工具：缺失 / 0 / 负数 / 小数 / NaN 一律在发请求前拒绝。
+    const requiredArgs = {
+      anqi_event_add: { type: 'other', occurred_on: '2030-01-01' },
+      anqi_contact_upsert: { role: '法官助理', name: '王助理' },
+      anqi_fact_add: { content: '法院通知补证' },
+      anqi_deadline_add: { name: '补证期限', due_on: '2030-01-02' },
+      anqi_inbox_propose: { title: '核对送达' },
+      anqi_case_get: {},
+      anqi_case_select: {},
+    };
+    const caseIdError = /case_id is required: use granted_case_id from anqi_case_resolve or anqi_case_select/;
+    for (const [toolName, args] of Object.entries(requiredArgs)) {
+      const tool = globalByName.get(toolName);
+      assert.ok(tool, `${toolName} 必须注册`);
+      for (const bad of [undefined, 0, -3, 1.5, Number.NaN, 'abc']) {
+        const mark = calls.length;
+        // 缺失 / 非 number 类型先被 defineTool 的参数校验拦下（ToolArgsError），
+        // 0 / 负数 / 小数过得了类型校验，必须由插件自己抛统一错误；两者都不得发请求。
+        const frameworkRejects = bad === undefined || typeof bad !== 'number' || Number.isNaN(bad);
+        await assert.rejects(
+          tool.execute(bad === undefined ? { ...args } : { ...args, case_id: bad }, gExec),
+          frameworkRejects ? /case_id|invalid arguments/ : caseIdError,
+          `${toolName} case_id=${String(bad)} 必须提前失败`,
+        );
+        assert.equal(calls.length, mark, `${toolName} case_id=${String(bad)} 不得发出任何 HTTP 请求`);
+      }
+    }
+
+    // task / worklog：case_id 可省略（所务记录），给了就必须合法。
+    for (const toolName of ['anqi_task_add', 'anqi_worklog_add']) {
+      const tool = globalByName.get(toolName);
+      const args = toolName === 'anqi_task_add' ? { title: '所务待办' } : { content: '所务日志' };
+
+      let mark = calls.length;
+      await tool.execute({ ...args }, gExec);
+      assert.equal(calls.length, mark + 1, `${toolName} 省略 case_id 应正常请求`);
+      assert.equal(Object.hasOwn(calls.at(-1).body.payload, 'case_id'), false, `${toolName} 省略时 payload 不得带 case_id`);
+      assert.equal(Object.hasOwn(calls.at(-1).body, 'case_id'), false);
+
+      mark = calls.length;
+      await tool.execute({ ...args, case_id: 7 }, gExec);
+      assert.equal(calls.length, mark + 1);
+      assert.equal(calls.at(-1).body.payload.case_id, 7, `${toolName} 带 case_id 时 payload 必须携带`);
+
+      for (const bad of [0, -1, 2.5, Number.NaN, 'abc']) {
+        mark = calls.length;
+        await assert.rejects(
+          tool.execute({ ...args, case_id: bad }, gExec),
+          typeof bad !== 'number' || Number.isNaN(bad) ? /case_id|invalid arguments/ : caseIdError,
+        );
+        assert.equal(calls.length, mark, `${toolName} 非法 case_id=${String(bad)} 不得发请求`);
+      }
+    }
+
+    // 合法 case_id 仍能正常写入，且带进 payload。
+    const goodMark = calls.length;
+    await globalByName.get('anqi_fact_add').execute({ content: '法院通知补证', case_id: 7 }, gExec);
+    assert.equal(calls.length, goodMark + 1);
+    assert.equal(calls.at(-1).body.payload.case_id, 7);
+
+    // 两个 scope 的 anqi_case_get 输出 schema 必须一致。
+    assert.deepEqual(globalByName.get('anqi_case_get').output.schema, byName.get('anqi_case_get').output.schema);
+    console.log('agent direct tools: global scope tool set + early case_id failure + resolve whitelist passed');
+  } finally {
+    globalThis.fetch = caseScopeFetch;
+    if (previousScope === undefined) delete process.env.DSH_ANQI_SCOPE;
+    else process.env.DSH_ANQI_SCOPE = previousScope;
+  }
 } finally {
   globalThis.fetch = originalFetch;
 }

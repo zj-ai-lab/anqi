@@ -85,6 +85,69 @@ const OBJECT_ARRAY = {
   items: OPEN_OBJECT,
 };
 
+// 案件面与全局面的 anqi_case_get 共用同一份输出 schema。
+const CASE_GET_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    case: { ...OPEN_OBJECT, required: true },
+    contacts: OBJECT_ARRAY,
+    facts: OBJECT_ARRAY,
+    events: OBJECT_ARRAY,
+    deadlines: OBJECT_ARRAY,
+    tasks: OBJECT_ARRAY,
+    tasks_recent_closed: OBJECT_ARRAY,
+    worklog_recent: OBJECT_ARRAY,
+    recommendations_recent: OBJECT_ARRAY,
+  },
+};
+
+const CASE_RESOLVE_CANDIDATE_FIELDS = [
+  'id', 'name', 'case_no', 'client', 'opponent', 'court', 'handling_agency', 'case_type', 'procedure', 'stage',
+];
+const CASE_RESOLVE_SCHEMA = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    match: { type: 'string', required: true },
+    candidates: {
+      type: 'array',
+      required: true,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'number' },
+          name: { type: 'string' },
+          case_no: { type: 'string' },
+          client: { type: 'string' },
+          opponent: { type: 'string' },
+          court: { type: 'string' },
+          handling_agency: { type: 'string' },
+          case_type: { type: 'string' },
+          procedure: { type: 'string' },
+          stage: { type: 'string' },
+        },
+      },
+    },
+    inactive_hits: { type: 'number', required: true },
+    conflict: { type: 'boolean', required: true },
+    granted_case_id: { type: 'number' },
+  },
+};
+
+const CASE_ID_REQUIRED_MESSAGE = 'case_id is required: use granted_case_id from anqi_case_resolve or anqi_case_select';
+
+// global 面 case_id 必须是正整数；optional=true 时允许省略（所务记录），但给了就必须合法。
+// 在发任何 HTTP 请求之前调用，避免把 NaN/0 发到服务端再靠 400 兜底。
+function globalCaseId(args, { optional = false } = {}) {
+  const raw = args?.case_id;
+  if (optional && (raw === undefined || raw === null)) return undefined;
+  const id = typeof raw === 'number' ? raw : (typeof raw === 'string' && /^\d+$/.test(raw.trim()) ? Number(raw.trim()) : NaN);
+  if (!Number.isSafeInteger(id) || id <= 0) throw new Error(CASE_ID_REQUIRED_MESSAGE);
+  return id;
+}
+
 function pick(row, fields) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return {};
   return Object.fromEntries(fields.flatMap((field) => (
@@ -258,7 +321,7 @@ export function apply(ctx, config = {}) {
         parties: { type: 'array', items: { type: 'string' } },
         case_name: { type: 'string' }, case_no: { type: 'string' }, agency: { type: 'string' },
       },
-      output: { schema: { type: 'object', additionalProperties: true }, render: renderJson },
+      output: { schema: CASE_RESOLVE_SCHEMA, render: renderJson },
       async execute(args, exec) {
         exec.signal.throwIfAborted();
         const sessionId = requiredEnv(agentSessionIdEnv);
@@ -267,7 +330,7 @@ export function apply(ctx, config = {}) {
           body: { session_id: sessionId, parties: Array.isArray(args?.parties) ? args.parties.map((v) => String(v).slice(0, 200)) : [], case_name: String(args?.case_name || '').slice(0, 200), case_no: String(args?.case_no || '').slice(0, 200), agency: String(args?.agency || '').slice(0, 200) },
         });
         return {
-          match: String(value?.match || 'none'), candidates: pickRows(value?.candidates, ['id', 'name', 'case_no', 'client', 'opponent', 'court', 'handling_agency', 'case_type', 'procedure', 'stage']),
+          match: String(value?.match || 'none'), candidates: pickRows(value?.candidates, CASE_RESOLVE_CANDIDATE_FIELDS),
           inactive_hits: Number(value?.inactive_hits || 0), conflict: value?.conflict === true,
           ...(value?.granted_case_id === undefined ? {} : { granted_case_id: Number(value.granted_case_id) }),
         };
@@ -280,8 +343,9 @@ export function apply(ctx, config = {}) {
       output: { schema: { type: 'object', additionalProperties: false, properties: { granted_case_id: { type: 'number', required: true } } }, render: renderJson },
       async execute(args, exec) {
         exec.signal.throwIfAborted();
+        const caseId = globalCaseId(args);
         const sessionId = requiredEnv(agentSessionIdEnv);
-        const value = await request('/internal/agent-case-select', { method: 'POST', signal: exec.signal, body: { session_id: sessionId, case_id: Number(args.case_id) } });
+        const value = await request('/internal/agent-case-select', { method: 'POST', signal: exec.signal, body: { session_id: sessionId, case_id: caseId } });
         return { granted_case_id: Number(value.granted_case_id) };
       },
     }));
@@ -289,11 +353,12 @@ export function apply(ctx, config = {}) {
       name: 'anqi_case_get',
       description: '读取已由 anqi_case_resolve 或 anqi_case_select 授予的案件；其它案件不可见。',
       parameters: { case_id: { type: 'number', required: true } },
-      output: { schema: { type: 'object', additionalProperties: true }, render: renderJson },
+      output: { schema: CASE_GET_SCHEMA, render: renderJson },
       async execute(args, exec) {
         exec.signal.throwIfAborted();
+        const caseId = globalCaseId(args);
         const sessionId = requiredEnv(agentSessionIdEnv);
-        const value = await request(`/internal/agent-case-view?case_id=${encodeURIComponent(Number(args.case_id))}`, { signal: exec.signal, headers: { 'X-Anjian-Session-Id': sessionId } });
+        const value = await request(`/internal/agent-case-view?case_id=${encodeURIComponent(caseId)}`, { signal: exec.signal, headers: { 'X-Anjian-Session-Id': sessionId } });
         return sanitizeCasePayload(value);
       },
     }));
@@ -310,7 +375,10 @@ export function apply(ctx, config = {}) {
     output: directOutput,
     async execute(args, exec) {
       const payload = directPayload(args, ['content', 'worked_on'], { content: 5000, worked_on: 10 });
-      if (scope === 'global' && args.case_id !== undefined) payload.case_id = Number(args.case_id);
+      if (scope === 'global') {
+        const caseId = globalCaseId(args, { optional: true });
+        if (caseId !== undefined) payload.case_id = caseId;
+      }
       return directWrite('worklog', payload, exec, WORKLOG_FIELDS);
     },
   }));
@@ -319,24 +387,7 @@ export function apply(ctx, config = {}) {
     name: 'anqi_case_get',
     description: 'Read whitelisted contacts, formal facts, events, deadlines, tasks, worklog, and recent recommendations for the one anqi case this session is bound to. No other case can be selected or read.',
     parameters: {},
-    output: {
-      schema: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          case: { ...OPEN_OBJECT, required: true },
-          contacts: OBJECT_ARRAY,
-          facts: OBJECT_ARRAY,
-          events: OBJECT_ARRAY,
-          deadlines: OBJECT_ARRAY,
-          tasks: OBJECT_ARRAY,
-          tasks_recent_closed: OBJECT_ARRAY,
-          worklog_recent: OBJECT_ARRAY,
-          recommendations_recent: OBJECT_ARRAY,
-        },
-      },
-      render: renderJson,
-    },
+    output: { schema: CASE_GET_SCHEMA, render: renderJson },
     async execute(_args, exec) {
       exec.signal.throwIfAborted();
       // 案件绑定不读模型参数：见文件头注释——session_id 由 supervisor 固定
@@ -418,6 +469,7 @@ export function apply(ctx, config = {}) {
     },
     async execute(args, exec) {
       exec.signal.throwIfAborted();
+      const globalId = scope === 'global' ? globalCaseId(args) : undefined;
       const title = String(args.title || '').trim();
       const note = String(args.note || '').trim();
       if (!title) throw new Error('title is required');
@@ -433,7 +485,7 @@ export function apply(ctx, config = {}) {
         signal: exec.signal,
         body: {
           session_id: sessionId,
-          ...(scope === 'global' ? { case_id: Number(args.case_id) } : {}),
+          ...(scope === 'global' ? { case_id: globalId } : {}),
           proposal_id: proposalId,
           source_ref: {
             session_id: sessionId,
@@ -476,7 +528,7 @@ export function apply(ctx, config = {}) {
         args, ['id', 'role', 'name', 'phone', 'id_no', 'org', 'note'],
         { role: 50, name: 300, phone: 100, id_no: 100, org: 500, note: 3000 }
       );
-      if (scope === 'global') payload.case_id = Number(args.case_id);
+      if (scope === 'global') payload.case_id = globalCaseId(args);
       return directWrite('contact', payload, exec, CONTACT_FIELDS);
     },
   }));
@@ -501,7 +553,10 @@ export function apply(ctx, config = {}) {
         args, ['title', 'plan_date', 'due_on', 'due_time', 'deadline_id', 'stage', 'priority', 'note'],
         { title: 500, plan_date: 10, due_on: 10, due_time: 5, stage: 200, priority: 20, note: 3000 }
       );
-      if (scope === 'global' && args.case_id !== undefined) payload.case_id = Number(args.case_id);
+      if (scope === 'global') {
+        const caseId = globalCaseId(args, { optional: true });
+        if (caseId !== undefined) payload.case_id = caseId;
+      }
       return directWrite('task', payload, exec, TASK_FIELDS);
     },
   }));
@@ -525,7 +580,7 @@ export function apply(ctx, config = {}) {
         args, ['type', 'occurred_on', 'occurred_time', 'location', 'service_method', 'instrument', 'note'],
         { type: 100, occurred_on: 10, occurred_time: 5, location: 120, service_method: 200, instrument: 1000, note: 3000 }
       );
-      if (scope === 'global') payload.case_id = Number(args.case_id);
+      if (scope === 'global') payload.case_id = globalCaseId(args);
       return directWrite('event', payload, exec, EVENT_FIELDS);
     },
   }));
@@ -546,7 +601,7 @@ export function apply(ctx, config = {}) {
         args, ['content', 'occurred_on', 'source', 'note'],
         { content: 5000, occurred_on: 10, source: 1000, note: 3000 }
       );
-      if (scope === 'global') payload.case_id = Number(args.case_id);
+      if (scope === 'global') payload.case_id = globalCaseId(args);
       return directWrite('fact', payload, exec, FACT_FIELDS);
     },
   }));
@@ -568,7 +623,7 @@ export function apply(ctx, config = {}) {
         args, ['name', 'due_on', 'basis', 'calc_note', 'severity'],
         { name: 500, due_on: 10, basis: 3000, calc_note: 3000, severity: 20 }
       );
-      if (scope === 'global') payload.case_id = Number(args.case_id);
+      if (scope === 'global') payload.case_id = globalCaseId(args);
       return directWrite('deadline', payload, exec, DEADLINE_FIELDS);
     },
   }));
