@@ -95,7 +95,8 @@ export async function mountNav() {
       globalAgentSlot.hidden = true;
     }
     // 快录条的「整理」按钮：服务端配了 DEEPSEEK_API_KEY 才亮出来（搭 counts 顺风车，零额外请求）
-    const tidy = document.querySelector('.quickbar .btn.ghost');
+    // 用专属 class 定位：2.9 起回形针按钮也是 .btn.ghost 且排在前面，旧选择器一直点亮的是它、「整理」从未出现。
+    const tidy = document.querySelector('.quickbar .quick-tidy');
     if (tidy && c.llm) tidy.hidden = false;
     const badge = document.getElementById('nav-counts');
     if (!badge) return;
@@ -173,7 +174,7 @@ function mountQuickbar() {
     date.required = hearing;
   };
   const tidyBtn = el('button', {
-    class: 'btn ghost small', type: 'button', title: '让 LLM 把这句话整理成类型/案件/日期（只填表，不入库）',
+    class: 'btn ghost small quick-tidy', type: 'button', title: '让 LLM 把这句话整理成类型/案件/日期（只填表，不入库）',
   }, '整理');
   const aiToggle = el('button', {
     class: 'quick-ai-toggle', type: 'button', 'aria-pressed': 'false', hidden: '',
@@ -282,7 +283,11 @@ function mountQuickbar() {
     aiToggle.setAttribute('aria-pressed', String(active));
     aiToggle.hidden = !agentAvailable;
     aiTarget.hidden = !active;
-    for (const node of [kind, caseSel, date, time, location, attachBtn, attachment, tidyBtn]) node.hidden = active;
+    // AI 模式只靠整条快录栏上的 class 隐藏常规控件（见 style.css .quick-ai-active），不改各控件自己的 hidden：
+    // 开庭时刻/地点、附件标签、「整理」各有显隐逻辑，退出 AI 模式时不能被一律放出来。
+    bar.classList.toggle('quick-ai-active', active);
+    // 隐藏的「记开庭」必填项不能挡住交给 AI 的提交。
+    bar.querySelector('form').noValidate = active;
     text.placeholder = active ? '一句话交给 AI：自动拆条、认案、分别记录' : '一句话快录……';
     bar.querySelector('form > button[type="submit"]').textContent = active ? '交给 AI' : '记';
   };

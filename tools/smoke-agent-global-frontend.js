@@ -18,6 +18,13 @@ assert.match(drawer, /new EventSource\(`\$\{agentPath\}\/events`\)/u, 'EventSour
 assert.match(drawer, /DIRECT_RECORDS/); assert.doesNotMatch(drawer, /images_not_supported_global/);
 // 顶栏多了「AI」入口后，375–430px 手机要收起品牌文字，否则「退出」被挤出屏幕、整页横向溢出（2026-10-13 真机抓到）。
 assert.match(css, /@media \(max-width: 440px\)\s*\{\s*\.topnav \{ gap: 6px; \}\s*\.topnav \.brand b \{ display: none; \}/u, 'narrow phones must hide the brand text to fit the AI entry');
+// 「交给 AI」模式靠 class 隐藏常规控件，不能把各控件的 hidden 一律改写（否则退出时开庭时刻/地点、空附件标签被放出来）。
+assert.match(nav, /bar\.classList\.toggle\('quick-ai-active', active\)/u);
+assert.doesNotMatch(nav, /node\.hidden = active/u, 'AI 模式不得批量改写常规控件的 hidden');
+assert.match(css, /\.quickbar\.quick-ai-active \.quick-tidy \{ display: none !important; \}/u);
+// 「整理」按钮须用专属 class 定位：.btn.ghost 会先命中回形针按钮。
+assert.match(nav, /querySelector\('\.quickbar \.quick-tidy'\)/u);
+assert.doesNotMatch(nav, /querySelector\('\.quickbar \.btn\.ghost'\)/u);
 assert.match(caseJs, /created_by === 'ai'/);
 // 日志行的 AI 标签必须在 tlItem 第 4 参（正文数组）里；插成独立位置参数会让整页时间线崩溃（2026-10-13 真机抓到）。
 assert.match(caseJs, /'日志'\),\s*(?:\/\/[^\n]*\n\s*)*\[w\.created_by === 'ai' \? el\(/u, 'worklog AI pill must be inside the body array passed to tlItem'); assert.match(css, /\.quick-ai-toggle/); assert.match(css, /@media \(max-width: 767px\)/);

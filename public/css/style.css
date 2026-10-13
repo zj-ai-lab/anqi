@@ -1898,6 +1898,14 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 /* 「交给 AI」当前目标小字：点它打开抽屉换项目 */
 .quick-ai-target { display: inline-block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; color: var(--meta); font-size: 12px; cursor: pointer; }
 .quick-ai-target:hover { color: var(--green); }
+/* 「交给 AI」模式：只留一句话输入框、切换钮、目标与提交钮；不改各控件自己的 hidden。 */
+.quickbar.quick-ai-active select,
+.quickbar.quick-ai-active input[type=date],
+.quickbar.quick-ai-active input[type=time],
+.quickbar.quick-ai-active input[aria-label="开庭地点"],
+.quickbar.quick-ai-active .quick-attach,
+.quickbar.quick-ai-active .quick-attachment,
+.quickbar.quick-ai-active .quick-tidy { display: none !important; }
 .quickbar .quick-attachment { display: inline-flex; align-items: center; gap: 3px; min-width: 0; max-width: 220px; color: var(--meta); font-size: 12px; }
 .quickbar .quick-attachment-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .quickbar .quick-attachment-clear { flex: none; border: 0; padding: 2px 4px; background: transparent; color: var(--meta); cursor: pointer; }
