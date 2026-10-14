@@ -488,3 +488,49 @@ api('/meta').then((m) => {
   const vFull = $('ver-full');
   if (vFull) vFull.textContent = '版本读取失败';
 });
+
+/* ── 企业微信智能机器人 ── */
+const imEnabled = $('im-wecom-enabled');
+const imBot = $('im-wecom-bot-id');
+const imSecret = $('im-wecom-secret');
+const imMode = $('im-wecom-remind-mode');
+const imSave = $('im-wecom-save');
+const imState = $('im-connection-state');
+const imBindStart = $('im-wecom-bind-start');
+const imBindingText = $('im-wecom-binding-text');
+let imSecretSource = 'none'; let imPollTimer = null; let imChallengeTimer = null;
+const IM_ENDPOINTS = { status: '/api/im/wecom/status', bind: '/api/im/wecom/bind/start', unbind: '/api/im/wecom/unbind', reconnect: '/api/im/wecom/reconnect', test: '/api/im/wecom/test' };
+const imPath = (value) => value.replace(/^\/api/, '');
+function paintIm(s) {
+  if (!s) return;
+  const labels = { disabled: '未启用', connecting: '连接中', ready: '已连接', reconnecting: '重连中', kicked: '被另一处连接顶下线', auth_failed: '认证失败', error: '出错' };
+  imState.textContent = labels[s.connection?.state] || s.connection?.state || '未知';
+  const envLocked = s.credentials?.source === 'env';
+  imBot.disabled = envLocked; imSecret.disabled = envLocked; imSecret.placeholder = envLocked ? '由环境变量提供' : (s.im_wecom_secret_masked ? `已保存（末四位 ${s.im_wecom_secret_masked}）` : '保存时填写');
+  imSecretSource = s.credentials?.source || 'none';
+  $('im-wecom-secret-clear').hidden = imSecretSource !== 'stored';
+  imEnabled.checked = !!s.enabled; imMode.value = s.remind_mode || 'preview';
+  $('im-wecom-reconnect').hidden = !['kicked', 'auth_failed', 'error'].includes(s.connection?.state);
+  if (s.binding?.bound) { imBindingText.textContent = `已绑定 · ${s.binding.userid_masked} · ${s.binding.bound_at || ''}`; imBindStart.hidden = true; $('im-wecom-unbind').hidden = false; $('im-wecom-test').hidden = false; }
+  else { imBindingText.textContent = '尚未绑定'; imBindStart.hidden = false; $('im-wecom-unbind').hidden = true; $('im-wecom-test').hidden = true; }
+}
+async function refreshIm() { try { paintIm(await api(imPath(IM_ENDPOINTS.status))); } catch { /* keep controls usable */ } }
+imSave?.addEventListener('click', async () => {
+  const body = { im_wecom_enabled: imEnabled.checked, im_wecom_bot_id: imBot.value.trim(), im_wecom_remind_mode: imMode.value };
+  if (imSecret.value || imSecretSource === 'none') body.im_wecom_secret = imSecret.value;
+  try { paintIm(await api('/settings', { method: 'PUT', body })); toast('企业微信设置已保存'); refreshIm(); } catch (e) { toast('保存失败：' + (e.message || e)); }
+});
+$('im-wecom-secret-clear')?.addEventListener('click', async () => { try { await api('/settings', { method: 'PUT', body: { im_wecom_secret: '' } }); imSecret.value = ''; imSecretSource = 'none'; refreshIm(); toast('已清除企业微信 Secret'); } catch (e) { toast(e.message || e); } });
+$('im-wecom-reconnect')?.addEventListener('click', async () => { try { await api(imPath(IM_ENDPOINTS.reconnect), { method: 'POST' }); refreshIm(); } catch (e) { toast(e.message || e); } });
+$('im-wecom-unbind')?.addEventListener('click', async () => { try { await api(imPath(IM_ENDPOINTS.unbind), { method: 'POST' }); refreshIm(); } catch (e) { toast(e.message || e); } });
+$('im-wecom-test')?.addEventListener('click', async () => { try { await api(imPath(IM_ENDPOINTS.test), { method: 'POST' }); toast('测试消息已提交'); } catch (e) { toast(e.message || e); } });
+imBindStart?.addEventListener('click', async () => {
+  try {
+    const result = await api(imPath(IM_ENDPOINTS.bind), { method: 'POST' });
+    imBindingText.textContent = `${result.code} · 在企业微信里打开这个机器人的单聊，发送：${result.code}`;
+    const until = new Date(result.expires_at).getTime();
+    clearInterval(imChallengeTimer); imChallengeTimer = setInterval(() => { const left = Math.max(0, Math.ceil((until - Date.now()) / 1000)); imBindingText.textContent = left ? `${result.code} · 绑定码剩余 ${left} 秒` : '绑定码已过期'; if (!left) clearInterval(imChallengeTimer); }, 1000);
+    clearInterval(imPollTimer); imPollTimer = setInterval(refreshIm, 3000); refreshIm();
+  } catch (e) { toast(e.message || e); }
+});
+refreshIm();

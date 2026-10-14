@@ -187,6 +187,20 @@ CREATE TABLE audit_log (
 | `remind_deadline_time` | `07:30` | 关闭当天期限档 |
 | `remind_task_minutes_before` | `30` | 关闭待办档 |
 
+IM 绑定与去重（migration 032）保持最小数据面：
+
+| 表 | 关键字段 | 语义 |
+|---|---|---|
+| `im_bindings` | `provider/userid/bot_id/bound_at/version` | 每个实例一个当前 BotID 的本人绑定 |
+| `im_inbound` | `provider/msgid/received_at/outcome` | 七日去重与结果审计，不保存正文或 userid |
+
+提醒渠道状态由注册表扩展：
+
+| 渠道 | configured 条件 | 终态 |
+|---|---|---|
+| `inapp` | 总开关允许 | `queued → shown/expired` |
+| `wecom` | enabled、凭据、本人绑定且 remind_mode 非 off | `preview/sent/failed/unknown` |
+
 **contacts（004）**：案件联系人（当事人/对方/承办法官/法官助理/书记员/对方律师/合作律师），带电话/身份证号/单位/备注——敏感层级最高的表。**接口层硬边界：contacts 只出 `/api`（人面），永不进 `/internal`（自动化面）任何响应**（`internal.js` 有防回归注释）；audit 只记角色+姓名不落号码。
 
 **合作对象通讯录与案件参与人（020）**：`people` 是跨案件的轻量通讯录，只保存姓名、电话、单位和备注；`case_participants` 把通讯录对象加入具体案件，并在案件维度保存角色和备注。案件分成约定与已发生台账分别用可空 `person_id` 关联 `people`：选了本案参与人时以通讯录对象为身份主键，同时保留 `counterpart` 作为历史可读姓名；临时填写对象仍可只保存姓名，不强迫建立通讯录记录。020 只把存量 `contacts` 中的合作律师/对方律师回填到通讯录和案件参与人，不改写既有分成金额或约定身份。
@@ -514,7 +528,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 到点领取在短事务中最多 50 条，事务提交后调用渠道；残留 sending 启动时置 unknown，不自动重发。超过 24 小时未 ack 的 queued delivery 置 expired。
 
-渠道插件注册表导出 `id / label / configured(settings) / deliver(reminder, delivery, ctx)`；2.10 只实现 `inapp`，deliver 不联网而返回 queued。worker 通过进程内事件广播给 SSE；客户端连接时补发 24 小时内 queued，ack 后变 shown。网页与 macOS Electron 使用 Web Notification API，Android WebView 只显示页内铃铛；Web Push、Service Worker 和企业微信/飞书/钉钉留到后续版本。提醒正文只含案件名、事项标题、时间、开庭地点，不含联系人、金额或案件文件。
+渠道插件注册表导出 `registerChannel()` 与 `id / label / configured(settings) / deliver(reminder, delivery, ctx)`；2.10 的 `inapp` 返回 queued，2.12 的 `wecom` 返回 `preview/sent/failed/unknown`。worker 通过进程内事件广播给 SSE；客户端连接时补发 24 小时内 queued，ack 后变 shown。网页与 macOS Electron 使用 Web Notification API，Android WebView 只显示页内铃铛。提醒正文只含案件名、事项标题、时间、开庭地点，不含联系人、金额或案件文件。
 
 ## 8.10 AI 总入口（2.11.0）
 
@@ -524,9 +538,21 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 工具集由 scope 决定：案件面保留原有八个工具并增加 `anqi_worklog_add`；全局面提供 resolve/select/get、worklog、task、event、contact、fact、deadline、inbox，明确不提供 digest、文件工具、图片、slash 命令、shell、联网或 subagent。`anqi_worklog_add` 复用统一的 `createWorklogRecord`，AI 记录写入 `created_by='ai'`，律师可改可撤；期限仍只能记律师明说的日期，法定期限由确定性引擎派生。
 
-全局 persona 和 `anqi-global-intake` skill 规定五步规则：解析一句话、逐条本地认案、对歧义一次性提问、分别写日志/待办/事件/联系人，并逐条报告写入结果。该规则是合作律师真实记录习惯的改写，不允许猜案或把推断包装成事实。v2.12 的 IM 入站消息直接复用 global HTTP prompt 面；这个版本不做全所 digest、不把未经 resolve/select 的案件喂给模型，也不在刷新后重建本轮记录。 DSH 会话本身不知道当天日期：总入口由每次 `anqi_case_resolve` 返回北京时间 `today` / `weekday`，案件会话由首轮必调的 `case_folder_info` 返回同样两项；两份 skill 都要求以此换算「明天 / 下周X」，不得向律师询问今天几号。
+全局 persona 和 `anqi-global-intake` skill 规定五步规则：解析一句话、逐条本地认案、对歧义一次性提问、分别写日志/待办/事件/联系人，并逐条报告写入结果。该规则是合作律师真实记录习惯的改写，不允许猜案或把推断包装成事实。v2.12 的 IM 入站消息在进程内直接复用同一个 supervisor 与同一校验，不走 HTTP 回环；这个版本不做全所 digest、不把未经 resolve/select 的案件喂给模型，也不在刷新后重建本轮记录。 DSH 会话本身不知道当天日期：总入口由每次 `anqi_case_resolve` 返回北京时间 `today` / `weekday`，案件会话由首轮必调的 `case_folder_info` 返回同样两项，两份 skill 都要求以此换算相对日期。
 
 前端全站只有一个 AI 抽屉，标题栏带「项目」选择器：第一项「总入口 · 不挂案件」（global worker，仅案齐领域工具与本地认案），其后是在办案件（案件夹即项目，走案件 worker，图片贴入、slash 命令、审批档位照旧）；案件列表在第一次打开抽屉时才拉。选总入口走 `/api/agent/global/*`，选案件走 `/api/cases/:id/agent/*`；切换只关旧 SSE、换端点前缀、连新 SSE 并用首帧 `history` 回显，不停止也不取消任何 worker，各 worker 独立存活、切回来仍在，同时重置斜杠命令清单与草稿图片。案件页默认选中本案（不读也不写记忆），其它页默认总入口；只有用户显式改动下拉才写 `sessionStorage['anjian-agent-project']`，同一标签页内沿用。顶栏「AI」与案件页「AI 助理」按钮开的是同一个抽屉实例；快录条「交给 AI」发往当前选中的项目。抽屉对两种项目都展示本轮记录、案件链接与撤销按钮，撤销调用既有人类删除端点，联系人更新只保留打开案件链接；总入口不渲染图片贴入、slash 命令或审批档位下拉。
+
+## 8.11 企业微信智能机器人（2.12.0）
+
+企业微信采用智能机器人 API 模式的 WebSocket 长连接，由案齐主动外连；不做群机器人 webhook，也不需要公网回调地址。`wecom-transport` 是唯一 SDK 入口，hub 负责配置、绑定、去重与生命周期，bridge 负责把本人单聊接入 global supervisor，提醒渠道只调用 hub。
+
+凭据来自设置表或成对的 `ANJIAN_WECOM_BOT_ID` / `ANJIAN_WECOM_BOT_SECRET` 环境变量，环境变量优先；可用的 `ANJIAN_WECOM_WS_URL` 必须是 `wss://`，只有回环地址允许 `ws://`。开关关闭、凭据不完整或未绑定时不创建 SDK、不解析 DNS。一个实例只有一个本人绑定，换 BotID 后旧绑定失效；绑定码只认十分钟内的本人单聊，一次性且只存哈希。
+
+入站只处理绑定 userid 的 `single` 消息；群聊、非本人、事件、卡片和纯图片/文件/视频忽略或给固定提示。文字、语音转写和混排文字进入同一 global 会话，`turn/start` 与历史 user 记录带 `origin=im:wecom`，网页轮次不会转发到企业微信。question 用单条或逐行回答并调用 `resolveQuestion`，approval 必须回网页，取消只终止企微轮次。
+
+回复先发流式处理中提示，九分钟仍未结束就关流并改用主动推送；内容清理控制字符、按 UTF-8 截到 20000 字节。发送与提醒共用每会话 25 条/60 秒限流；成功、明确拒绝、超时/断线分别记 `sent`、`failed`、`unknown`，`unknown` 不自动重发。提醒 `preview` 只记录字数，`live` 只使用提醒行已有的标题/正文与北京时间，不查询联系人、金额或文件。平台同时只允许一条有效连接，新连接顶下线后进入 `kicked` 等待手动重连。
+
+本版不处理群聊入站、模板卡片按钮、图片文件入站，也不在企业微信里批准审批；企业微信服务器传输的范围在设置页明确提示。
 
 ## 9. 外部集成边界
 

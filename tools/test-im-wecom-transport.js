@@ -1,0 +1,11 @@
+import assert from 'node:assert/strict';
+import { createWecomMockServer } from './lib/wecom-mock-server.js';
+import { createWecomTransport } from '../src/lib/im/wecom-transport.js';
+const mock = await createWecomMockServer();
+const transport = createWecomTransport({ botId: 'bot_test_0001', secret: 'secret-test-not-real', wsUrl: mock.url, requestTimeout: 100 });
+transport.connect();
+for (let i = 0; i < 30 && transport.state().state !== 'ready'; i += 1) await new Promise((r) => setTimeout(r, 10));
+assert.equal(transport.state().state, 'ready');
+assert.equal((await transport.sendMarkdown('zhangsan_test', '测试')).status, 'sent');
+assert.ok(mock.received().some((f) => f.cmd === 'aibot_send_msg'));
+transport.disconnect(); await mock.close(); console.log('wecom transport mock auth/send passed');
