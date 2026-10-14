@@ -19,7 +19,12 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
   let unsubscribeSettings;
   const counters = { ignored: 0, prompted: 0, answered: 0, unsupported: 0, failed: 0 };
   const state = { state: 'disabled', since: iso(now), lastError: '' };
+  const cache = { hasCredentials: false, isBound: false, ownerUserid: '', reminderMode: 'preview', botId: '', source: 'none' };
   const nowMs = () => new Date(typeof now === 'function' ? now() : now).getTime();
+  const recordAudit = (actor, action, entity, entityId, detail) => {
+    if (db === defaultDb) audit(actor, action, entity, entityId, detail);
+    else db.prepare('INSERT INTO audit_log (actor, action, entity, entity_id, detail) VALUES (?,?,?,?,?)').run(actor, action, entity, entityId ?? null, String(detail).slice(0, 500));
+  };
 
   function credentials() {
     const envBot = String(env.ANJIAN_WECOM_BOT_ID || '').trim();
@@ -32,10 +37,20 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
   }
   function enabled() { return settings.im_wecom_enabled === 'true'; }
   function botId() { return credentials().botId; }
-  function hasCredentials() { const c = credentials(); return Boolean(c.botId && c.secret); }
-  function reminderMode() { return ['off', 'preview', 'live'].includes(settings.im_wecom_remind_mode) ? settings.im_wecom_remind_mode : 'preview'; }
+  function hasCredentials() { return cache.hasCredentials; }
+  function reminderMode() { return cache.reminderMode; }
   function binding() { const row = db.prepare("SELECT * FROM im_bindings WHERE provider='wecom'").get(); return row && row.bot_id === botId() ? row : null; }
-  function isBound() { return Boolean(binding()); }
+  function isBound() { return cache.isBound; }
+  function refreshCache() {
+    const c = credentials();
+    const row = binding();
+    cache.hasCredentials = Boolean(c.botId && c.secret);
+    cache.isBound = Boolean(row);
+    cache.ownerUserid = row?.userid || '';
+    cache.reminderMode = ['off', 'preview', 'live'].includes(settings.im_wecom_remind_mode) ? settings.im_wecom_remind_mode : 'preview';
+    cache.botId = c.botId;
+    cache.source = c.source;
+  }
   function setState(next, error = '') { const previous = state.state; state.state = next; if (previous !== next) state.since = iso(now); if (error) state.lastError = String(error.message || error).slice(0, 500); }
   function currentConfig() { return { ...settings, ...credentials() }; }
   async function stopTransport() { if (transport) { try { transport.disconnect(); } catch {} } transport = null; }
@@ -46,7 +61,8 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
   }
   async function reload() {
     settings = readRows(db);
-    const shouldRun = enabled() && hasCredentials();
+    refreshCache();
+    const shouldRun = enabled() && cache.hasCredentials;
     if (!shouldRun) { await stopTransport(); setState('disabled'); return; }
     const c = credentials();
     if (transport && transport._configKey === `${c.botId}:${c.secret}:${env.ANJIAN_WECOM_WS_URL || ''}`) return;
@@ -73,8 +89,8 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
     const code = `绑定 ${suffix}`; challenge = { code, hash: crypto.createHash('sha256').update(challengeNormalize(code)).digest('hex'), expiresAt: nowMs() + 10 * 60_000 };
     return { code, expires_at: new Date(challenge.expiresAt).toISOString() };
   }
-  function startBind(actor = 'web') { if (state.state !== 'ready') return { error: 'im_not_ready' }; const result = newChallenge(); audit(actor, 'im-bind-start', 'im-binding', 0, 'provider=wecom'); return result; }
-  function unbind(actor = 'web') { db.prepare("DELETE FROM im_bindings WHERE provider='wecom'").run(); audit(actor, 'im-unbind', 'im-binding', 0, 'provider=wecom'); return { ok: true }; }
+  function startBind(actor = 'web') { if (state.state !== 'ready') return { error: 'im_not_ready' }; const result = newChallenge(); recordAudit(actor, 'im-bind-start', 'im-binding', 0, 'provider=wecom'); return result; }
+  function unbind(actor = 'web') { db.prepare("DELETE FROM im_bindings WHERE provider='wecom'").run(); refreshCache(); recordAudit(actor, 'im-unbind', 'im-binding', 0, 'provider=wecom'); return { ok: true }; }
   function reconnect() { if (!['kicked', 'auth_failed', 'error'].includes(state.state)) return false; transport?.connect(); return true; }
   async function reply(message, text, finish = true) { if (!transport) return { status: 'failed', detail: 'not_connected' }; return transport.replyStream(message.frame, `stream-${message.msgid}`, text, finish); }
   async function bindOrRoute(message) {
@@ -83,8 +99,9 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
       const old = db.prepare("SELECT version FROM im_bindings WHERE provider='wecom'").get();
       db.prepare("INSERT INTO im_bindings(provider,userid,bot_id,bound_at,version) VALUES ('wecom',?,?,?,?) ON CONFLICT(provider) DO UPDATE SET userid=excluded.userid,bot_id=excluded.bot_id,bound_at=excluded.bound_at,version=im_bindings.version+1")
         .run(message.userid, botId(), iso(now), old ? old.version : 1);
+      refreshCache();
       challenge = null;
-      audit('im:wecom', 'im-bind', 'im-binding', 0, 'provider=wecom');
+      recordAudit('im:wecom', 'im-bind', 'im-binding', 0, 'provider=wecom');
       await reply(message, '绑定成功。之后提醒会发到这里；你也可以直接跟我说要记的事，比如：今天去 XX 看守所会见了张三');
       return true;
     }
@@ -103,7 +120,7 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
       counters.unsupported += 1; await reply(message, '暂时只支持文字和语音。图片和文件请在案齐网页里上传。');
       db.prepare('UPDATE im_inbound SET outcome=? WHERE provider=? AND msgid=?').run('unsupported', 'wecom', message.msgid); return;
     }
-    if (!bridge) bridge = createAgentBridge({ db, supervisor, hub: api, transport });
+    if (!bridge) bridge = createAgentBridge({ db, supervisor, hub: api, getTransport: () => transport });
     const outcome = await bridge.handle(message);
     counters[outcome] = (counters[outcome] || 0) + 1;
     db.prepare('UPDATE im_inbound SET outcome=? WHERE provider=? AND msgid=?').run(outcome, 'wecom', message.msgid);
@@ -116,7 +133,9 @@ export function createImHub({ db = defaultDb, supervisor, env = process.env, tra
       challenge: { active: !!(challenge && nowMs() <= challenge.expiresAt), expires_at: challenge ? new Date(challenge.expiresAt).toISOString() : null },
       remind_mode: reminderMode(), counters: { ...counters },
     }),
-    bindStart: startBind, unbind, reconnect, hasCredentials, isBound, reminderMode, ownerUserid: () => binding()?.userid || '', sendToOwner: (text) => binding() && transport ? transport.sendMarkdown(binding().userid, text) : Promise.resolve({ status: 'failed', detail: 'not_configured' }),
+    bindStart: startBind, unbind,
+    reconnect, hasCredentials, isBound, reminderMode, ownerUserid: () => cache.ownerUserid,
+    sendToOwner: (text) => cache.ownerUserid && transport ? transport.sendMarkdown(cache.ownerUserid, text) : Promise.resolve({ status: 'failed', detail: 'not_configured' }),
     test: () => api.sendToOwner('这是一条测试消息'),
     reply,
     transport: () => transport,

@@ -71,7 +71,7 @@ export function createSettingsRouter(supervisor) {
     'name', 'license_no', 'firm', 'phone', 'email', 'address',
     'remind_enabled', 'remind_hearing_eve_time', 'remind_hearing_day_time',
     'remind_deadline_days_before', 'remind_deadline_time', 'remind_task_minutes_before',
-    'im_wecom_enabled', 'im_wecom_bot_id', 'im_wecom_secret_encrypted', 'im_wecom_remind_mode',
+    'im_wecom_enabled', 'im_wecom_bot_id', 'im_wecom_remind_mode',
   ];
   // 存储层键名（settings 表里真实的行名）——GET 响应要把其中的
   // agent_api_key_encrypted 过滤掉，绝不把密文原样吐给前端（虽然密文不是

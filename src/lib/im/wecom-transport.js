@@ -101,6 +101,10 @@ export function createWecomTransport({
   }
   function connect() {
     manuallyStopped = false;
+    if (client && (status.state === 'auth_failed' || status.state === 'error')) {
+      try { client.disconnect(); } catch {}
+      client = null;
+    }
     if (!client) client = createClient();
     setState('connecting');
     try { client.connect(); } catch (error) { recordError(error); setState('error', error); }

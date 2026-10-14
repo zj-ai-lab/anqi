@@ -1965,5 +1965,51 @@ function sendGlobalTurn(child, sessionId, { toolNames }) {
   console.log('  [32/32] global 首 turn 门禁：ok（缺 anqi_case_resolve → 失败+审计；有且无 tool/call → 通过）');
 }
 
+// ---- 场景 33：global prompt origin 只扩展企微形状，web 形状逐字节保持 ----
+{
+  enableAgentSettings();
+  const { supervisor, capture } = makeScopedSupervisor({
+    handlersByScope: {
+      global: {
+        'session/prompt': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          sendGlobalTurn(c, frame.params.sessionId, { toolNames: [GLOBAL_REQUIRED_TOOL_NAME] });
+        },
+      },
+    },
+  });
+  const events = [];
+  supervisor.onEvent(GLOBAL_SCOPE, (event) => events.push(event));
+  assert.equal((await supervisor.start(GLOBAL_SCOPE)).status, 'ready');
+  const imResult = await supervisor.prompt(GLOBAL_SCOPE, '企微来源', [], { origin: 'im:wecom' });
+  assert.ok(events.some((event) => event.type === 'turn/start' && event.data.origin === 'im:wecom'));
+  const imHistory = supervisor.listUiHistory(GLOBAL_SCOPE).at(-1);
+  assert.equal(imHistory.origin, 'im:wecom');
+  assert.equal(imResult.turnId, 1);
+  await supervisor.stopAll('scenario 33 im cleanup');
+
+  const web = makeScopedSupervisor({
+    handlersByScope: {
+      global: {
+        'session/prompt': (frame, c) => {
+          c.sendLine({ jsonrpc: '2.0', id: frame.id, result: {} });
+          sendGlobalTurn(c, frame.params.sessionId, { toolNames: [GLOBAL_REQUIRED_TOOL_NAME] });
+        },
+      },
+    },
+  }).supervisor;
+  const webEvents = [];
+  web.onEvent(GLOBAL_SCOPE, (event) => webEvents.push(event));
+  assert.equal((await web.start(GLOBAL_SCOPE)).status, 'ready');
+  await web.prompt(GLOBAL_SCOPE, '网页来源');
+  const webStart = webEvents.find((event) => event.type === 'turn/start');
+  assert.deepEqual(webStart.data, { turnId: 1 });
+  assert.equal(Object.hasOwn(web.listUiHistory(GLOBAL_SCOPE).at(-1), 'origin'), false);
+  await assert.rejects(() => web.prompt(GLOBAL_SCOPE, '非法来源', [], { origin: 'evil' }), (error) => error.code === 'invalid_origin');
+  await web.stopAll('scenario 33 web cleanup');
+  assert.equal(capture.children.length > 0, true);
+  console.log('  [33/33] origin 形状：ok（企微带 origin+history 标记，web 形状不变，evil fail-closed）');
+}
+
 clearAgentSettings();
 console.log('agent supervisor 自检全部通过');
