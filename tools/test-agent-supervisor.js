@@ -51,6 +51,7 @@ const { db } = await import('../src/db.js');
 const { AgentSupervisor, AGENT_RUNTIME_PATHS, GLOBAL_SCOPE } = await import('../src/agent/supervisor.js');
 const { AGENT_SETTINGS_KEYS } = await import('../src/agent/config.js');
 const { caseIdForSession, isGlobalSession } = await import('../src/agent/session-registry.js');
+const { eventTypeGroups, eventTypes } = await import('../src/lib/vocab.js');
 
 const REQUIRED_MCP_TOOL = AGENT_RUNTIME_PATHS.requiredMcpTool;
 const REQUIRED_SKILL_NAME = AGENT_RUNTIME_PATHS.requiredSkillName;
@@ -1837,7 +1838,13 @@ function newCaseOnDisk(prefix) {
   assert.equal(cStatus.status, 'ready', `case worker 必须 ready（实际 ${cStatus.status}/${cStatus.error}）`);
   assert.deepEqual(cCap.skillsRootListings[0], [REQUIRED_SKILL_NAME], 'case skills root 恰为 anqi-case-brief');
   await cSup.stopAll('scenario 29 case');
-  console.log('  [29/32] skills root 内容：ok（global=[anqi-global-intake]，case=[anqi-case-brief]）');
+  // 两种 scope 都注入同一份服务端事件词表，dsh-anqi 据此生成 anqi_event_add.type 的 enum。
+  for (const [label, env] of [['global', gCap.envs[0]], ['case', cCap.envs[0]]]) {
+    const injected = JSON.parse(env.DSH_ANQI_EVENT_TYPES);
+    assert.deepEqual(injected, eventTypeGroups, `${label} worker 必须注入 vocab 的 eventTypeGroups`);
+    assert.deepEqual(injected.flatMap((group) => group.types), eventTypes, `${label} 注入的词表必须覆盖服务端全部事件类型`);
+  }
+  console.log('  [29/32] skills root 内容：ok（global=[anqi-global-intake]，case=[anqi-case-brief]；两侧事件词表注入一致）');
 }
 
 // ---- 场景 30：preflight 形状错配（case 形状给 global、global 形状给 case）均启动失败 ----

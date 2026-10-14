@@ -244,6 +244,42 @@ function requiredEnv(name) {
   return value;
 }
 
+// anqi_event_add.type 的合法值：supervisor 用服务端 src/lib/vocab.js 的 eventTypeGroups 序列化注入
+// （见 supervisor.js buildSpawnEnv）。此前 type 只写「见词表」，模型读不到词表只能猜 id，服务端全拒后
+// 退回建待办，程序事件和引擎派生期限都丢了。这里生成 enum（DSH 调用前即校验）+ 分组中文对照；
+// 服务端 isEventType 校验原样保留。缺失或格式不对直接拒绝启动，不静默退回无枚举。
+const EVENT_TYPE_ID = /^[a-z][a-z0-9_]*$/;
+
+function eventTypeVocabulary() {
+  const raw = requiredEnv('DSH_ANQI_EVENT_TYPES');
+  const invalid = () => new Error('dsh-anqi DSH_ANQI_EVENT_TYPES must be a JSON array of {group, types:[{id,label}]}');
+  let groups;
+  try {
+    groups = JSON.parse(raw);
+  } catch {
+    throw invalid();
+  }
+  if (!Array.isArray(groups) || groups.length === 0) throw invalid();
+  const ids = [];
+  const lines = groups.map((group) => {
+    const name = typeof group?.group === 'string' ? group.group.trim() : '';
+    if (!name || !Array.isArray(group.types) || group.types.length === 0) throw invalid();
+    const pairs = group.types.map((type) => {
+      const label = typeof type?.label === 'string' ? type.label.trim() : '';
+      if (typeof type?.id !== 'string' || !EVENT_TYPE_ID.test(type.id) || !label || ids.includes(type.id)) throw invalid();
+      ids.push(type.id);
+      return `${type.id}=${label}`;
+    });
+    return `${name}：${pairs.join('；')}`;
+  });
+  const fallback = ids.includes('other') ? '都不贴切时用 other 并把原话写进 note，' : '';
+  return {
+    ids,
+    description: '程序事件类型，只能填下列 id 之一（等号后为中文含义）。刑事、行政案件先在专用组里找，'
+      + `找不到再用民事及通用组（开庭、收到判决等各程序共用）；${fallback}不要自造 id。\n${lines.join('\n')}`,
+  };
+}
+
 export function apply(ctx, config = {}) {
   const baseURL = loopbackOrigin(config.baseURL);
   const internalKeyEnv = String(config.internalKeyEnv || 'ANJIAN_INTERNAL_KEY');
@@ -257,6 +293,7 @@ export function apply(ctx, config = {}) {
   // supervisor/runtime 会显式注入 scope，preset 仍对缺失 scope fail-closed。
   const scope = String(process.env.DSH_ANQI_SCOPE || 'case').trim();
   if (!['case', 'global'].includes(scope)) throw new Error('dsh-anqi requires DSH_ANQI_SCOPE=case|global');
+  const eventTypes = eventTypeVocabulary();
 
   async function request(pathname, { method = 'GET', body, signal, headers: extraHeaders } = {}) {
     const internalKey = process.env[internalKeyEnv];
@@ -568,7 +605,7 @@ export function apply(ctx, config = {}) {
     description: '直接写入已授予案件的程序事件并盖 AI 戳，人可改可撤；global scope 必须提供服务端授予的 case_id。',
     parameters: {
       ...requiredCaseIdParameter,
-      type: { type: 'string', required: true, description: 'Event type from anqi metadata vocabulary.' },
+      type: { type: 'string', required: true, enum: eventTypes.ids, description: eventTypes.description },
       occurred_on: { type: 'string', required: true, description: 'YYYY-MM-DD.' },
       service_method: { type: 'string' },
       instrument: { type: 'string' },

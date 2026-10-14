@@ -56,6 +56,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
+import { eventTypeGroups } from '../lib/vocab.js';
 import {
   AGENT_IMAGE_LIMITS,
   ALLOWED_AGENT_APPROVAL_TIERS,
@@ -709,6 +710,10 @@ function buildSpawnEnv({
     ANQI_INTERNAL_KEY_ENV: internalKeyEnv,
     [internalKeyEnv]: internalKeyValue,
     ANQI_AGENT_SESSION_ID: sessionId,
+    // anqi_event_add.type 的合法值。打包后插件在 Resources/agent-runtime/assets，与 app/rules 不在同一
+    // 目录树，插件不能自己 import vocab.js；这里用服务端同一份词表序列化注入，插件据此生成 enum + 中文
+    // 对照。只是让模型看得见合法值，服务端写入仍由 records.js 的 isEventType 校验。
+    DSH_ANQI_EVENT_TYPES: JSON.stringify(eventTypeGroups),
   };
 }
 

@@ -1,8 +1,28 @@
 // dsh-anqi 直写工具契约：案件面五类记录加工作日志，描述明确、session 固定注入、绝不携带 case_id。
 import assert from 'node:assert/strict';
+import { eventTypeGroups, eventTypes, isEventType } from '../src/lib/vocab.js';
 
 process.env.ANJIAN_INTERNAL_KEY = 'direct-tools-test-key';
 process.env.ANQI_AGENT_SESSION_ID = 'direct-tools-test-session';
+// supervisor buildSpawnEnv 注入的同一份序列化（见 test-agent-supervisor.js 场景 29）。
+process.env.DSH_ANQI_EVENT_TYPES = JSON.stringify(eventTypeGroups);
+
+// anqi_event_add.type 必须把服务端词表原样摆给模型：enum = vocab 全部 id（同序），说明里逐条有 id=中文。
+function assertEventTypeSchema(tool, scopeLabel) {
+  const typeSchema = tool.parameters.properties.type;
+  assert.ok(tool.parameters.required.includes('type'), `${scopeLabel} anqi_event_add.type 必填`);
+  assert.deepEqual(eventTypeGroups.flatMap((group) => group.types), eventTypes, 'eventTypeGroups 必须与 eventTypes 同源同序');
+  assert.deepEqual(typeSchema.enum, eventTypes.map((type) => type.id), `${scopeLabel} type.enum 必须等于 vocab 全部事件 id`);
+  assert.ok(typeSchema.enum.every(isEventType), `${scopeLabel} type.enum 每项都必须过服务端 isEventType`);
+  for (const { id, label } of eventTypes) {
+    assert.ok(typeSchema.description.includes(`${id}=${label}`), `${scopeLabel} type 说明缺少 ${id}=${label}`);
+  }
+  for (const { group } of eventTypeGroups) {
+    assert.ok(typeSchema.description.includes(`${group}：`), `${scopeLabel} type 说明缺少分组 ${group}`);
+  }
+  assert.match(typeSchema.description, /只能填下列 id 之一/);
+  assert.match(typeSchema.description, /不要自造 id/);
+}
 
 const calls = [];
 const originalFetch = globalThis.fetch;
@@ -84,6 +104,20 @@ try {
     assert.equal(Object.hasOwn(call.body.payload, 'review_status'), false, 'deadline 待核状态必须由服务端覆盖');
     assert.equal(call.options.headers['X-Anjian-Key'], process.env.ANJIAN_INTERNAL_KEY);
   }
+  // 事件类型：schema 带全量枚举；词表外的值（含模型常猜的英文/中文写法）在发请求前就被 DSH 参数校验拒绝。
+  assertEventTypeSchema(byName.get('anqi_event_add'), 'case');
+  const invalidTypeMark = calls.length;
+  for (const bad of ['judgment_received', 'receive_judgment', '收到判决', 'JUDGMENT_SERVED', '']) {
+    await assert.rejects(
+      byName.get('anqi_event_add').execute({ type: bad, occurred_on: '2030-01-01' }, exec),
+      /"type" must be one of/,
+      `type=${JSON.stringify(bad)} 必须在调用前被拒绝`,
+    );
+  }
+  assert.equal(calls.length, invalidTypeMark, '非法 type 不得发出任何 HTTP 请求');
+  await byName.get('anqi_event_add').execute({ type: 'judgment_served', occurred_on: '2030-01-01', note: '测试人民法院' }, exec);
+  assert.equal(calls.at(-1).body.payload.type, 'judgment_served', '词表内 type 原样透传给服务端');
+
   console.log(`EVIDENCE_TOOL_NAMES ${JSON.stringify(tools.map((tool) => tool.name))}`);
   console.log(`EVIDENCE_PLUGIN_CASE_GET ${JSON.stringify({ contacts: caseView.contacts, facts: caseView.facts })}`);
   console.log('agent direct tools: worklog + visible contacts/facts + server-forced session/source/review contract passed');
@@ -196,12 +230,56 @@ try {
 
     // 两个 scope 的 anqi_case_get 输出 schema 必须一致。
     assert.deepEqual(globalByName.get('anqi_case_get').output.schema, byName.get('anqi_case_get').output.schema);
+
+    // global 面同样带全量事件枚举（与案件面逐字一致），非法 type 即使 case_id 合法也不发请求。
+    assertEventTypeSchema(globalByName.get('anqi_event_add'), 'global');
+    assert.deepEqual(globalByName.get('anqi_event_add').parameters.properties.type, byName.get('anqi_event_add').parameters.properties.type);
+    const globalInvalidMark = calls.length;
+    await assert.rejects(
+      globalByName.get('anqi_event_add').execute({ case_id: 7, type: 'judgment_received', occurred_on: '2030-01-08' }, gExec),
+      /"type" must be one of/,
+    );
+    assert.equal(calls.length, globalInvalidMark, 'global 非法 type 不得发请求');
+    await globalByName.get('anqi_event_add').execute({ case_id: 7, type: 'judgment_served', occurred_on: '2030-01-08' }, gExec);
+    assert.equal(calls.length, globalInvalidMark + 1);
+    assert.deepEqual(
+      [calls.at(-1).body.payload.case_id, calls.at(-1).body.payload.type],
+      [7, 'judgment_served'],
+    );
     console.log('agent direct tools: global scope tool set + early case_id failure + resolve whitelist passed');
   } finally {
     globalThis.fetch = caseScopeFetch;
     if (previousScope === undefined) delete process.env.DSH_ANQI_SCOPE;
     else process.env.DSH_ANQI_SCOPE = previousScope;
   }
+
+  // 词表注入缺失/损坏：插件拒绝加载，不静默退回无枚举的自由字符串。
+  const goodVocab = process.env.DSH_ANQI_EVENT_TYPES;
+  try {
+    for (const [label, value] of [
+      ['缺失', undefined],
+      ['非 JSON', 'not-json'],
+      ['空数组', '[]'],
+      ['组内无类型', JSON.stringify([{ group: '民事及通用', types: [] }])],
+      ['非法 id', JSON.stringify([{ group: '民事及通用', types: [{ id: '收到判决', label: '收到判决' }] }])],
+      ['缺 label', JSON.stringify([{ group: '民事及通用', types: [{ id: 'hearing' }] }])],
+      ['重复 id', JSON.stringify([
+        { group: '民事及通用', types: [{ id: 'hearing', label: '开庭' }] },
+        { group: '刑事专用', types: [{ id: 'hearing', label: '开庭' }] },
+      ])],
+    ]) {
+      if (value === undefined) delete process.env.DSH_ANQI_EVENT_TYPES;
+      else process.env.DSH_ANQI_EVENT_TYPES = value;
+      assert.throws(
+        () => apply({ tools: { register() {} } }, { baseURL: 'http://127.0.0.1:3007' }),
+        /DSH_ANQI_EVENT_TYPES/,
+        `事件词表${label}时插件必须拒绝加载`,
+      );
+    }
+  } finally {
+    process.env.DSH_ANQI_EVENT_TYPES = goodVocab;
+  }
+  console.log('agent direct tools: anqi_event_add type enum = vocab (both scopes) + invalid type rejected before HTTP + vocab injection fail-closed passed');
 } finally {
   globalThis.fetch = originalFetch;
 }
