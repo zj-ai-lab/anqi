@@ -611,7 +611,8 @@ async function createAgentDrawer() {
     state.historyLoaded = true;
     for (const item of Array.isArray(items) ? items : []) {
       if (item?.role === 'user' && (item.text || item.attachments?.length)) {
-        appendUser(item.text || '', item.attachments);
+        const node = appendUser(item.text || '', item.attachments);
+        if (String(item.origin || '').startsWith('im:')) node.prepend(el('span', { class: 'agent-msg-origin' }, '企业微信'));
       }
       else if (item?.role === 'assistant' && item.text) {
         const node = appendMsg('agent-msg-assistant', '');
@@ -886,7 +887,7 @@ async function createAgentDrawer() {
       applySnapshot(data);
     });
     es.addEventListener('worker/ready', () => { applyStatus('ready'); appendSystem('AI 助理已就绪'); });
-    es.addEventListener('turn/start', () => { applyStatus('running'); });
+    es.addEventListener('turn/start', (e) => { const frame = JSON.parse(e.data); applyStatus('running'); if (String(frame.data?.origin || '').startsWith('im:')) appendSystem('企业微信发来一条消息，AI 正在处理'); });
     es.addEventListener('turn/end', (e) => {
       const data = JSON.parse(e.data).data || {};
       if (state.currentBubble) {

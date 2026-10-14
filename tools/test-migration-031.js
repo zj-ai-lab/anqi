@@ -11,7 +11,7 @@ try {
     const db = new Database(path.join(dir, `${withExisting ? 'existing' : 'empty'}.db`));
     db.pragma('foreign_keys = ON');
     runMigrations(db);
-    assert.equal(db.pragma('user_version', { simple: true }), 31);
+    assert.ok(db.pragma('user_version', { simple: true }) >= 31, 'migration 031 remains applied before later migrations');
     if (withExisting) {
       const caseId = db.prepare("INSERT INTO cases (name) VALUES ('张三案')").run().lastInsertRowid;
       db.prepare("INSERT INTO worklog (case_id,worked_on,content) VALUES (?,?,?)").run(caseId, '2099-01-01', '存量日志');

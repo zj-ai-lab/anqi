@@ -1,6 +1,6 @@
 # AI 助理 sidecar · 交付门禁证据台账
 
-> 本文对应设计稿 `anqi-spike-dsh/spikes/dsh-agent/docs/mainline-plan.md` §6 的十条交付门禁，并在 2.11.0 新增全局 scope 第十一条，
+> 本文对应设计稿 `anqi-spike-dsh/spikes/dsh-agent/docs/mainline-plan.md` §6 的十条交付门禁，并在 2.12.0 新增企业微信入站第十二条，
 > 逐条登记**证据在哪个文件的哪一段**，以及这条证据的强度属于哪一档。
 >
 > 本文只登记证据，不替代证据：任何一条的判定都必须能被读者顺着下面的文件路径自己复核。
@@ -17,7 +17,7 @@
 | **静态** | 只有源码/配置层面的核对（含对第三方包行为的引用），没有在本仓库跑过真实端到端 |
 | **动态** | 拉起真实 DSH 子进程 + 真实模型 key 实跑过 |
 
-`npm run check` 当前 98 步；下面按当前实际步号记录：
+`npm run check` 当前 107 步；下面按当前实际步号记录：
 
 - 第 31–37 步：sidecar 核心（settings 白名单 / supervisor 门禁红线 / 提案闭环与其 HTTP 面 /
   session 绑定只读面 / agent 设置 HTTP 回归 / `/api/agent*` 路由回归）。
@@ -318,6 +318,7 @@
   场景 21（TTL 到期/worker 提前终态化都**真正回子进程一个应答**，不是只清表）、
   场景 15/18（stdio 故障、卡死不退的子进程也落终态并收尾）。
 - **机械** — `tools/test-agent-http.js`：interactions 信任边界（未知/过期/跨 session/worker 已退）。
+- **IM 路径证据** — `tools/test-im-agent-bridge.js` 与 `tools/test-im-e2e-mock.js` 断言企业微信 question 走 `resolveQuestion`、approval 不调用 `resolveApproval`，且只处理带 `origin=im:wecom` 的企微轮次。
 - **动态**（2026-08-22）— question 全流程真实闭环：诱导模型调用 `ask_user_question` →
   SSE 收到 `interaction/pending` → `POST /api/agent/interactions/:id/answer` 应答
   → wire 侧 `tool/result` 收到 `{answers:[{id,selected:[],custom}]}` → 模型后续
@@ -418,6 +419,7 @@
 - **结构** — 配置侧堵死"把宿主内部 key 当模型 key 发出去"：`isReservedEnvName()` 拒绝
   `ANJIAN_`/`ANQI_`/`DSH_` 前缀与常见宿主变量名；`validateBaseURL()` 拒绝内网/回环/带凭据 URL，
   `deepseek-official` 钉死官方域。
+- **IM 路径证据** — `tools/test-im-settings-http.js`、`tools/test-im-wecom-transport.js` 和 `tools/test-im-hub.js` 断言 Secret 不出设置响应、审计/日志，SDK logger 会替换 BotID/Secret；`tools/smoke-im-frontend.js` 断言前端不出现 `im_wecom_secret_encrypted`。
 - ⚠️ **[口径更新，2026-08-23 复审]** beta.2 的「界面填 key」功能扩大了 key 值存在的位置——
   上面三条 [结构] 是 beta.1 时代（只有 `apiKeyEnv` 一条路径）的口径，以下逐条更新为
   当前实际情况，均已复核过对应的保护措施仍然成立：
@@ -651,3 +653,10 @@
 - **结构** — global `agent-case-view` 与直写/软建议路由都调用 `sessionCaseGranted()`；`contact/event/fact/deadline` 无授予案件即拒绝，`task/worklog` 省略 case_id 时只允许写 NULL 所务记录。案件 scope 的直写仍由 `caseIdForSession()` 反查并忽略 body.case_id。
 - **结构+机械** — global preset 只挂 resolve/select/get、记录工具与 ask/skill/todo；`test-agent-runtime-composition.js` 断言看不到文件、shell、联网、subagent、digest；`test-agent-global-internal-http.js` 覆盖未授予读写、offer 覆盖、select 越界、unbind 失效、审计脱敏及六张记录表行数边界；`test-agent-global-http.js` 覆盖 HTTP scope/status/SSE/附件拒绝；`test-agent-supervisor.js` 与 composition 覆盖 global project/read-only、workspace、首 turn required tool。
 - **取舍** — global 首句可以只是问候，因此首 turn 只要求 `request/header` 含 `anqi_case_resolve`，不要求该 turn 实际调用；案件 scope 的实际调用门禁不变。
+
+## 门禁 12 · 企业微信入站只认绑定本人的单聊；企微里不能批准审批；企微轮次之外的会话内容不外发
+
+- **结构+机械** — `src/lib/im/hub.js` 先用 `im_inbound(provider,msgid)` 做七日去重，再校验当前 BotID 的单一绑定、`chattype='single'` 与 userid；群聊、非本人和重复消息不回复。`tools/test-im-hub.js` 与 `tools/test-im-e2e-mock.js` 使用 loopback mock 证明未绑定零外连、绑定码只认单聊且一次性、换 BotID 失效和 inbound 不存正文/userid。
+- **结构+机械** — `src/lib/im/agent-bridge.js` 只在 `turn/start{origin:'im:wecom'}` 建立缓冲；网页轮次的 assistant/message 与 interaction 不调用 transport。question 只调用 `resolveQuestion`，approval 只提示回网页，`tools/test-im-agent-bridge.js` 覆盖入口门禁。
+- **结构+机械** — `src/lib/im/wecom-transport.js` 采用单连接 SDK、每 userid 25/60 秒限流，发送结果区分 sent/failed/unknown 且 unknown 不重发；`tools/test-im-wecom-transport.js` 与 `tools/test-reminder-channel-wecom.js` 只连接 `ws://127.0.0.1` mock，前端契约在 `tools/smoke-im-frontend.js`。
+- **取舍** — 不处理群聊、卡片按钮、图片文件入站，也不在企业微信里批准审批；提醒正文只读已有 reminder 行字段，默认 preview。

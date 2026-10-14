@@ -215,10 +215,19 @@ Android 壳不预置任何服务器。首次启动时输入你自己部署的案
 | `ANJIAN_DISCORD_WEBHOOK` | 可选 L0 日报 webhook |
 | `ANJIAN_REMIND_POLL_SECONDS` | 提醒 worker 轮询秒数，默认 30，最小 1 |
 | `ANJIAN_REMIND_CATCHUP_MINUTES` | 到点领取的追赶窗口，默认 60 分钟 |
+| `ANJIAN_WECOM_BOT_ID` | 可选，企业微信智能机器人 BotID，必须与 Secret 成对 |
+| `ANJIAN_WECOM_BOT_SECRET` | 可选，企业微信智能机器人 Secret，必须与 BotID 成对 |
+| `ANJIAN_WECOM_WS_URL` | 可选，长连接地址；默认使用 SDK 地址，`ws://` 仅允许回环测试地址 |
 
 `.env.example` 是当前版本的完整起点。密钥一律放在部署环境或权限受控的 secret 文件中，不要提交到仓库。
 
 提醒通知在 Chrome、Edge 等桌面浏览器和 macOS App 中使用 Web Notification API 弹出；Android WebView 不支持该 API，只保证页面内铃铛列表可用。反向代理必须放行 `/api/notifications/stream` SSE，例如 nginx：
+
+### 接入企业微信智能机器人（可选）
+
+在企业微信管理后台创建智能机器人，选择 API 模式并启用长连接，取得 BotID 与 Secret（后台菜单名称以企业微信当前界面为准）。可以在案齐「用户中心 → 企业微信」面板填写，也可以把上表两个环境变量成对设置；环境变量优先，界面对应输入会锁定。保存后在面板点击「开始绑定」，再在机器人的单聊发送显示的 `绑定 XXXXXXXX`，绑定成功后才会收到提醒或把单聊交给 AI。
+
+提醒推送有「不推送 / 模拟 / 正式推送」三档；升级后默认模拟且不连接企业微信。一个机器人同一时间只能接一处，桌面版和服务器版不要填同一个机器人；桌面版合盖、休眠或断网会掉线。开启后提醒内容和本人单聊 AI 对话会经企业微信服务器传输。备份数据库时，`secret.key` 与其中的企业微信 Secret 一样需要按密钥级别保护。
 
 ```nginx
 location /api/notifications/stream {
