@@ -602,23 +602,23 @@ node tools/smoke-agent-global-frontend.js
 echo "[98/107] agent MCP case_folder_info 下发北京时间 today/weekday（真 stdio 进程）"
 node tools/test-agent-mcp-today.js
 
-echo "[99/107] migration 032 IM bindings/inbound dedup"
+echo "[99/107] migration 032 empty/v31 upgrade, binding policy and inbound dedup matrix"
 node tools/test-migration-032.js
-echo "[100/107] IM settings and startup validation"
+echo "[100/107] IM settings secret, validation, env precedence, events and worker isolation matrix"
 node tools/test-im-settings-http.js
-echo "[101/107] WeCom transport loopback mock"
+echo "[101/107] WeCom transport auth/message/send/rate-limit/kick/error matrix"
 node tools/test-im-wecom-transport.js
-echo "[102/107] IM hub disabled zero-external guard"
+echo "[102/107] IM hub binding/dedup/routing/cache/reload and zero-external matrix"
 node tools/test-im-hub.js
-echo "[103/107] IM HTTP router contract"
+echo "[103/107] IM HTTP status/bind/unbind/reconnect/test and audit matrix"
 node tools/test-im-http.js
-echo "[104/107] IM agent bridge disabled gate"
+echo "[104/107] IM agent bridge origin/wire/interaction/timeout/cancel/queue/transport matrix"
 node tools/test-im-agent-bridge.js
-echo "[105/107] IM end-to-end loopback mock"
+echo "[105/107] IM end-to-end SDK/mock/hub/bridge flow"
 node tools/test-im-e2e-mock.js
-echo "[106/107] WeCom reminder preview channel"
+echo "[106/107] WeCom reminder configured/preview/live/timeout/privacy/filter matrix"
 node tools/test-reminder-channel-wecom.js
-echo "[107/107] IM frontend static contract"
+echo "[107/107] IM frontend panel/endpoints/secret/modes/polling/notification/drawer/mobile contract"
 node tools/smoke-im-frontend.js
 
 echo "ALL GREEN ✅"
