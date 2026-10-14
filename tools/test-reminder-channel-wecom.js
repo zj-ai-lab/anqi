@@ -20,18 +20,18 @@ function fakeHub({ mode = 'preview', credentials = true, bound = true, result = 
   return { calls, reminderMode: () => mode, hasCredentials: () => credentials, isBound: () => bound, ownerUserid: () => 'zhangsan_test', sendToOwner: (text) => { calls.push(text); return typeof result === 'function' ? result(text) : Promise.resolve(result); } };
 }
 let registered;
-const baseHub = fakeHub();
+const configState = { mode: 'preview', credentials: true, bound: true };
+const baseHub = { reminderMode: () => configState.mode, hasCredentials: () => configState.credentials, isBound: () => configState.bound, ownerUserid: () => 'zhangsan_test', sendToOwner: async () => ({ status: 'sent' }) };
 registered = createWecomChannel({ hub: baseHub, timeoutMs: 10 });
 registerChannel(registered);
-for (const settings of [
-  fakeHub({ mode: 'off' }),
-  fakeHub({ bound: false }),
-  fakeHub({ credentials: false }),
-]) {
-  const channel = createWecomChannel({ hub: settings });
-  assert.equal(configuredChannels({}).some((item) => item === channel), false);
-  assert.equal(channel.configured({}), false);
+assert.ok(configuredChannels({}).some((item) => item.id === 'wecom'));
+for (const change of [{ mode: 'off' }, { mode: 'preview', bound: false }, { mode: 'preview', bound: true, credentials: false }]) {
+  Object.assign(configState, change);
+  assert.equal(configuredChannels({}).some((item) => item.id === 'wecom'), false);
+  assert.equal(registered.configured({}), false);
 }
+Object.assign(configState, { mode: 'preview', credentials: true, bound: true });
+assert.equal(registered.configured({}), true);
 
 // preview records a terminal preview delivery without invoking transport; inapp remains queued
 {

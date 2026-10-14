@@ -36,6 +36,22 @@ assert.equal(notReady.bindStart().error, 'im_not_ready');
 await notReady.stop();
 notReadyDb.close();
 
+// challenge expiry is checked against the injected clock and does not bind
+const expiredDb = new Database(':memory:');
+runMigrations(expiredDb);
+expiredDb.prepare("INSERT INTO settings(key,value) VALUES ('im_wecom_enabled','true')").run();
+let expiredNow = new Date('2099-01-01T00:00:00Z');
+const expiredHub = createImHub({ db: expiredDb, supervisor, env, now: () => expiredNow, transportFactory: (options) => createWecomTransport(options) });
+await expiredHub.start();
+assert.ok(await waitFor(() => expiredHub.status().connection.state === 'ready'));
+const expiredChallenge = expiredHub.bindStart('web-test');
+expiredNow = new Date(expiredNow.getTime() + 11 * 60_000);
+mock.pushMessage({ msgid: 'expired-code', chattype: 'single', userid: 'lisi_test', content: expiredChallenge.code });
+await sleep(50);
+assert.equal(expiredHub.status().binding.bound, false);
+await expiredHub.stop();
+expiredDb.close();
+
 const challenge = hub.bindStart('web-test');
 assert.match(challenge.code, /^绑定 [A-Z2-9]{8}$/);
 mock.pushMessage({ msgid: 'group-code', chattype: 'group', userid: 'zhangsan_test', content: challenge.code });
@@ -91,6 +107,10 @@ const afterBotChange = factoryCalls;
 settingsEvents.emit('changed', ['im_wecom_remind_mode']);
 await sleep(50);
 assert.equal(factoryCalls, afterBotChange, 'mode-only reload does not reconnect');
+env.ANJIAN_WECOM_BOT_SECRET = 'secret-test-not-real-new';
+settingsEvents.emit('changed', ['im_wecom_secret_encrypted']);
+assert.ok(await waitFor(() => factoryCalls > afterBotChange));
+env.ANJIAN_WECOM_BOT_SECRET = 'secret-test-not-real';
 
 // a stored credential change causes a new transport, while disabled mode never constructs one
 const disabledDb = new Database(':memory:');
