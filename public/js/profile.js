@@ -502,36 +502,67 @@ let imSecretSource = 'none'; let imPollTimer = null; let imChallengeTimer = null
 const IM_ENDPOINTS = { status: '/api/im/wecom/status', bind: '/api/im/wecom/bind/start', unbind: '/api/im/wecom/unbind', reconnect: '/api/im/wecom/reconnect', test: '/api/im/wecom/test' };
 const IM_MODES = ['off', 'preview', 'live'];
 const imPath = (value) => value.replace(/^\/api/, '');
+const IM_STATE_LABELS = { disabled: '未启用', connecting: '连接中', ready: '已连接', reconnecting: '重连中', kicked: '被另一处连接顶下线', auth_failed: '认证失败', error: '出错' };
+// 本页刚生成的挑战码只在内存里（服务端只存哈希）；状态轮询不得覆盖它，绑定成功或过期即清。
+let imChallenge = null;
+const imBeijingTime = (iso) => {
+  const d = new Date(iso || '');
+  if (Number.isNaN(d.getTime())) return '';
+  return new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false }).format(d);
+};
+function stopImChallenge() { clearInterval(imChallengeTimer); imChallengeTimer = null; imChallenge = null; }
+function paintImChallenge() {
+  if (!imChallenge) return;
+  const left = Math.max(0, Math.ceil((imChallenge.until - Date.now()) / 1000));
+  if (!left) { stopImChallenge(); imBindingText.textContent = '绑定码已过期，请重新开始绑定'; return; }
+  imBindingText.textContent = `在企业微信里打开这个机器人的单聊，发送：${imChallenge.code}（剩余 ${left} 秒）`;
+}
 function paintIm(s) {
   if (!s) return;
-  const labels = { disabled: '未启用', connecting: '连接中', ready: '已连接', reconnecting: '重连中', kicked: '被另一处连接顶下线', auth_failed: '认证失败', error: '出错' };
-  imState.textContent = labels[s.connection?.state] || s.connection?.state || '未知';
+  const state = s.connection?.state;
+  imState.textContent = IM_STATE_LABELS[state] || state || '未知';
   const envLocked = s.credentials?.source === 'env';
-  imBot.disabled = envLocked; imSecret.disabled = envLocked; imSecret.placeholder = envLocked ? '由环境变量提供' : (s.im_wecom_secret_masked ? `已保存（末四位 ${s.im_wecom_secret_masked}）` : '保存时填写');
   imSecretSource = s.credentials?.source || 'none';
+  imBot.disabled = envLocked; imSecret.disabled = envLocked;
+  // 回填已保存的 BotID：否则只改「提醒推送」再保存会带上空 BotID 被后端拒绝。
+  if (document.activeElement !== imBot) imBot.value = s.credentials?.bot_id || '';
+  imSecret.placeholder = envLocked ? '由环境变量提供' : (imSecretSource === 'stored' ? '已保存（留空则不修改）' : '保存时填写');
   $('im-wecom-secret-clear').hidden = imSecretSource !== 'stored';
-  imEnabled.checked = !!s.enabled; imMode.value = s.remind_mode || 'preview';
-  $('im-wecom-reconnect').hidden = !['kicked', 'auth_failed', 'error'].includes(s.connection?.state);
-  if (s.binding?.bound) { imBindingText.textContent = `已绑定 · ${s.binding.userid_masked} · ${s.binding.bound_at || ''}`; imBindStart.hidden = true; $('im-wecom-unbind').hidden = false; $('im-wecom-test').hidden = false; }
-  else { imBindingText.textContent = '尚未绑定'; imBindStart.hidden = false; $('im-wecom-unbind').hidden = true; $('im-wecom-test').hidden = true; }
+  imEnabled.checked = !!s.enabled; imMode.value = IM_MODES.includes(s.remind_mode) ? s.remind_mode : 'preview';
+  $('im-wecom-reconnect').hidden = !['kicked', 'auth_failed', 'error'].includes(state);
+  const bound = !!s.binding?.bound;
+  imBindStart.hidden = bound; imBindStart.disabled = state !== 'ready';
+  $('im-wecom-unbind').hidden = !bound; $('im-wecom-test').hidden = !bound;
+  if (bound) { stopImChallenge(); imBindingText.textContent = `已绑定 · ${s.binding.userid_masked} · ${imBeijingTime(s.binding.bound_at)}`; }
+  else if (imChallenge) paintImChallenge();
+  else if (s.challenge?.active) imBindingText.textContent = '已有绑定码在有效期内；找不到的话请重新开始绑定';
+  else imBindingText.textContent = state === 'ready' ? '尚未绑定' : '尚未绑定（连接成功后才能绑定）';
+  // 连接中 / 重连中 / 等待绑定时每 3 秒刷新一次状态，其余时候停。
+  if (['connecting', 'reconnecting'].includes(state) || (!bound && imChallenge)) { if (!imPollTimer) imPollTimer = setInterval(refreshIm, 3000); }
+  else { clearInterval(imPollTimer); imPollTimer = null; }
 }
 async function refreshIm() { try { paintIm(await api(imPath(IM_ENDPOINTS.status))); } catch { /* keep controls usable */ } }
 imSave?.addEventListener('click', async () => {
-  const body = { im_wecom_enabled: imEnabled.checked, im_wecom_bot_id: imBot.value.trim(), im_wecom_remind_mode: imMode.value };
-  if (imSecret.value || imSecretSource === 'none') body.im_wecom_secret = imSecret.value;
-  try { paintIm(await api('/settings', { method: 'PUT', body })); toast('企业微信设置已保存'); refreshIm(); } catch (e) { toast('保存失败：' + (e.message || e)); }
+  const body = { im_wecom_enabled: imEnabled.checked, im_wecom_remind_mode: imMode.value };
+  if (!imBot.disabled && imBot.value.trim()) body.im_wecom_bot_id = imBot.value.trim();
+  if (!imSecret.disabled && (imSecret.value || imSecretSource === 'none')) body.im_wecom_secret = imSecret.value;
+  try { await api('/settings', { method: 'PUT', body }); imSecret.value = ''; toast('企业微信设置已保存'); refreshIm(); } catch (e) { toast('保存失败：' + (e.message || e)); }
 });
 $('im-wecom-secret-clear')?.addEventListener('click', async () => { try { await api('/settings', { method: 'PUT', body: { im_wecom_secret: '' } }); imSecret.value = ''; imSecretSource = 'none'; refreshIm(); toast('已清除企业微信 Secret'); } catch (e) { toast(e.message || e); } });
 $('im-wecom-reconnect')?.addEventListener('click', async () => { try { await api(imPath(IM_ENDPOINTS.reconnect), { method: 'POST' }); refreshIm(); } catch (e) { toast(e.message || e); } });
 $('im-wecom-unbind')?.addEventListener('click', async () => { try { await api(imPath(IM_ENDPOINTS.unbind), { method: 'POST' }); refreshIm(); } catch (e) { toast(e.message || e); } });
-$('im-wecom-test')?.addEventListener('click', async () => { try { await api(imPath(IM_ENDPOINTS.test), { method: 'POST' }); toast('测试消息已提交'); } catch (e) { toast(e.message || e); } });
+$('im-wecom-test')?.addEventListener('click', async () => {
+  try {
+    const result = await api(imPath(IM_ENDPOINTS.test), { method: 'POST' });
+    toast(result?.status === 'sent' ? '测试消息已发出（企业微信已接收）' : result?.status === 'unknown' ? '测试消息结果不明，可能已发出' : `测试消息未发出：${result?.detail || result?.status || '未知原因'}`);
+  } catch (e) { toast(e.message || e); }
+});
 imBindStart?.addEventListener('click', async () => {
   try {
     const result = await api(imPath(IM_ENDPOINTS.bind), { method: 'POST' });
-    imBindingText.textContent = `${result.code} · 在企业微信里打开这个机器人的单聊，发送：${result.code}`;
-    const until = new Date(result.expires_at).getTime();
-    clearInterval(imChallengeTimer); imChallengeTimer = setInterval(() => { const left = Math.max(0, Math.ceil((until - Date.now()) / 1000)); imBindingText.textContent = left ? `${result.code} · 绑定码剩余 ${left} 秒` : '绑定码已过期'; if (!left) clearInterval(imChallengeTimer); }, 1000);
-    clearInterval(imPollTimer); imPollTimer = setInterval(refreshIm, 3000); refreshIm();
+    imChallenge = { code: result.code, until: new Date(result.expires_at).getTime() };
+    clearInterval(imChallengeTimer); imChallengeTimer = setInterval(paintImChallenge, 1000); paintImChallenge();
+    refreshIm();
   } catch (e) { toast(e.message || e); }
 });
 refreshIm();
