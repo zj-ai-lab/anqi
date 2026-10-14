@@ -289,14 +289,11 @@ export function createSettingsRouter(supervisor) {
     const storedSecret = rows.find((row) => row.key === IM_SECRET_KEY)?.value || '';
     let storedValue = '';
     if (storedSecret) { try { storedValue = decryptSecret(storedSecret, resolveMasterKey()); } catch { storedValue = ''; } }
-    const imConfigured = envBot || envSecret || rows.some((row) => row.key.startsWith('im_wecom_'));
-    if (imConfigured) {
-      view.im_wecom_secret_configured = !!(envSecret || storedValue);
-      view.im_wecom_secret_source = envSecret ? 'env' : storedValue ? 'stored' : 'none';
-      view.im_wecom_secret_masked = (envSecret || storedValue) ? maskSecret(envSecret || storedValue) : null;
-      view.im_wecom_bot_id_source = envBot ? 'env' : view.im_wecom_bot_id ? 'stored' : 'none';
-      if (envBot) view.im_wecom_bot_id = envBot;
-    }
+    view.im_wecom_secret_configured = !!(envSecret || storedValue);
+    view.im_wecom_secret_source = envSecret ? 'env' : storedValue ? 'stored' : 'none';
+    view.im_wecom_secret_masked = (envSecret || storedValue) ? maskSecret(envSecret || storedValue) : null;
+    view.im_wecom_bot_id_source = envBot ? 'env' : view.im_wecom_bot_id ? 'stored' : 'none';
+    if (envBot) view.im_wecom_bot_id = envBot;
     Object.assign(view, resolveReminderSettings(rows));
     return view;
   }
