@@ -1,4 +1,5 @@
 import { api, el, toast } from './api.js';
+import { openModal } from './modal.js';
 import { caseColorStyle } from './calendar-ui.js';
 
 let modalSeq = 0;
@@ -7,37 +8,11 @@ let modalSeq = 0;
 export function openTaskModal(task, { onChanged } = {}) {
   return new Promise((resolve) => {
     const inputs = {};
-    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const titleId = `task-modal-title-${++modalSeq}`;
-    let inertedBackground = [];
-    let closed = false;
-
-    const close = (value = null) => {
-      if (closed) return;
-      closed = true;
-      overlay.remove();
-      for (const node of inertedBackground) node.inert = false;
-      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
-      resolve(value);
-    };
-
-    const handleModalKey = (e) => {
-      if (e.key === 'Escape') { e.preventDefault(); close(null); return; }
-      if (e.key !== 'Tab') return;
-      const focusable = [...form.querySelectorAll(
-        'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
-      )].filter((node) => node.getClientRects().length && node.getAttribute('aria-hidden') !== 'true');
-      if (!focusable.length) { e.preventDefault(); return; }
-      const first = focusable[0];
-      const last = focusable.at(-1);
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    };
-
     const patchTask = async (body, message) => {
       try {
         const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body });
-        close(updated);
+        modal.close(updated);
         toast(typeof message === 'function' ? message(updated) : message);
         await onChanged?.(updated);
       } catch (error) {
@@ -89,7 +64,6 @@ export function openTaskModal(task, { onChanged } = {}) {
     const openCase = task.case_id
       ? el('a', {
         class: 'btn task-modal-open-case', href: `/case.html?id=${task.case_id}`,
-        onclick: () => close(null),
       }, '打开案件')
       : null;
 
@@ -120,17 +94,17 @@ export function openTaskModal(task, { onChanged } = {}) {
       )
     );
 
-    const overlay = el('div', {
-      class: 'dmodal-overlay',
-      onclick: (e) => { if (e.target === overlay) close(null); },
-      onkeydown: handleModalKey,
-    }, el('div', {
-      class: 'dmodal task-modal', role: 'dialog', 'aria-modal': 'true', 'aria-labelledby': titleId,
-    }, form));
+    const dialog = el('div', {
+      class: 'dmodal task-modal',
+    }, form);
 
-    document.body.appendChild(overlay);
-    inertedBackground = [...document.body.children].filter((node) => node !== overlay && !node.inert);
-    for (const node of inertedBackground) node.inert = true;
-    inputs.plan_date.focus();
+    const modal = openModal(dialog, {
+      labelledBy: titleId,
+      initialFocus: () => inputs.plan_date,
+      onClose: resolve,
+    });
+
+    // 保留案件跳转的既有行为，同时让共享 Modal 负责清理焦点和 inert。
+    dialog.querySelector('.task-modal-open-case')?.addEventListener('click', () => modal.close(null));
   });
 }

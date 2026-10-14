@@ -13,6 +13,7 @@
 //   setLawTexts(meta.law_texts);        // 已取过 /meta 的页面注入一次即可
 //   el('span', {}, basisBtn(d))         // d 为期限对象，需含 basis / calc_note / name / due_on
 import { api, el } from './api.js';
+import { openModal } from './modal.js';
 
 let lawTexts = [];
 let lazy = null;
@@ -73,33 +74,19 @@ export function openBasisPop(d) {
           el('div', { class: 'basis-art-text' }, d.basis || '（该期限未记录依据）')
         )];
 
-    const overlay = el('div', {
-      class: 'dmodal-overlay',
-      onclick: (e) => { if (e.target === overlay) close(); },
-    },
-      el('div', { class: 'dmodal basis-pop', role: 'dialog', 'aria-modal': 'true', 'aria-label': `期限依据：${d.name}` },
-        el('div', { class: 'basis-pop-hd' },
-          el('h3', {}, '期限依据'),
-          el('button', { class: 'basis-pop-x', type: 'button', 'aria-label': '关闭', onclick: () => close() }, '×')
-        ),
-        el('div', { class: 'basis-pop-sub' }, `${d.name} · ${d.due_on} 到期`),
-        diff ? el('div', { class: 'basis-pop-warn' }, diff) : null,
-        ...cards,
-        d.calc_note ? el('div', { class: 'basis-calc' }, el('span', { class: 'basis-calc-hd' }, '本案算法'), d.calc_note) : null
-      )
+    const dialog = el('div', { class: 'dmodal basis-pop' },
+      el('div', { class: 'basis-pop-hd' },
+        el('h3', {}, '期限依据'),
+        el('button', { class: 'basis-pop-x', type: 'button', 'aria-label': '关闭' }, '×')
+      ),
+      el('div', { class: 'basis-pop-sub' }, `${d.name} · ${d.due_on} 到期`),
+      diff ? el('div', { class: 'basis-pop-warn' }, diff) : null,
+      ...cards,
+      d.calc_note ? el('div', { class: 'basis-calc' }, el('span', { class: 'basis-calc-hd' }, '本案算法'), d.calc_note) : null
     );
+    const modal = openModal(dialog, { label: `期限依据：${d.name}` });
+    dialog.querySelector('.basis-pop-x').addEventListener('click', () => modal.close());
 
-    function close() {
-      overlay.remove();
-      document.removeEventListener('keydown', onKey);
-      if (returnFocus?.isConnected) returnFocus.focus({ preventScroll: true });
-    }
-    function onKey(e) { if (e.key === 'Escape') { e.preventDefault(); close(); } }
-
-    const returnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    document.addEventListener('keydown', onKey);
-    document.body.appendChild(overlay);
-    overlay.querySelector('.basis-pop-x')?.focus();
   };
 
   // 首次打开且法条库尚未注入时，异步取回后重绘一次（标题与「本案算法」先行可见）。
