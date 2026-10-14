@@ -5,13 +5,14 @@ import os from 'node:os';
 import path from 'node:path';
 import readline from 'node:readline';
 import { fileURLToPath } from 'node:url';
+import { eventTypeGroups } from '../src/lib/vocab.js';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ASSETS = path.join(ROOT, 'src/agent/assets');
 const CONFIG = path.join(ASSETS, 'anqi.cordis.yml');
 const BIN = path.join(ASSETS, 'bin.mjs');
 
-async function bootAndPreflight(mode, { pluginPatch = '', onReady, scope = 'case' } = {}) {
+async function bootAndPreflight(mode, { pluginPatch = '', onReady, scope = 'case', envOverrides = {} } = {}) {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), `anqi-dsh-${mode}-`));
   const cwd = path.join(scratch, 'case');
   const sessionRoot = path.join(scratch, 'sessions');
@@ -53,7 +54,9 @@ async function bootAndPreflight(mode, { pluginPatch = '', onReady, scope = 'case
       ANQI_INTERNAL_KEY_ENV: 'ANJIAN_INTERNAL_KEY',
       ANJIAN_INTERNAL_KEY: 'composition-test-internal-key',
       ANQI_AGENT_SESSION_ID: sessionId,
+      DSH_ANQI_EVENT_TYPES: JSON.stringify(eventTypeGroups),
       ...(pluginPatch ? { DSH_PLUGIN_PATCH: pluginPatch } : {}),
+      ...envOverrides,
     },
     stdio: ['pipe', 'pipe', 'pipe'],
   });
@@ -131,6 +134,13 @@ for (const name of ['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'bash
   assert.equal(globalTools.has(name), false, `global scope 不应发布 ${name}`);
 }
 console.log('agent runtime composition global scope: project-only tools + global skill passed');
+
+// 事件类型词表由 supervisor 注入；缺了必须在挂载 preset 时就失败，不能静默发布没有 type 枚举的 anqi_event_add。
+await assert.rejects(
+  bootAndPreflight('project', { envOverrides: { DSH_ANQI_EVENT_TYPES: '' } }),
+  /failed to apply loader entry dsh-anqi[\s\S]*DSH_ANQI_EVENT_TYPES/,
+);
+console.log('agent runtime composition: missing DSH_ANQI_EVENT_TYPES fails preset mount (fail-closed)');
 
 const hotRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-dsh-plugin-hot-'));
 try {

@@ -496,7 +496,7 @@ node tools/test-migration-018.js
 echo "[63/107] agent 五类直写 HTTP（key/session 归属 + AI 戳 + 待核隔离/确认 + 手工事实 CRUD）"
 node tools/test-agent-direct-write-http.js
 
-echo "[64/107] dsh-anqi 五个直写工具（精确工具集 + 描述 + contacts/facts 白名单 + 服务端强制字段）"
+echo "[64/107] dsh-anqi 五个直写工具（精确工具集 + 描述 + contacts/facts 白名单 + 服务端强制字段 + 事件类型枚举）"
 node tools/test-agent-direct-tools.js
 
 echo "[65/107] dsh-anqi 斜杠命令 worker 桥（可选服务 + exact session agent + list/execute/miss 契约）"

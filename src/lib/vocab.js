@@ -34,6 +34,14 @@ const allEventTypes = [
 
 export const eventTypes = allEventTypes; // [{id,label}]
 export const eventLabel = Object.fromEntries(allEventTypes.map((t) => [t.id, t.label]));
+// 同一份词表按文件分组的只读视图，供 AI 工具 anqi_event_add 生成 type 枚举与中文对照（supervisor 序列化注入 worker）。
+// 刑事/行政词表复用民诉词表里的通用 id（hearing / filed / judgment_served 等），所以民诉组即通用组。
+export const eventTypeGroups = [
+  { group: '民事及通用', types: et.types },
+  { group: '刑事专用', types: (etCr && etCr.types) || [] },
+  { group: '行政专用', types: (etAd && etAd.types) || [] },
+].filter((g) => g.types.length > 0)
+  .map((g) => ({ group: g.group, types: g.types.map(({ id, label }) => ({ id, label })) }));
 export const stageTemplates = {
   ...st.procedures,
   ...((stCr && stCr.procedures) || {}),
