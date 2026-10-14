@@ -500,6 +500,7 @@ const imBindStart = $('im-wecom-bind-start');
 const imBindingText = $('im-wecom-binding-text');
 let imSecretSource = 'none'; let imPollTimer = null; let imChallengeTimer = null;
 const IM_ENDPOINTS = { status: '/api/im/wecom/status', bind: '/api/im/wecom/bind/start', unbind: '/api/im/wecom/unbind', reconnect: '/api/im/wecom/reconnect', test: '/api/im/wecom/test' };
+const IM_MODES = ['off', 'preview', 'live'];
 const imPath = (value) => value.replace(/^\/api/, '');
 function paintIm(s) {
   if (!s) return;
