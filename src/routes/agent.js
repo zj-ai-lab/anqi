@@ -79,15 +79,14 @@ import {
 } from '../agent/config.js';
 import { fetchProviderModels, modelsErrorToHttpStatus } from '../agent/models-client.js';
 import { GLOBAL_SCOPE } from '../agent/supervisor.js';
+import { MAX_PROMPT_CHARS, buildQuestionAnswer } from '../agent/interaction-answer.js';
 
 // 一次 prompt 的文本上限：不是纯粹的展示限制,也是成本/滥用防线——案件事实
 // 本身已经通过 anqi-owned MCP 工具传给模型,用户手打的这一句话没有理由超过
 // 几千字符。与 src/lib/llm.js 的 MAX_TEXT（500，快录条一句话）不是同一个
 // 场景,这里是多轮对话式 prompt,给更宽松但仍然有界的上限。
-const MAX_PROMPT_CHARS = 8000;
 // user-question 每题答案上限,防止把整篇案卷粘贴回答案里绕开"只读工具返回
 // 事实"的边界。
-const MAX_ANSWER_CHARS = 2000;
 export const AGENT_ATTACHMENT_JSON_TYPE = 'application/vnd.anqi.agent-attachments+json';
 const ATTACHMENT_BODY_LIMIT = '24mb';
 const IMAGE_MEDIA_TYPES = new Set(AGENT_IMAGE_LIMITS.mediaTypes);
@@ -181,26 +180,6 @@ function mustCaseId(req, res) {
 //   - 每个 id 必须命中且只命中一道待答问题(不允许重复 id、不允许编造 id);
 //   - 每个答案必须是非空字符串,裁剪后不超过 MAX_ANSWER_CHARS。
 // 任何一项不满足都返回 null,调用方一律按 400 处理,不做部分采纳。
-function buildQuestionAnswer(pendingQuestions, rawAnswers) {
-  if (!Array.isArray(rawAnswers) || rawAnswers.length !== pendingQuestions.length) return null;
-  const knownIds = new Set(pendingQuestions.map((q) => q.id));
-  const seen = new Set();
-  const answers = [];
-  for (const item of rawAnswers) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
-    const id = item.id;
-    if (typeof id !== 'string' || !knownIds.has(id) || seen.has(id)) return null;
-    seen.add(id);
-    const text = item.text;
-    if (typeof text !== 'string') return null;
-    const trimmed = text.trim();
-    if (!trimmed || trimmed.length > MAX_ANSWER_CHARS) return null;
-    answers.push({ id, selected: [], custom: trimmed });
-  }
-  if (seen.size !== pendingQuestions.length) return null;
-  return { answers };
-}
-
 // fetchModels 是 fetchProviderModels() 的依赖注入点（同 AgentSupervisor 的
 // spawnFn 一个风格）：生产环境用真实网络实现，测试可以注入假实现验证路由层
 // 自己的职责（校验/取值优先级/错误映射/脱敏），不必每次都发起真实网络调用。

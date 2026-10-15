@@ -27,6 +27,10 @@ import { resolveTrustProxy } from './src/lib/trust-proxy.js';
 import { resolveStartupConfig } from './src/lib/startup-config.js';
 import { createReminderWorker } from './src/lib/reminder-worker.js';
 import { createRemindersRouter } from './src/routes/reminders.js';
+import { createImHub } from './src/lib/im/hub.js';
+import { createImRouter } from './src/routes/im.js';
+import { registerChannel } from './src/lib/reminder-channels/index.js';
+import { createWecomChannel } from './src/lib/reminder-channels/wecom.js';
 
 const startupConfig = resolveStartupConfig(process.env);
 
@@ -77,13 +81,16 @@ const reminderWorker = createReminderWorker({
   pollSeconds: startupConfig.reminders.pollSeconds,
   catchupMinutes: startupConfig.reminders.catchupMinutes,
 });
+const imHub = createImHub({ supervisor: agentSupervisor, env: process.env });
+registerChannel(createWecomChannel({ hub: imHub }));
+const imRouter = createImRouter(imHub);
 const remindersRouter = createRemindersRouter(reminderWorker);
 
 app.use('/api', authRouter); // /api/login /api/logout（自带限速，不过会话门）
 app.use(
   '/api', apiAuth,
   casesRouter, recordsRouter, viewsRouter, feesRouter, sharesRouter,
-  filesRouter, contactsRouter, peopleRouter, legalragRouter, settingsRouter, agentRouter, changesRouter, remindersRouter
+  filesRouter, contactsRouter, peopleRouter, legalragRouter, settingsRouter, agentRouter, changesRouter, remindersRouter, imRouter
 );
 app.use('/internal', internalAuth, internalRouter);
 app.use(pageAuth, express.static(path.join(__dirname, 'public')));
@@ -123,6 +130,7 @@ const httpServer = app.listen(port, host, () => {
   agentSupervisor.setInternalBaseURL(`http://${internalCallbackHost(startupConfig.host)}:${actualPort}`);
   console.log(`anjian listening on :${actualPort}`);
   if (startLegalRagBridge()) console.log('anjian LegalRAG bridge started');
+  imHub.start().catch((error) => console.error('im hub start failed:', error.message));
   reminderWorker.start();
 });
 
@@ -160,6 +168,7 @@ async function gracefulShutdown(signal) {
   } catch (error) {
     console.error('reminder worker stop failed during shutdown:', error.message);
   }
+  try { await imHub.stop(); } catch (error) { console.error('im hub stop failed during shutdown:', error.message); }
   try {
     await Promise.race([
       agentSupervisor.stopAll(`server shutdown (${signal})`).then(() => clearTimeout(timer)),

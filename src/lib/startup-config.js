@@ -27,6 +27,25 @@ export function isLoopbackHost(value) {
   return net.isIP(host) === 4 && host.split('.')[0] === '127';
 }
 
+function validateWecomWsUrl(raw) {
+  if (raw === undefined || raw === '') return;
+  let parsed;
+  try { parsed = new URL(String(raw)); } catch { throw new Error('ANJIAN_WECOM_WS_URL 必须是合法的 WebSocket URL'); }
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  const loopback = hostname === 'localhost' || hostname === '::1' || isLoopbackHost(hostname);
+  if (parsed.protocol !== 'wss:' && !(parsed.protocol === 'ws:' && loopback)) {
+    throw new Error('ANJIAN_WECOM_WS_URL 必须使用 wss://；仅允许回环地址使用 ws://');
+  }
+}
+
+export function resolveWecomConfig(env = process.env) {
+  const bot = String(env.ANJIAN_WECOM_BOT_ID ?? '').trim();
+  const secret = String(env.ANJIAN_WECOM_BOT_SECRET ?? '');
+  if ((bot && !secret) || (!bot && secret)) throw new Error('ANJIAN_WECOM_BOT_ID 与 ANJIAN_WECOM_BOT_SECRET 必须同时配置');
+  validateWecomWsUrl(env.ANJIAN_WECOM_WS_URL);
+  return Object.freeze({ botId: bot, secret, wsUrl: String(env.ANJIAN_WECOM_WS_URL || '') });
+}
+
 export function unsafeNoAuthAllowed(env = process.env) {
   const host = String(env.HOST || DEFAULT_HOST).trim();
   const nodeEnv = String(env.NODE_ENV || 'development');
@@ -82,11 +101,14 @@ export function resolveStartupConfig(env = process.env) {
     }
   }
 
+  const wecom = resolveWecomConfig(env);
+
   return Object.freeze({
     host,
     nodeEnv,
     unsafeNoAuth,
     authConfigured: hasUser && hasHash,
     reminders: resolveReminderConfig(env),
+    wecom,
   });
 }

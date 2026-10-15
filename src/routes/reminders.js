@@ -96,9 +96,10 @@ export function createRemindersRouter(worker, database = defaultDb) {
 
   r.get('/notifications', (req, res) => {
     const limit = Math.min(100, Math.max(1, Number(req.query.limit || 20)));
+    const channel = req.query.channel ? String(req.query.channel) : '';
     const rows = database.prepare(`SELECT d.*, r.title, r.body, r.case_id, r.fire_at, c.name AS case_name
       FROM reminder_deliveries d JOIN reminders r ON r.id=d.reminder_id LEFT JOIN cases c ON c.id=r.case_id
-      ORDER BY d.id DESC LIMIT ?`).all(limit);
+      ${channel ? 'WHERE d.channel=?' : ''} ORDER BY d.id DESC LIMIT ?`).all(...(channel ? [channel, limit] : [limit]));
     res.json(rows.map(decorate));
   });
 

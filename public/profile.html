@@ -103,6 +103,21 @@
       </div>
     </div>
 
+    <div class="panel" aria-label="企业微信">
+      <div class="p-head"><h2 class="p-title">企业微信</h2><span class="p-meta" id="im-connection-state">未启用</span></div>
+      <div class="panel-body">
+        <label class="settings-row"><div><div class="label">启用企业微信智能机器人</div><div class="desc">连接由案齐主动建立，默认不外发提醒</div></div><input type="checkbox" id="im-wecom-enabled" aria-label="启用企业微信"></label>
+        <div class="formgrid">
+          <label class="f">BotID<input id="im-wecom-bot-id" autocomplete="off" placeholder="企业微信后台的 BotID"></label>
+          <label class="f">Secret<input id="im-wecom-secret" type="password" autocomplete="new-password" placeholder="按保存时填写"></label>
+          <label class="f">提醒推送<select id="im-wecom-remind-mode"><option value="off">不推送</option><option value="preview">模拟（只记录不发送）</option><option value="live">正式推送</option></select></label>
+        </div>
+        <div class="formrow"><button class="btn" id="im-wecom-save" type="button">保存企业微信设置</button><button class="btn" id="im-wecom-secret-clear" type="button" hidden>清除 Secret</button><button class="btn" id="im-wecom-reconnect" type="button" hidden>重新连接</button><span id="im-wecom-secret-note" class="page-sub"></span></div>
+        <div class="formrow" id="im-wecom-binding"><button class="btn primary" id="im-wecom-bind-start" type="button">开始绑定</button><span id="im-wecom-binding-text" class="page-sub">尚未绑定</span><button class="btn" id="im-wecom-unbind" type="button" hidden>解绑</button><button class="btn" id="im-wecom-test" type="button" hidden>发一条测试消息</button></div>
+        <p class="page-sub">开启后，提醒内容（案件名、事项、时间、开庭地点）和你在单聊里与 AI 的对话会经企业微信服务器传输。同一个机器人只能接在一处：桌面版和服务器版不要填同一个机器人。</p>
+      </div>
+    </div>
+
     <!-- ═════ AI 助理（DSH sidecar：案件页对话式助理，默认关闭） ═════ -->
     <div class="panel" aria-label="AI 助理">
       <div class="p-head">

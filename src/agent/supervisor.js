@@ -56,6 +56,7 @@ import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
 import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
+import { eventTypeGroups } from '../lib/vocab.js';
 import {
   AGENT_IMAGE_LIMITS,
   ALLOWED_AGENT_APPROVAL_TIERS,
@@ -709,6 +710,10 @@ function buildSpawnEnv({
     ANQI_INTERNAL_KEY_ENV: internalKeyEnv,
     [internalKeyEnv]: internalKeyValue,
     ANQI_AGENT_SESSION_ID: sessionId,
+    // anqi_event_add.type 的合法值。打包后插件在 Resources/agent-runtime/assets，与 app/rules 不在同一
+    // 目录树，插件不能自己 import vocab.js；这里用服务端同一份词表序列化注入，插件据此生成 enum + 中文
+    // 对照。只是让模型看得见合法值，服务端写入仍由 records.js 的 isEventType 校验。
+    DSH_ANQI_EVENT_TYPES: JSON.stringify(eventTypeGroups),
   };
 }
 
@@ -1095,6 +1100,7 @@ export class AgentSupervisor {
       projected = {
         role: item.role, text, at: item.at || nowIso(),
         ...(attachments.length === 0 ? {} : { attachments }),
+        ...(item.origin && item.origin !== 'web' ? { origin: item.origin } : {}),
       };
     } else if (item.role === 'tool') {
       const name = worker.redact(String(item.name || ''));
@@ -1646,7 +1652,11 @@ export class AgentSupervisor {
   }
 
   // ---- turn 执行：串行 + 可取消 ----
-  async prompt(caseId, text, attachmentIds = []) {
+  async prompt(caseId, text, attachmentIds = [], opts = {}) {
+    const origin = opts?.origin ?? 'web';
+    if (origin !== 'web' && !/^im:[a-z]{2,16}$/.test(origin)) {
+      const error = new Error('invalid origin'); error.code = 'invalid_origin'; throw error;
+    }
     // 不信任调用方（src/routes/agent.js 的 prompt 路由）已经检查过
     // enabled——路由层的检查与这里的调用之间隔着一次事件循环轮转，理论上
     // 存在"路由层查的时候还 enabled，supervisor 真正执行时设置已经被改成
@@ -1692,11 +1702,11 @@ export class AgentSupervisor {
       throw codedError('images_not_supported', 'the current model does not support images');
     }
     const attachmentRefs = this.validateAttachmentIds(caseId, attachmentIds);
-    const run = () => this._runTurn(worker, text, attachmentRefs);
+    const run = () => this._runTurn(worker, text, attachmentRefs, origin);
     // HTTP 已经完成 enabled/live/ready 门禁，到这里即视为当前 worker 接受了
     // 这条用户消息；在排队 turn 之前记录，刷新页面不会丢掉尚未开始的消息。
     for (const ref of attachmentRefs) worker.referencedAttachmentIds.add(ref.attachmentId);
-    this._appendUiHistory(worker, { role: 'user', text, attachments: attachmentRefs });
+    this._appendUiHistory(worker, { role: 'user', text, attachments: attachmentRefs, origin });
     const turnPromise = worker.turnLock.then(run, run);
     // 后续 turn 排队；任何一个 turn 失败不阻塞下一个 turn 排队执行。
     worker.turnLock = turnPromise.then(() => {}, () => {});
@@ -1812,7 +1822,7 @@ export class AgentSupervisor {
     }
   }
 
-  async _runTurn(worker, text, attachmentRefs = []) {
+  async _runTurn(worker, text, attachmentRefs = [], origin = 'web') {
     if (!LIVE_STATUSES.has(worker.status)) {
       const error = new Error('worker is not running');
       error.code = 'worker_not_running';
@@ -1828,7 +1838,7 @@ export class AgentSupervisor {
     const controller = new AbortController();
     worker.currentAbort = controller;
     worker.status = 'running';
-    worker.emit('turn/start', { turnId });
+    worker.emit('turn/start', origin === 'web' ? { turnId } : { turnId, origin });
 
     const turnDone = new Promise((resolveTurn, rejectTurn) => {
       worker._turnResolvers = { resolveTurn, rejectTurn, turnId, sawRunning: false, sawIdle: false, sawEnd: false };

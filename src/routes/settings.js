@@ -13,8 +13,9 @@ import {
   validateAgentPluginPatch,
   validateBaseURL,
 } from '../agent/config.js';
-import { encryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
+import { decryptSecret, encryptSecret, maskSecret, resolveMasterKey } from '../lib/secret-box.js';
 import { resolveReminderSettings } from '../lib/reminder-plan.js';
+import { settingsEvents } from '../lib/settings-events.js';
 
 // agent_api_key 明文入参的长度上限——纯粹是防御式的 DoS/误用兜底（真实
 // API key 从没见过超过几百字符的），不是安全边界本身：加密/落库对任意长度
@@ -70,6 +71,7 @@ export function createSettingsRouter(supervisor) {
     'name', 'license_no', 'firm', 'phone', 'email', 'address',
     'remind_enabled', 'remind_hearing_eve_time', 'remind_hearing_day_time',
     'remind_deadline_days_before', 'remind_deadline_time', 'remind_task_minutes_before',
+    'im_wecom_enabled', 'im_wecom_bot_id', 'im_wecom_remind_mode',
   ];
   // 存储层键名（settings 表里真实的行名）——GET 响应要把其中的
   // agent_api_key_encrypted 过滤掉，绝不把密文原样吐给前端（虽然密文不是
@@ -80,6 +82,7 @@ export function createSettingsRouter(supervisor) {
   // 那一行,body 键名与存储键名故意不同,避免调用方以为"传进去的就是存进去
   // 的原始字符串"。
   const AGENT_BODY_KEYS = [...AGENT_STORAGE_KEYS.filter((k) => k !== AGENT_SETTINGS_KEYS.apiKeyEncrypted), 'agent_api_key'];
+  const IM_SECRET_KEY = 'im_wecom_secret_encrypted';
 
   function readAgentSetting(key) {
     const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key);
@@ -233,6 +236,32 @@ export function createSettingsRouter(supervisor) {
     return { ok: true, values };
   }
 
+  function validateImFields(body) {
+    const values = {};
+    if (Object.hasOwn(body, 'im_wecom_enabled')) {
+      if (!['true', 'false', true, false].includes(body.im_wecom_enabled)) return { ok: false, error: 'im_wecom_enabled 必须是 true 或 false' };
+      values.im_wecom_enabled = body.im_wecom_enabled === true || body.im_wecom_enabled === 'true' ? 'true' : 'false';
+    }
+    if (Object.hasOwn(body, 'im_wecom_bot_id')) {
+      const value = String(body.im_wecom_bot_id ?? '').trim();
+      if (!value || value.length > 128 || !/^[A-Za-z0-9_-]+$/.test(value)) return { ok: false, error: 'im_wecom_bot_id 格式非法' };
+      values.im_wecom_bot_id = value;
+    }
+    if (Object.hasOwn(body, 'im_wecom_secret')) {
+      if (typeof body.im_wecom_secret !== 'string') return { ok: false, error: 'im_wecom_secret 必须是字符串' };
+      const raw = body.im_wecom_secret;
+      if (raw.length > 4096) return { ok: false, error: 'im_wecom_secret 过长' };
+      if (raw.length > 0 && !raw.trim()) return { ok: false, error: 'im_wecom_secret 不能是纯空白字符' };
+      values[IM_SECRET_KEY] = raw.trim() ? encryptSecret(raw.trim(), resolveMasterKey()) : '';
+    }
+    if (Object.hasOwn(body, 'im_wecom_remind_mode')) {
+      const mode = String(body.im_wecom_remind_mode ?? '').trim();
+      if (!['off', 'preview', 'live'].includes(mode)) return { ok: false, error: 'im_wecom_remind_mode 必须是 off、preview 或 live' };
+      values.im_wecom_remind_mode = mode;
+    }
+    return { ok: true, values };
+  }
+
   // GET/PUT /api/settings 共用的响应体构造：
   //   - settings 表的原始行原样带出（六个人工字段 + agent_enabled/provider/
   //     capabilityMode/baseURL/model/apiKeyEnv/pluginPatch 等白名单字段），但把 agent_api_key_encrypted
@@ -247,7 +276,7 @@ export function createSettingsRouter(supervisor) {
     const rows = db.prepare('SELECT key, value FROM settings').all();
     const view = Object.fromEntries(
       rows
-        .filter((row) => row.key !== AGENT_SETTINGS_KEYS.apiKeyEncrypted)
+        .filter((row) => !new Set([AGENT_SETTINGS_KEYS.apiKeyEncrypted, IM_SECRET_KEY]).has(row.key))
         .map((row) => [row.key, row.value])
     );
     const apiKeyEnv = String(view[AGENT_SETTINGS_KEYS.apiKeyEnv] ?? '').trim();
@@ -255,6 +284,19 @@ export function createSettingsRouter(supervisor) {
     view.agent_api_key_configured = !!value;
     view.agent_api_key_source = source;
     view.agent_api_key_masked = value ? maskSecret(value) : null;
+    const envBot = String(process.env.ANJIAN_WECOM_BOT_ID || '').trim();
+    const envSecret = String(process.env.ANJIAN_WECOM_BOT_SECRET || '');
+    const storedSecret = rows.find((row) => row.key === IM_SECRET_KEY)?.value || '';
+    let storedValue = '';
+    if (storedSecret) { try { storedValue = decryptSecret(storedSecret, resolveMasterKey()); } catch { storedValue = ''; } }
+    const imConfigured = envBot || envSecret || rows.some((row) => row.key.startsWith('im_wecom_'));
+    if (imConfigured) {
+      view.im_wecom_secret_configured = !!(envSecret || storedValue);
+      view.im_wecom_secret_source = envSecret ? 'env' : storedValue ? 'stored' : 'none';
+      view.im_wecom_secret_masked = (envSecret || storedValue) ? maskSecret(envSecret || storedValue) : null;
+      view.im_wecom_bot_id_source = envBot ? 'env' : view.im_wecom_bot_id ? 'stored' : 'none';
+      if (envBot) view.im_wecom_bot_id = envBot;
+    }
     Object.assign(view, resolveReminderSettings(rows));
     return view;
   }
@@ -282,6 +324,13 @@ export function createSettingsRouter(supervisor) {
       if (!validated.ok) return res.status(400).json({ error: validated.error });
       agentValues = validated.values;
     }
+    const touchesImKey = ['im_wecom_enabled', 'im_wecom_bot_id', 'im_wecom_secret', 'im_wecom_remind_mode'].some((key) => Object.hasOwn(body, key));
+    let imValues = {};
+    if (touchesImKey) {
+      const validated = validateImFields(body);
+      if (!validated.ok) return res.status(400).json({ error: validated.error });
+      imValues = validated.values;
+    }
 
     const upsert = db.prepare(
       'INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value'
@@ -290,9 +339,11 @@ export function createSettingsRouter(supervisor) {
       ...ALLOWED
         .filter((k) => Object.prototype.hasOwnProperty.call(body, k))
         .filter((k) => !k.startsWith('remind_'))
+        .filter((k) => k !== IM_SECRET_KEY)
         .map((k) => [k, String(body[k] ?? '')]),
       ...Object.entries(reminderValues),
       ...Object.entries(agentValues),
+      ...Object.entries(imValues),
     ];
     const runtimeRestartKeys = new Set([
       AGENT_SETTINGS_KEYS.capabilityMode,
@@ -313,6 +364,7 @@ export function createSettingsRouter(supervisor) {
     })(pairs);
 
     audit(req.actor, 'update', 'settings', null, written.join(','));
+    if (written.some((key) => key.startsWith('im_wecom_'))) settingsEvents.emit('changed', written.filter((key) => key.startsWith('im_wecom_')));
 
     // 联动收尾：只在这次 PUT 真的触碰过 agent_* 白名单键时才检查——非
     // agent 字段（姓名/电话等六个抬头字段）的普通保存不应该白白多算一次

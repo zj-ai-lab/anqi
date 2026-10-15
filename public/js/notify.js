@@ -1,6 +1,6 @@
 import { api, el, toast } from './api.js';
 
-const statusLabel = { queued: '待看', shown: '已看', expired: '错过', failed: '发送失败', unknown: '结果不明' };
+const statusLabel = { queued: '待看', shown: '已看', expired: '错过', failed: '发送失败', unknown: '结果不明', sent: '已发送', preview: '模拟' };
 let mounted = false;
 
 function localTime(iso) {
@@ -44,7 +44,7 @@ export function mountNotifications(nav) {
     badge.textContent = queued ? String(queued) : ''; badge.hidden = !queued;
   }
   async function refresh() {
-    try { const [rows, info] = await Promise.all([api('/notifications?limit=20'), api('/notifications/status')]); paintList(rows); state.classList.toggle('disabled', !info.enabled); if (!info.enabled) state.append(el('span', { class: 'notify-off' }, '提醒已关闭')); paintPermission(); } catch { /* page remains usable offline */ }
+    try { const [rows, info] = await Promise.all([api('/notifications?channel=inapp&limit=20'), api('/notifications/status')]); paintList(rows); state.classList.toggle('disabled', !info.enabled); if (!info.enabled) state.append(el('span', { class: 'notify-off' }, '提醒已关闭')); paintPermission(); } catch { /* page remains usable offline */ }
   }
   allRead.addEventListener('click', async () => { for (const row of current.filter((x) => x.status === 'queued')) await api(`/notifications/${row.id}/ack`, { method: 'POST' }).catch(() => {}); refresh(); });
   button.addEventListener('click', (event) => { event.stopPropagation(); const open = dropdown.hidden; dropdown.hidden = !open; button.setAttribute('aria-expanded', String(open)); if (open) refresh(); });

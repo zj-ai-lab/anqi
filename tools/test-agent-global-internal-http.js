@@ -97,6 +97,14 @@ try {
     payload: { type: 'other', occurred_on: '2099-02-01' },
   });
   assert.equal(out.status, 201); assert.equal(out.data.item.created_by, 'llm'); assert.equal(out.data.case_id, selected);
+  // AI 工具 schema 列出事件枚举后，服务端词表校验不放宽：词表外的 type 照拒、不落库（末尾行数账 events 仍为 1）。
+  for (const badType of ['judgment_received', '收到判决']) {
+    out = await post('/internal/agent-proposals', {
+      mode: 'direct', kind: 'event', session_id: sessionId, case_id: selected,
+      payload: { type: badType, occurred_on: '2099-02-01', note: '测试人民法院' },
+    });
+    assert.equal(out.status, 400, `type=${badType} 必须被服务端拒绝`); assert.match(out.data.error, /type 非法/);
+  }
   out = await post('/internal/agent-proposals', {
     mode: 'direct', kind: 'contact', session_id: sessionId,
     payload: { role: '承办法官', name: '王助理' },
