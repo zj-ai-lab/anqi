@@ -5,6 +5,12 @@ function focusableIn(dialog) {
     .filter((node) => node.getClientRects().length && node.getAttribute('aria-hidden') !== 'true');
 }
 
+// 叠层时只有最上层响应键盘（与 fee-settlement 的 modalShell 同口径）：否则一次 Esc 会连关多层，
+// 且下层按打开时的快照复原 inert，会把整页永久锁成 inert。
+function isTopmost(overlay) {
+  return [...document.querySelectorAll('.dmodal-overlay')].at(-1) === overlay;
+}
+
 export function openModal(dialog, {
   labelledBy = '',
   label = '',
@@ -37,6 +43,7 @@ export function openModal(dialog, {
   };
 
   const onKey = (event) => {
+    if (!isTopmost(overlay)) return;
     if (event.key === 'Escape') {
       event.preventDefault();
       close();
@@ -50,7 +57,11 @@ export function openModal(dialog, {
     }
     const first = nodes[0];
     const last = nodes.at(-1);
-    if (event.shiftKey && document.activeElement === first) {
+    if (!nodes.includes(document.activeElement)) {
+      // 点过弹层空白处后焦点在 body 上，从这里 Tab / Shift+Tab 也不得跑出弹层
+      event.preventDefault();
+      (event.shiftKey ? last : first).focus();
+    } else if (event.shiftKey && document.activeElement === first) {
       event.preventDefault();
       last.focus();
     } else if (!event.shiftKey && document.activeElement === last) {
@@ -67,7 +78,11 @@ export function openModal(dialog, {
   for (const { node } of inertedBackground) node.inert = true;
 
   const target = typeof initialFocus === 'function' ? initialFocus() : initialFocus;
-  requestAnimationFrame(() => (target?.focus?.() || focusableIn(dialog)[0]?.focus()));
+  // focus() 返回 undefined：不能写成 target.focus() || 兜底，否则兜底永远执行、initialFocus 被覆盖。
+  requestAnimationFrame(() => {
+    if (closed) return;
+    (target?.isConnected && dialog.contains(target) ? target : focusableIn(dialog)[0])?.focus();
+  });
   return { overlay, dialog, close };
 }
 
