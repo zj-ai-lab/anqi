@@ -103,8 +103,8 @@
 
 | 你的 Mac | 下载 |
 |---|---|
-| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.12.1-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.1/anqi-2.12.1-arm64.dmg)** |
-| Intel 芯片 | **[anqi-2.12.1-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.1/anqi-2.12.1-x64.dmg)** |
+| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.12.2-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.2/anqi-2.12.2-arm64.dmg)** |
+| Intel 芯片 | **[anqi-2.12.2-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.2/anqi-2.12.2-x64.dmg)** |
 
 > 不确定是哪种芯片：点左上角  → 「关于本机」，「芯片」一栏写 Apple M 开头的选 arm64，写 Intel 的选 x64。历史版本与校验文件在 [Releases 页面](https://github.com/zj-ai-lab/anqi/releases)。
 
@@ -284,10 +284,10 @@ flowchart LR
 
 ## 服务器 / Docker 部署
 
-推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.12.1`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.12.1 修复 AI 助理记程序事件时看不到合法事件类型、只能改记待办的问题，无 migration、无新环境变量。2.12.0 新增企业微信智能机器人（可选，默认关闭：长连接由案齐主动外连，无需公网回调地址；提醒可推到绑定本人的企业微信单聊，默认只模拟记录；本人单聊发文字或语音即交给 AI 总入口），含 migration 032，新增可选环境变量 `ANJIAN_WECOM_BOT_ID` / `ANJIAN_WECOM_BOT_SECRET` / `ANJIAN_WECOM_WS_URL`，见 SELF-HOSTING.md。2.11.0 新增 AI 总入口（一个 AI 抽屉加项目选择器：总入口在服务端本地认案、一句话拆多条记录；选中案件即在案件夹项目里对话），含 migration 031，无新环境变量。2.10.0 新增确定性提醒中枢与应用内通知（开庭 / 已确认期限 / 带时刻待办按档位自动提醒，人工单条提醒，反向代理需放行 `/api/notifications/stream` 的 SSE，见 SELF-HOSTING.md）。2.9.0 新增开庭时刻与地点、快录直接记开庭、传票上传识别（PDF 文字层 / 系统 OCR / 视觉模型，识别结果只回填表单）、手机日历优化与节前顺延提示，含 migration 029；2.9.1 为依赖安全补丁，无 migration；2.9.2 升级 AI 助理运行时（DSH 0.1.5-rc.3），无 migration；2.9.3 修复 AI 助理沙箱放宽请求可被自动放行的问题，无 migration；2.9.4 修复启用 Landlock 的 Linux 服务器无法开启完整档的问题，无 migration。升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
+推荐固定版本镜像 `ghcr.io/zj-ai-lab/anqi:2.12.2`（当前最新，内置 [AI 助理](#内置-ai-助理beta)），支持 amd64 与 arm64。2.12.2 修复桌面日历鼠标单击打不开待办弹层、手机快录条按钮偏矮的问题，并统一弹层的键盘操作与控件高度，纯前端，无 migration、无新环境变量。2.12.1 修复 AI 助理记程序事件时看不到合法事件类型、只能改记待办的问题，无 migration、无新环境变量。2.12.0 新增企业微信智能机器人（可选，默认关闭：长连接由案齐主动外连，无需公网回调地址；提醒可推到绑定本人的企业微信单聊，默认只模拟记录；本人单聊发文字或语音即交给 AI 总入口），含 migration 032，新增可选环境变量 `ANJIAN_WECOM_BOT_ID` / `ANJIAN_WECOM_BOT_SECRET` / `ANJIAN_WECOM_WS_URL`，见 SELF-HOSTING.md。2.11.0 新增 AI 总入口（一个 AI 抽屉加项目选择器：总入口在服务端本地认案、一句话拆多条记录；选中案件即在案件夹项目里对话），含 migration 031，无新环境变量。2.10.0 新增确定性提醒中枢与应用内通知（开庭 / 已确认期限 / 带时刻待办按档位自动提醒，人工单条提醒，反向代理需放行 `/api/notifications/stream` 的 SSE，见 SELF-HOSTING.md）。2.9.0 新增开庭时刻与地点、快录直接记开庭、传票上传识别（PDF 文字层 / 系统 OCR / 视觉模型，识别结果只回填表单）、手机日历优化与节前顺延提示，含 migration 029；2.9.1 为依赖安全补丁，无 migration；2.9.2 升级 AI 助理运行时（DSH 0.1.5-rc.3），无 migration；2.9.3 修复 AI 助理沙箱放宽请求可被自动放行的问题，无 migration；2.9.4 修复启用 Landlock 的 Linux 服务器无法开启完整档的问题，无 migration。升级前备份，回退到旧版本时须同时恢复备份。下面的完整示例只把服务暴露到宿主机回环地址，并持久化数据库和案件夹；**配置 HTTPS 入口前，不要把 3000 端口绑定到公网地址。**
 
 ```sh
-IMAGE=ghcr.io/zj-ai-lab/anqi:2.12.1
+IMAGE=ghcr.io/zj-ai-lab/anqi:2.12.2
 mkdir -p anqi/data anqi/case-files
 cd anqi
 docker pull "$IMAGE"
