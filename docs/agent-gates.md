@@ -57,7 +57,7 @@
   贴图入口、剪贴板/文件草稿、上传后 prompt 仅传 id、即时与刷新历史缩略图；任务白名单
   禁止改既有 `tools/smoke-agent-frontend.js`，因此该步用独立图片专项文件承载新增断言。
 - 第 93–98 步：2.11.0 的 migration 031、本地 case-match、global internal HTTP、global HTTP、全局前端静态契约，以及 `case_folder_info` 下发北京时间日期（真 stdio MCP 进程）；第 46 步同时覆盖案件/global 的真实 DSH composition，第 35 步保留 supervisor 生命周期门禁。
-- 第 108 步：`tools/test-modal-contract.js`——共享 Modal（`public/js/modal.js`）与控件尺寸钩子的静态契约（UI 层，与 sidecar 无关，只占步号）。
+- 第 108 步：`tools/test-modal-contract.js`——共享 Modal（`public/js/modal.js`）与控件尺寸钩子的静态契约，另守日历任务弹层的鼠标入口：`beginDrag` 按下时不抓指针、越过拖拽阈值才抓（UI 层，与 sidecar 无关，只占步号）。
 
 > **2026-08-24 现行口径**：本文后部保留的 rc.7、无文件工具与“read 没有 containment”文字是
 > 当时取证的历史记录。基线 2026-08-24 升至 `0.1.1-rc.2`（2026-10 再升至 `0.1.5-rc.3`），并恢复文件工具：案齐自有 filesystem

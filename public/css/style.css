@@ -1894,9 +1894,9 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
 }
 .quickbar input[type=text] { flex: 1 1 220px; min-width: 160px; }
-.quickbar select, .quickbar input { min-height: 34px; }
-.quickbar .btn { min-height: 34px; }
-.quick-ai-toggle { min-height: 34px; border: 1px solid var(--green-line); color: var(--green); background: var(--surface-solid); }
+/* 控件高度只走层 A 尺寸令牌：桌面 --control-h，窄屏 --control-touch-h（.btn 自带，字段与 AI 切换钮见下方 767px 段） */
+.quickbar select, .quickbar input { min-height: var(--control-h); }
+.quick-ai-toggle { min-height: var(--control-h); border: 1px solid var(--green-line); color: var(--green); background: var(--surface-solid); }
 .quick-ai-toggle[aria-pressed="true"] { background: var(--green-bg); font-weight: 650; }
 /* 「交给 AI」当前目标小字：点它打开抽屉换项目 */
 .quick-ai-target { display: inline-block; min-width: 0; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; color: var(--meta); font-size: 12px; cursor: pointer; }
@@ -1917,9 +1917,9 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 @media (max-width: 767px) {
   .quickbar > form, .quickbar .qbin { gap: 6px; padding-left: 8px; padding-right: 8px; }
   .quickbar input[type=text] { min-width: 0; flex-basis: 160px; max-width: 100%; }
-  .quickbar select, .quickbar input { max-width: 100%; min-width: 0; }
+  .quickbar select, .quickbar input { max-width: 100%; min-width: 0; min-height: var(--control-touch-h); }
   .quickbar .quick-attachment { max-width: min(100%, 180px); }
-  .quickbar .quick-ai-toggle { flex: 0 0 auto; min-width: 86px; padding: 0 8px; white-space: nowrap; }
+  .quickbar .quick-ai-toggle { flex: 0 0 auto; min-width: 86px; min-height: var(--control-touch-h); padding: 0 8px; white-space: nowrap; }
 }
 
 /* ── A-23 toast ── */
