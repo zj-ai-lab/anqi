@@ -16,7 +16,8 @@
 
 | 组件 | 现有类名/入口 | 用途 | 当前动作 |
 |---|---|---|---|
-| 按钮 | `.btn`、`.btn.small`、`.btn.primary`、`.btn.ok`、`.btn.danger` | 页面和面板动作 | 固定文字居中、禁用、焦点和移动端高度 |
+| Modal | `openModal()`、`.dmodal-overlay`、`.dmodal` | 日期、任务、依据和确认弹层 | 共享 Esc / Tab 循环、首焦点、恢复焦点、背景 `inert`；保留现有业务 DOM 与事件钩子 |
+| 按钮 | `.btn`、`.btn.small`、`.btn.primary`、`.btn.ok`、`.btn.danger` | 页面和面板动作 | 固定文字居中、禁用、焦点；桌面 `--control-h` 32px，移动 `--control-touch-h` 44px |
 | 状态标签 | `.chip`、`.pill`、`.dot`、`.ledger-chip` | 期限、款项和流程状态 | 普通标签复用语义色；账本状态标签使用 inline-flex、20px 最小高度，日期与来源前缀不能压到下一列 |
 | 面板 | `.panel`、`.panel-body`、`.p-head`、`.p-title`、`.p-foot` | 工作区的主要容器 | 统一标题、内容区、脚部和分隔关系 |
 | 卡片 | `.card`、`.case-card`、`.tile` | 案件、统计和旧页面容器 | 收敛旧卡片与新面板的使用边界 |

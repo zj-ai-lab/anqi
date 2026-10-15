@@ -11,7 +11,12 @@
 > vanilla CSS，无构建步骤、无前端框架、无 CDN（低功耗自托管设备是硬约束）。
 > v5.5 起字体**自托管**思源家族（切片 woff2，同源静态文件，非 CDN webfont）——见 v5.5 节；「零 webfont」旧约就此作废。
 
-## v5.1 原生折叠与渐进披露（2026-08-05）
+
+## v5.7 第二阶段共享控件
+
+- 按钮和轻量动作控件使用 `--control-h: 32px`；窄屏使用 `--control-touch-h: 44px`。`.btn`、`.btn.small` 和 `.factstrip-edit` 只在层 A 使用这两个尺寸令牌，三皮肤不改几何。
+- Modal 统一由 `public/js/modal.js` 的 `openModal()` 管理：打开时背景兄弟节点设为 `inert`，首焦点进入弹层；Esc、遮罩和显式关闭都恢复原始 inert 状态与打开前焦点；Tab 在弹层内部循环。
+- today、case、calendar 的日期/任务/依据弹层保留原有业务 DOM 和事件钩子，页面 390px 继续遵守 44px 触控高度。
 
 折叠统一使用原生 `<details>`，不另造 open 状态机。`.fold` 的状态由 `public/js/fold.js` 以 `anjian-fold` 写入本机 `localStorage`；读写失败只退化为本次页面状态，不影响业务数据。`<summary>` 采用「箭头 · 标题 · 收起摘要」骨架，`.fold-summary` 只在收起时承担摘要；展开后的内容保持原 DOM 顺序。打印前所有 `details` 展开，打印后恢复用户状态。
 

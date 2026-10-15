@@ -46,6 +46,8 @@
   --gap-s: 10px;      /* 密排间距 */
   --page-pad: 16px;   /* 页面左右留白（响应式梯度，见 A-9） */
   --fs-body: 14px;    /* 正文（可访问性硬底线 ≥14px） */
+  --control-h: 32px;  /* 桌面按钮与轻量操作控件 */
+  --control-touch-h: 44px; /* 移动端最小触控高度 */
 }
 
 /* 通讯录与案件参与人：保持一行摘要，低频管理才展开。 */
@@ -1070,7 +1072,7 @@ a.kpi-row:hover { background: var(--hover); text-decoration: none; }
 /* ── A-14 按钮 / 表单 ── */
 .btn {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
-  min-height: 30px; padding: 0 12px;
+  min-height: var(--control-h); padding: 0 12px;
   border: 1px solid var(--border); border-radius: var(--r-btn);
   background: var(--ctl-bg); color: var(--ink-2);
   font: 560 13px/1 var(--sans);
@@ -1079,7 +1081,7 @@ a.kpi-row:hover { background: var(--hover); text-decoration: none; }
   white-space: nowrap;   /* 按钮文案永不折行（「确认收款」四字在窄行被挤成两行的回归） */
 }
 .btn:hover { background: var(--hover); border-color: var(--border-h); color: var(--ink); text-decoration: none; }
-.btn.small { min-height: 26px; padding: 0 9px; font-size: 12.5px; }
+.btn.small { min-height: var(--control-h); padding: 0 9px; font-size: 12.5px; }
 .btn.primary {
   border-color: var(--cta-bd); background: var(--cta-bg); color: var(--cta-ink);
   font-weight: 620; box-shadow: var(--cta-sh);
@@ -2820,8 +2822,8 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .sk { min-width: 38px; padding: 0 6px; }
   /* 触控目标 ≥44px */
   .iconbtn, .hamburger, .theme-toggle { width: 44px; height: 44px; }
-  .btn { min-height: 44px; padding: 0 14px; }
-  .btn.small { min-height: 44px; }
+  .btn { min-height: var(--control-touch-h); padding: 0 14px; }
+  .btn.small { min-height: var(--control-touch-h); }
   .skins { height: 36px; }
   .pagehead.with-cta .page-title { order: 1; }
   .pagehead.with-cta .pagehead-cta { order: 2; margin-left: auto; }
@@ -3511,8 +3513,8 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 32px;
-  height: 32px;
+  min-height: var(--control-h);
+  height: var(--control-h);
   padding: 0 8px;
   border: 1px solid var(--border);
   border-radius: var(--r-btn);
@@ -3820,7 +3822,7 @@ body.agent-docked .quickbar { right: min(var(--w-right), 100vw); }
   .factstrip--contacts .factstrip-row { grid-template-columns: 64px minmax(0, 1fr) max-content; }
   .factstrip-fact { white-space: normal; text-overflow: clip; overflow: visible; }
   .factstrip.is-wrap .factstrip-row { grid-template-columns: 44px minmax(0, 1fr) 40px; }
-  .factstrip-edit { min-height: 44px; height: 44px; padding: 0 10px; }
+  .factstrip-edit { min-height: var(--control-touch-h); height: var(--control-touch-h); padding: 0 10px; }
   .timeline-filters button { min-height: 44px; }
 
   /* 账本表头窄屏隐藏（列定义在窄屏两行化后失去锚意义，靠行的两行布局自解释） */
