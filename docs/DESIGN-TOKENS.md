@@ -17,6 +17,7 @@
 - 按钮和轻量动作控件使用 `--control-h: 32px`；窄屏使用 `--control-touch-h: 44px`。`.btn`、`.btn.small` 和 `.factstrip-edit` 只在层 A 使用这两个尺寸令牌，三皮肤不改几何。
 - Modal 统一由 `public/js/modal.js` 的 `openModal()` 管理：打开时背景兄弟节点设为 `inert`，首焦点进入弹层；Esc、遮罩和显式关闭都恢复原始 inert 状态与打开前焦点；Tab 在弹层内部循环。
 - today、case、calendar 的日期/任务/依据弹层保留原有业务 DOM 和事件钩子，页面 390px 继续遵守 44px 触控高度。
+- 快录条 `.quickbar` 同样只走这两个令牌：按钮靠 `.btn` 自带的令牌，`select` / `input` / `.quick-ai-toggle` 桌面 `--control-h`、窄屏 `--control-touch-h`；段内不写死像素高度（`tools/smoke-quickbar-frontend.js` 守）。桌面整条高仍由 `--h-qb` 决定，窄屏换行后整条随之变高，页面底部净空由 `nav.js` 的 ResizeObserver 跟随。
 
 折叠统一使用原生 `<details>`，不另造 open 状态机。`.fold` 的状态由 `public/js/fold.js` 以 `anjian-fold` 写入本机 `localStorage`；读写失败只退化为本次页面状态，不影响业务数据。`<summary>` 采用「箭头 · 标题 · 收起摘要」骨架，`.fold-summary` 只在收起时承担摘要；展开后的内容保持原 DOM 顺序。打印前所有 `details` 展开，打印后恢复用户状态。
 
