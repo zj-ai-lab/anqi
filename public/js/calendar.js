@@ -237,8 +237,8 @@ function beginDrag(spec, e) {
     captureEl: grid,
     moved: false,
   };
-  e.currentTarget.setPointerCapture?.(e.pointerId);
-  try { drag.captureEl?.setPointerCapture?.(e.pointerId); } catch { /* pointer 已失效 */ }
+  // 🔴 按下时不抓指针：抓到 grid 后 click 会被派给 grid，chip / 长条 / 托盘自己的 onclick
+  //    永远收不到——鼠标单击打不开弹层（键盘 Enter 不走指针所以正常）。越过阈值才抓，见 onPointerMove。
 }
 
 function onPointerMove(e) {
@@ -246,6 +246,8 @@ function onPointerMove(e) {
   if (!drag.moved) {
     if (Math.hypot(e.clientX - drag.origin.x, e.clientY - drag.origin.y) < DRAG_THRESHOLD) return;
     drag.moved = true;
+    // 同一指针只能有一个捕获目标，直接交给常驻 grid（源节点可能已被重绘摘掉）。
+    try { drag.captureEl?.setPointerCapture?.(drag.pointerId); } catch { /* pointer 已失效 */ }
     drag.el?.classList.add('dragging');
     document.body.classList.add('cal-dragging');
   }

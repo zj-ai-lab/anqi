@@ -19,6 +19,20 @@ for (const file of ['public/index.html', 'public/cases.html', 'public/calendar.h
   assert.match(source, /class="(?:btn|factstrip-edit)/, `${file} must keep shared control hooks`);
 }
 
+// 日历任务弹层的鼠标入口：pointerdown 抓指针会把 click 派给 grid，chip / 长条 / 托盘的 onclick 收不到。
+// 只允许越过拖拽阈值后再抓（实测见 PR：main 上桌面鼠标单击三处入口都打不开弹层）。
+{
+  const calendar = await readFile(new URL('public/js/calendar.js', root), 'utf8');
+  const fnBody = (name) => {
+    const start = calendar.indexOf(`function ${name}(`);
+    assert.ok(start >= 0, `calendar.js must define ${name}()`);
+    return calendar.slice(start, calendar.indexOf('\n}\n', start));
+  };
+  assert.doesNotMatch(fnBody('beginDrag'), /setPointerCapture/, 'calendar beginDrag must not capture the pointer on pointerdown');
+  assert.match(fnBody('onPointerMove'), /DRAG_THRESHOLD[\s\S]*drag\.moved = true[\s\S]*setPointerCapture/,
+    'calendar must capture the pointer only after crossing DRAG_THRESHOLD');
+}
+
 // ── 行为契约：最小假 DOM 驱动 openModal（仓库无 jsdom，只模拟 openModal 实际用到的接口）──
 const rafQueue = [];
 class FakeEl {
