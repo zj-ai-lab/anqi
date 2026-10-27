@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.12.3** | 2026-10-27 | 修复 LegalRAG 文件桥自 2.7.0-beta.3 起注册一律 404 导致新文件全部「处理失败」的问题（注册案件名回落合法目录名）；无 migration。 |
 | **2.12.2** | 2026-10-15 | 桌面日历鼠标单击待办（单日、跨天长条、未排期托盘）能打开弹层了；手机快录条按钮与输入框达 44px 触控高度；弹层统一键盘操作（Esc、Tab 循环、焦点归还）与控件尺寸令牌；纯前端，无 migration。 |
 | **2.12.1** | 2026-10-14 | AI 助理记程序事件时看得见全部合法事件类型（总入口与案件助理），不再猜 id 后退回记待办；服务端校验不变，无 migration。 |
 | **2.12.0** | 2026-10-14 | 企业微信智能机器人 API/WebSocket 长连接、本人绑定与入站 AI 总入口、提醒外发（默认模拟）、migration 032 与设置面板。 |
@@ -209,6 +210,13 @@
 - 词表缺失或格式不对时 `dsh-anqi` 拒绝加载、preset 挂载失败，不静默退回无枚举的自由字符串。工具集合、技能与 preflight 契约不变；每次模型请求的工具定义约增加 5KB。
 - 测试：`test-agent-direct-tools.js`（两个 scope 的枚举 = 词表、说明含每个 `id=中文`、非法值不发请求、注入缺失/损坏拒绝加载）、`test-agent-supervisor.js`（两种 worker 注入同一份词表）、`test-agent-runtime-composition.js`（真实 DSH 缺词表即挂载失败）、`test-agent-global-internal-http.js`（服务端仍拒绝词表外 type 且不落库）。
 - 真模型复测（DeepSeek，隔离临时库、虚构案件）：总入口一句「今天在测试人民法院领了张三诉李四案的一审判决书」首次调用即选 `judgment_served`，引擎派生上诉期；「下周三去测试人民法院领判决」按将来的事记成待办，没有试错事件类型。
+
+## 2.12.3 — LegalRAG 文件桥注册案件名回落合法目录名
+
+- 问题（2.7.0-beta.3 起）：文件桥向 LegalRAG 注册新文件时，把 `cases.folder_path` 原样当作案件名发送；`folder_path` 为空或非法（例如早期从外部 registry 导入的多层路径）的部署里，LegalRAG 按案件名精确匹配不到案件，注册一律 404，新文件重试三次后停在「处理失败」。本地文件浏览与上传不受影响——案件夹解析对非法 `folder_path` 本就回落 `cases.name`，唯独注册 SQL 没走同一口径。
+- 修复：注册名改用与本地案件夹解析同一口径的 `caseDirectoryName()`：`folder_path` 为空或非法（含路径分隔符、隐藏目录等）时回落 `cases.name`，与 LegalRAG 既有案件名一致；合法单层 `folder_path` 仍按原值发送。
+- 适配提示：LegalRAG 侧按案件名精确匹配，新案件仍需先在 LegalRAG 建立同名案件，文件桥不会代建。
+- 测试：`tools/test-legalrag-bridge.js` 案件携带多层遗留 `folder_path`，断言注册 payload 的 `case_name` 必须是短名；全量 check 108/108。
 
 ## 2.12.2 — 日历鼠标单击、快录条触控高度与共享弹层
 
