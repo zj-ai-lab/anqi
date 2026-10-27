@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.12.4** | 2026-10-27 | 文件桥不再排队 json 工作流元数据（LegalRAG 类型白名单本就不收，排队必失败）；存量 json 行建议一次性置 `ignored`；无 migration。 |
 | **2.12.3** | 2026-10-27 | 修复 LegalRAG 文件桥自 2.7.0-beta.3 起注册一律 404 导致新文件全部「处理失败」的问题（注册案件名回落合法目录名）；无 migration。 |
 | **2.12.2** | 2026-10-15 | 桌面日历鼠标单击待办（单日、跨天长条、未排期托盘）能打开弹层了；手机快录条按钮与输入框达 44px 触控高度；弹层统一键盘操作（Esc、Tab 循环、焦点归还）与控件尺寸令牌；纯前端，无 migration。 |
 | **2.12.1** | 2026-10-14 | AI 助理记程序事件时看得见全部合法事件类型（总入口与案件助理），不再猜 id 后退回记待办；服务端校验不变，无 migration。 |
@@ -210,6 +211,12 @@
 - 词表缺失或格式不对时 `dsh-anqi` 拒绝加载、preset 挂载失败，不静默退回无枚举的自由字符串。工具集合、技能与 preflight 契约不变；每次模型请求的工具定义约增加 5KB。
 - 测试：`test-agent-direct-tools.js`（两个 scope 的枚举 = 词表、说明含每个 `id=中文`、非法值不发请求、注入缺失/损坏拒绝加载）、`test-agent-supervisor.js`（两种 worker 注入同一份词表）、`test-agent-runtime-composition.js`（真实 DSH 缺词表即挂载失败）、`test-agent-global-internal-http.js`（服务端仍拒绝词表外 type 且不落库）。
 - 真模型复测（DeepSeek，隔离临时库、虚构案件）：总入口一句「今天在测试人民法院领了张三诉李四案的一审判决书」首次调用即选 `judgment_served`，引擎派生上诉期；「下周三去测试人民法院领判决」按将来的事记成待办，没有试错事件类型。
+
+## 2.12.4 — 文件桥不排队 json 工作流元数据
+
+- 问题：案齐文件桥 `SUPPORTED` 白名单收 `.json`，而 LegalRAG integrations 的类型白名单（pdf/docx/image/spreadsheet/text/md）从来不收；json 文件注册一律 `unsupported file type`，重试三次后停「处理失败」。v2.12.3 修复注册 404 后存量补跑时暴露（一批 task.json、checklist.json 等文书任务元数据落失败）。案件夹里的 json 是工作流元数据，不是案件材料。
+- 修复：`SUPPORTED` 移除 `.json`，reconcile 不再为 json 建行；用户手动对 json 点「立即处理」会得到「该文件类型暂不支持 LegalRAG 解析」提示。既有部署的存量 json 行可随部署一次性置 `ignored`（运维 SQL），不需要 migration。
+- 测试：`tools/test-legalrag-bridge.js` 案件夹放入 `任务元数据.json`，断言不进入 LegalRAG 队列；全量 check 108/108。
 
 ## 2.12.3 — LegalRAG 文件桥注册案件名回落合法目录名
 
