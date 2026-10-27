@@ -30,6 +30,8 @@ db.prepare("UPDATE cases SET folder_path='OneDrive/OpenClaw项目/示例桥接�
 const caseRoot = path.join(root, '示例桥接案', '法院文书');
 fs.mkdirSync(caseRoot, { recursive: true });
 fs.writeFileSync(path.join(caseRoot, '既有材料.txt'), '部署前已存在');
+// json 是工作流元数据不是案件材料；LegalRAG 类型白名单也不收，不得排队。
+fs.writeFileSync(path.join(caseRoot, '任务元数据.json'), '{"kind":"task"}');
 fs.writeFileSync(path.join(outsideRoot, '外部材料.txt'), '不得进入桥接');
 fs.symlinkSync(path.join(outsideRoot, '外部材料.txt'), path.join(caseRoot, '外链材料.txt'));
 fs.symlinkSync(outsideRoot, path.join(root, '示例桥接案', '外链目录'));
@@ -37,6 +39,8 @@ fs.symlinkSync(outsideRoot, path.join(root, '示例桥接案', '外链目录'));
 const baseline = reconcileLegalRagFiles();
 assert.equal(baseline.baseline, true);
 assert.equal(db.prepare("SELECT sync_status FROM legalrag_files WHERE rel_path='法院文书/既有材料.txt'").get().sync_status, 'observed');
+assert.equal(db.prepare("SELECT COUNT(*) AS c FROM legalrag_files WHERE rel_path LIKE '%.json'").get().c, 0,
+  'json 元数据不得进入 LegalRAG 队列（LegalRAG 类型白名单不收，排队必失败）');
 assert.equal(db.prepare("SELECT COUNT(*) AS c FROM legalrag_files WHERE rel_path LIKE '%外链%'").get().c, 0,
   '符号链接文件和目录不得进入 LegalRAG reconciliation');
 assert.throws(
