@@ -26,8 +26,10 @@ import {
 
 const SUPPORTED = new Set([
   '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
-  '.txt', '.md', '.csv', '.json', '.xlsx',
+  '.txt', '.md', '.csv', '.xlsx',
 ]);
+// 不收 .json：LegalRAG integrations 的类型白名单（pdf/docx/image/spreadsheet/text/md）
+// 从来没有 json，排了必被拒收；案件夹里的 json 是文书任务等工作流元数据，不是案件材料。
 const MAX_FILE_SIZE = 60 * 1024 * 1024;
 const REGISTER_TIMEOUT = 30000;
 const STATUS_TIMEOUT = 12000;
