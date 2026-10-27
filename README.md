@@ -103,8 +103,8 @@
 
 | 你的 Mac | 下载 |
 |---|---|
-| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.12.3-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.3/anqi-2.12.3-arm64.dmg)** |
-| Intel 芯片 | **[anqi-2.12.3-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.3/anqi-2.12.3-x64.dmg)** |
+| Apple 芯片（M1 / M2 / M3 / M4） | **[anqi-2.12.4-arm64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.4/anqi-2.12.4-arm64.dmg)** |
+| Intel 芯片 | **[anqi-2.12.4-x64.dmg](https://github.com/zj-ai-lab/anqi/releases/download/v2.12.4/anqi-2.12.4-x64.dmg)** |
 
 > 不确定是哪种芯片：点左上角  → 「关于本机」，「芯片」一栏写 Apple M 开头的选 arm64，写 Intel 的选 x64。历史版本与校验文件在 [Releases 页面](https://github.com/zj-ai-lab/anqi/releases)。
 
