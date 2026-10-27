@@ -24,6 +24,9 @@ const {
 const caseId = db.prepare(
   "INSERT INTO cases (name,procedure,stage) VALUES ('示例桥接案','一审','审理中')"
 ).run().lastInsertRowid;
+// 017 之前从 registry 导入的遗留 folder_path 是 OneDrive 相对多层路径，
+// 不是合法单层目录名；注册 LegalRAG 时必须回落 cases.name 短名，否则一律 404。
+db.prepare("UPDATE cases SET folder_path='OneDrive/OpenClaw项目/示例桥接案' WHERE id=?").run(caseId);
 const caseRoot = path.join(root, '示例桥接案', '法院文书');
 fs.mkdirSync(caseRoot, { recursive: true });
 fs.writeFileSync(path.join(caseRoot, '既有材料.txt'), '部署前已存在');
@@ -96,7 +99,8 @@ global.fetch = async (url, options = {}) => {
   calls.push(String(url));
   if (String(url).endsWith('/api/v1/integrations/documents/register')) {
     const body = JSON.parse(options.body);
-    assert.equal(body.case_name, '示例桥接案');
+    assert.equal(body.case_name, '示例桥接案',
+      '多层遗留 folder_path 必须回落 cases.name 短名注册，不得原样发给 LegalRAG');
     assert([
       '法院文书/新合同.txt',
       '法院文书/合同副本.txt',

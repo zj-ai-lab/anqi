@@ -9,6 +9,7 @@ import { isDate } from './dates.js';
 import { isEventType } from './vocab.js';
 import { ensureCandidateFact } from './candidate-facts.js';
 import {
+  caseDirectoryName,
   normalizeRelativeFilePath,
   openSecureFile,
   resolveCaseDirectoryForCase,
@@ -427,7 +428,7 @@ async function pollProcessing() {
 
 async function registerNext() {
   const row = db.prepare(
-    `SELECT f.*,COALESCE(NULLIF(TRIM(c.folder_path),''),c.name) AS case_name
+    `SELECT f.*,c.name AS case_title,c.folder_path AS case_folder_path
        FROM legalrag_files f JOIN cases c ON c.id=f.case_id
       WHERE f.sync_status='queued' AND (f.next_attempt_at='' OR f.next_attempt_at<=?)
       ORDER BY f.priority DESC,f.id LIMIT 1`
@@ -438,11 +439,19 @@ async function registerNext() {
        last_error='',updated_at=datetime('now','+8 hours') WHERE id=?`
   ).run(row.id);
   const current = db.prepare('SELECT * FROM legalrag_files WHERE id=?').get(row.id);
+  // LegalRAG 按案件名精确匹配已有案件；注册名必须与本地案件夹解析同一口径。
+  // 017 之前遗留的多层 folder_path（如 OneDrive/OpenClaw项目/xxx）不是合法
+  // 目录名，caseDirectoryName 会回落 cases.name，这里若直接发原始 folder_path
+  // 会让注册一律 404 "case not found"。
+  const caseName = caseDirectoryName({
+    folder_path: row.case_folder_path,
+    name: row.case_title,
+  }) || row.case_title;
   try {
     const response = await bridgeFetch('/api/v1/integrations/documents/register', {
       method: 'POST', timeout: REGISTER_TIMEOUT,
       body: {
-        case_name: row.case_name,
+        case_name: caseName,
         relative_path: row.rel_path,
         request_id: `anjian-file-${row.id}-r${row.revision}-a${current.attempts}`,
         force: false,
