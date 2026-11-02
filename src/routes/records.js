@@ -195,16 +195,24 @@ r.patch('/events/:id', (req, res) => {
   if (!row) return res.status(404).json({ error: '事件不存在' });
   const b = req.body || {};
 
-  // 改触发日期 → 级联重算，先出预览、confirm 才落库（D4：人工覆盖默认排除）
+  // 改触发日期或送达方式 → 级联重算，先出预览、confirm 才落库（D4：人工覆盖默认排除）。
+  // 送达方式也要算：公告送达等会推移起算基准（规则 service_modifiers），只改它不重算会留下错的期限。
   const dateChanging = 'occurred_on' in b && b.occurred_on !== row.occurred_on;
+  const oldMethod = row.service_method || '';
+  const newMethod = 'service_method' in b ? String(b.service_method ?? '') : oldMethod;
+  const methodChanging = newMethod !== oldMethod;
   let recalc = null;
-  if (dateChanging) {
-    if (!isDate(b.occurred_on)) return res.status(400).json({ error: '日期非法' });
-    const preview = recalcPreview(row, b.occurred_on);
+  if (dateChanging || methodChanging) {
+    if (dateChanging && !isDate(b.occurred_on)) return res.status(400).json({ error: '日期非法' });
+    const newDate = dateChanging ? b.occurred_on : row.occurred_on;
+    const preview = recalcPreview({ ...row, service_method: newMethod }, newDate);
     if ((preview.recalc.length || preview.excluded.length) && b.confirm !== true) {
       return res.json({
         needs_confirm: true,
-        event: { id: row.id, old_date: row.occurred_on, new_date: b.occurred_on },
+        event: {
+          id: row.id, old_date: row.occurred_on, new_date: newDate,
+          old_service_method: oldMethod, new_service_method: newMethod,
+        },
         ...preview,
       });
     }
@@ -300,6 +308,7 @@ r.patch('/deadlines/:id', (req, res) => {
   }
   for (const f of ['name', 'due_on', 'basis', 'calc_note', 'severity', 'status', 'override_reason']) {
     if (!(f in b)) continue;
+    if (f === 'name' && !String(b.name ?? '').trim()) return res.status(400).json({ error: '名称不能为空' });
     if (f === 'due_on' && !isDate(b.due_on)) return res.status(400).json({ error: '日期非法' });
     if (f === 'severity' && !['critical', 'high', 'normal'].includes(b.severity)) return res.status(400).json({ error: 'severity 非法' });
     if (f === 'status' && !['pending', 'done', 'missed', 'waived'].includes(b.status)) return res.status(400).json({ error: 'status 非法' });
@@ -502,8 +511,17 @@ r.patch('/worklog/:id', (req, res) => {
   for (const f of ['worked_on', 'content', 'minutes', 'artifacts']) {
     if (!(f in b)) continue;
     if (f === 'worked_on' && !isDate(b[f])) return res.status(400).json({ error: '日期非法' });
+    if (f === 'content' && !String(b.content ?? '').trim()) return res.status(400).json({ error: '内容不能为空' });
+    if (f === 'minutes') {
+      // 清空耗时存 NULL（与新建同口径），不存空串
+      const minutes = b.minutes === '' || b.minutes == null ? null : Number(b.minutes);
+      if (minutes !== null && !(Number.isInteger(minutes) && minutes >= 0)) return res.status(400).json({ error: '耗时须为非负整数（分钟）' });
+      sets.push('minutes = ?');
+      args.push(minutes);
+      continue;
+    }
     sets.push(`${f} = ?`);
-    args.push(b[f] ?? '');
+    args.push(f === 'content' ? String(b.content).trim() : (b[f] ?? ''));
   }
   if (!sets.length) return res.status(400).json({ error: '无可更新字段' });
   withChangeContext({ actor: req.actor }, () => {

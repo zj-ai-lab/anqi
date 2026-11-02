@@ -1,5 +1,5 @@
 // 日期补录/改期弹层（全站共享）：小玻璃模态 + 原生日期控件。
-// 用法：const v = await datePrompt({ title, fields: [{key,label,value,required,type?='date'|'text'|'tel'|'select',options?=[{value,label}],placeholder?}] });
+// 用法：const v = await datePrompt({ title, fields: [{key,label,value,required,type?='date'|'text'|'tel'|'time'|'number'|'select'|'textarea',options?=[{value,label}],placeholder?}] });
 // 返回 {key: 'YYYY-MM-DD'|''} 或 null（取消）。Enter=确认，Esc=取消，点遮罩=取消。
 import { el } from './api.js';
 import { openModal } from './modal.js';
@@ -17,7 +17,7 @@ export function datePrompt({ title, fields, hint = '' }) {
         const out = {};
         for (const f of fields) {
           const v = inputs[f.key].value;
-          if (f.required && !v) { inputs[f.key].focus(); return; }
+          if (f.required && !String(v).trim()) { inputs[f.key].focus(); return; }
           out[f.key] = v;
         }
         modal.close(out);
@@ -26,7 +26,15 @@ export function datePrompt({ title, fields, hint = '' }) {
       el('h3', { class: 'dmodal-title', id: titleId }, title),
       hint ? el('p', { class: 'dmodal-hint' }, hint) : null,
       ...fields.map((f) => {
-        if ((f.type || 'date') === 'select') {
+        if (f.type === 'textarea') {
+          // 多行文本（备注、日志内容）：Enter 换行，提交靠按钮
+          inputs[f.key] = el('textarea', {
+            rows: String(f.rows || 3),
+            ...(f.placeholder ? { placeholder: f.placeholder } : {}),
+            ...(f.required ? { required: '' } : {}),
+          });
+          inputs[f.key].value = f.value ?? '';
+        } else if ((f.type || 'date') === 'select') {
           inputs[f.key] = el('select', { ...(f.required ? { required: '' } : {}) },
             ...(f.options || []).map((o) => el('option', { value: o.value }, o.label)));
           if (f.value != null) inputs[f.key].value = f.value;
