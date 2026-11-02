@@ -150,6 +150,7 @@ v5.3 上线当天二审反馈：案与案区分仍不够、字重层级不可辨
 
 - `.p-head-actions` 只负责在栏头右侧并排数量/说明与轻量动作；其中 `.p-meta` 必须取消自身的自动左边距。`.panel-quick-action` 使用既有 green 语义槽位，不升级为实心主按钮；手机仍继承 `.btn.small` 的 44px 触控高度。
 - `.money-section-title` 是资金面板的三级小标题，必须作为 `#case-money` 直接子元素；`.money-entry` 只承载相邻录入器，禁止再嵌套 `.panel-body`。律师费“记款项”默认展开，分成约定与历史特殊直记默认收起。
+- **可点才给 hover**：`.rw-lead` / `.rw-row` 只有带 `.is-openable`（今日页，整卡 / 整行直达该期限）或本身是 `<a>` 时才有 hover 底色与 pointer；案件页同款卡 / 行不可点，不再悬停变色。`.tl-item.is-target`（`@keyframes tl-target`，`--sel` 底 + 左侧 `--focus` 3px）标记从别页直达的那一条，约 2.4s 褪回；`prefers-reduced-motion` 下改为静态高亮。
 - 时间线折叠控制复用 `.p-foot`，不另造浮动控件；默认只挂载最近 20 条 `.tl-item`，展开按钮保持原生 button、`aria-controls`、`aria-expanded` 与焦点，不允许用隐藏全量 DOM 冒充截断。
 - `.file-upload-zone` 常态就是 1px 虚线可发现区；`.dropping` 只允许改变 `border-color`、`background` 与 inset shadow，前后 margin/padding/border-width/rect 必须一致。窄屏 `.file-upload-controls` 改为单列，select/file/button 均至少 44px；`prefers-reduced-motion` 下 transition 为 `none`。
 

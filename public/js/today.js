@@ -10,7 +10,7 @@
 //   #h-fees #fees-meta #sec-fees
 //   #h-gap #sec-gap
 // 卡片标题不再 prepend 图标（CRITIQUE 修复项 3「禁每标题配 icon」）——旧 H 循环已删。
-import { api, el, toast, todayStr } from './api.js';
+import { api, el, toast, todayStr, caseItemHref } from './api.js';
 import { mountNav } from './nav.js';
 import { strip14 } from './charts.js';
 import { datePrompt } from './dateedit.js';
@@ -132,7 +132,11 @@ function leadRow(d) {
   const band = bandOf(days);
   const tone = band === 'warn' ? ' amb' : band === 'ok' ? ' ok' : '';
   const kick = days < 0 ? '最近死线 · 已逾期' : days === 0 ? '最近死线 · 今日截止' : '最近死线';
-  return el('article', { class: 'rw-lead' + tone, title: rowTitle(d) },
+  const href = caseItemHref(d.case_id, 'deadline', d.id);
+  return el('article', {
+    class: 'rw-lead is-openable' + tone, title: rowTitle(d),
+    onclick: (e) => { if (!e.target.closest('a, button')) location.href = href; },
+  },
     el('div', { class: 'hd-main' },
       el('div', { class: 'hd-kick' }, kick),
       el('div', { class: 'hd-num' },
@@ -153,7 +157,7 @@ function leadRow(d) {
     trkBar(d, band),
     el('div', { class: 'rw-due' }, md(d.due_on)),
     el('div', { class: 'focus-actions' },
-      el('a', { class: 'btn primary', href: `/case.html?id=${d.case_id}` }, '打开案件处理'),
+      el('a', { class: 'btn primary', href }, '打开案件处理'),
       deadlineActions(d, true)
     )
   );
@@ -165,13 +169,17 @@ function compactRow(d, i) {
   const band = bandOf(days);
   const size = i === 1 ? 'd1' : i === 2 ? 'd2' : 'd3';
   const tone = band === 'warn' ? ' amb' : band === 'ok' ? '' : ' crit';
-  return el('article', { class: `rw-row ${size}${tone}`, title: rowTitle(d) },
+  const href = caseItemHref(d.case_id, 'deadline', d.id);
+  return el('article', {
+    class: `rw-row is-openable ${size}${tone}`, title: rowTitle(d),
+    onclick: (e) => { if (!e.target.closest('a, button')) location.href = href; },
+  },
     el('div', { class: 'rw-days' },
       el('span', { class: 'pre' }, days < 0 ? '逾期' : '剩'),
       el('span', { class: 'n' }, String(Math.abs(days))),
       el('span', { class: 'u' }, '天')
     ),
-    el('a', { class: 'rw-main', href: `/case.html?id=${d.case_id}` },
+    el('a', { class: 'rw-main', href },
       el('div', { class: 'm1' }, d.name),
       el('div', { class: 'm2' },
         el('span', {}, d.case_name),
@@ -330,7 +338,7 @@ function hearRow(h, today) {
         el('span', { class: chip }, n <= 0 ? '今日开庭' : `剩 ${n} 天`)
       )
     ),
-    el('div', { class: 'hear-name' }, caseLink(h.case_id, h.case_name)),
+    el('div', { class: 'hear-name' }, el('a', { href: caseItemHref(h.case_id, 'event', h.id), title: '到案件页这场开庭' }, h.case_name)),
     h.occurred_time ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip c-blue' }, h.occurred_time)) : null,
     h.location ? el('div', { class: 'hear-tags' }, el('span', { class: 'chip' }, h.location)) : null,
     h.instrument ? el('div', { class: 'hear-no' }, h.instrument) : null,
@@ -442,15 +450,15 @@ async function load() {
   const hearTmr = d.hearings.filter((h) => h.occurred_on === shift(today, 1)).length;
   document.getElementById('tiles').replaceChildren(
     kpiRow({
-      k: '临期/逾期死线', v: d.red.length, alert: d.red.length > 0,
+      k: '临期/逾期死线', v: d.red.length, alert: d.red.length > 0, href: '#sec-lead',
       note: overdue ? ['含 ', m(overdue), ' 逾期'] : null,
     }),
     kpiRow({
-      k: '今日开庭', v: hearToday, alert: hearToday > 0,
+      k: '今日开庭', v: hearToday, alert: hearToday > 0, href: '#h-hearings',
       note: hearTmr ? ['明日 ', m(hearTmr)] : null,
     }),
     kpiRow({ k: '在办案件', v: d.counts.active_cases, href: '/cases.html' }),
-    kpiRow({ k: '未结待办', v: d.counts.open_tasks }),
+    kpiRow({ k: '未结待办', v: d.counts.open_tasks, href: '#h-tasks' }),
     kpiRow({ k: '待收', v: yuan(d.counts.unpaid_fees), href: '/fees.html' })
   );
 
@@ -474,7 +482,7 @@ async function load() {
     '按剩余天数升序', sep(), m(`${allDl.length} 项`),
     ...(overdue ? [sep(), el('span', { class: 'm hot' }, `${overdue} 逾期`)] : [])
   );
-  rwLinks = allDl.map((x) => `/case.html?id=${x.case_id}`);
+  rwLinks = allDl.map((x) => caseItemHref(x.case_id, 'deadline', x.id));
   document.getElementById('sec-lead').replaceChildren(
     allDl.length ? leadRow(allDl[0]) : el('div', { class: 'section-empty focus-empty' }, '30 日内无在追死线')
   );
