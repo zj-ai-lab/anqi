@@ -456,6 +456,8 @@ r.patch('/tasks/:id', (req, res) => {
     const txArgs = [...args];
     const isCompleting = wantsDone && current.status !== 'done';
     if (isCompleting) txSets.push("done_at = datetime('now','+8 hours')");
+    // 重新打开 / 撤销完成：离开 done 态即清完成时刻，免得「未结待办」带着旧的 done_at
+    if ('status' in b && b.status !== 'done' && current.status === 'done') txSets.push("done_at = ''");
     db.prepare(`UPDATE tasks SET ${txSets.join(', ')} WHERE id = ?`).run(...txArgs, row.id);
     updated = taskView(row.id);
     audit(req.actor, 'update', 'task', row.id, Object.keys(b).join(','));

@@ -967,6 +967,14 @@ a.kpi-row:hover { background: var(--hover); text-decoration: none; }
 .ck input:focus-visible + .box { outline: 2px solid var(--focus); outline-offset: 2px; }
 .t-text { font-size: 14px; font-weight: 500; color: var(--ink); }
 .t-text .warn-glyph { margin-right: 5px; color: var(--red); font-weight: 700; }
+/* 待办标题 = 打开待办弹层的按钮（今日 / 案件页），外观仍是正文 */
+.todo-row.is-openable { cursor: pointer; }
+.t-open {
+  min-width: 0; padding: 0; border: 0; background: none;
+  font-family: inherit; line-height: inherit; text-align: left; cursor: pointer;
+}
+.t-open:hover { text-decoration: underline; text-underline-offset: 3px; }
+.t-open:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; border-radius: 2px; }
 .todo-row:has(input:checked) .t-text { color: var(--meta); text-decoration: line-through; }
 /* flex:none 会让 chip 群永不收缩 → 4 枚起（优先+来源+计划+截止，或时间线 4 份附件）
    横向溢出、被 .panel{overflow:hidden} 裁掉。改为可收缩 + 自身换行：
@@ -1662,13 +1670,9 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   background: var(--surface-2); color: var(--ink-2);
 }
 .task-modal-case-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dmodal.task-modal { width: min(92vw, 440px); max-height: 88vh; overflow: auto; }
 .task-modal-dates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.task-modal-note {
-  padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-btn);
-  background: var(--surface-2);
-}
-.task-modal-note-label { display: block; margin-bottom: 3px; font-size: 12px; color: var(--meta); }
-.task-modal-note-value { min-height: 20px; color: var(--ink); white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-modal-form textarea { width: 100%; font-size: 15px; resize: vertical; }
 .task-modal-actions { justify-content: flex-start; flex-wrap: wrap; }
 .task-modal-open-case { margin-left: auto; }
 .task-modal-date-control { display: grid; grid-template-columns: minmax(0, 1fr) 36px 36px; gap: 4px; }
@@ -1936,6 +1940,14 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   transition: opacity .2s, visibility 0s .2s;
 }
 #toast.show { opacity: 1; visibility: visible; transition: opacity .2s; }
+/* 带「撤销」的提示条（api.js toastUndo）：只有挂了按钮时才接收点击 */
+#toast.show.has-action { pointer-events: auto; display: flex; align-items: center; gap: 12px; }
+.toast-action {
+  padding: 2px 8px; border: 0; border-radius: var(--r-chip);
+  background: transparent; color: var(--blue); font: inherit; font-weight: 600; cursor: pointer;
+}
+.toast-action:hover { background: var(--hover); }
+.toast-action:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 
 /* ── A-24 日期补录弹层（dateedit.js 运行时 append 到 body） ── */
 .dmodal-overlay {

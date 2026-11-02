@@ -1,32 +1,35 @@
 import { api, el, toast } from './api.js';
 import { openModal } from './modal.js';
 import { caseColorStyle } from './calendar-ui.js';
+import { settleTask } from './record-actions.js';
 
 let modalSeq = 0;
 
-// 日历任务的处理弹层：日期可改，任务/案件事实只读；所有写入仍走既有 tasks PATCH。
-export function openTaskModal(task, { onChanged } = {}) {
+const PRIORITY_OPTIONS = [['high', '优先'], ['normal', '普通'], ['low', '低']];
+
+// 待办弹层（日历 / 今日 / 案件页共用）：标题、优先级、日期、备注可改；挂靠案件只读。
+// 所有写入走既有 tasks PATCH，只提交改过的字段。
+// showCaseLink=false：已在该案件页里打开时不再给「打开案件」。
+export function openTaskModal(task, { onChanged, showCaseLink = true } = {}) {
   return new Promise((resolve) => {
     const inputs = {};
     const titleId = `task-modal-title-${++modalSeq}`;
-    const patchTask = async (body, message) => {
+    const isOpen = (task.status || 'open') === 'open';
+    const run = async (fn) => {
       try {
-        const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body });
-        modal.close(updated);
-        toast(typeof message === 'function' ? message(updated) : message);
-        await onChanged?.(updated);
+        await fn();
       } catch (error) {
         // api() already exposes HTTP failures as a toast; this catches only non-HTTP failures.
         if (!error.status) toast('❌ ' + error.message);
       }
     };
 
-    const note = el('div', { class: 'task-modal-note-value' }, task.note || '无备注');
-    const caseName = task.case_name || '不挂案件';
-    const caseSummary = el('div', { class: 'task-modal-case' },
-      el('span', { class: 'case-dot', style: caseColorStyle(task.case_id), 'aria-hidden': 'true' }),
-      el('span', { class: 'task-modal-case-name' }, caseName)
-    );
+    inputs.title = el('input', {
+      type: 'text', value: task.title || '', required: '', 'aria-label': '待办标题',
+    });
+    inputs.priority = el('select', { 'aria-label': '优先级' },
+      ...PRIORITY_OPTIONS.map(([value, label]) => el('option', { value }, label)));
+    inputs.priority.value = task.priority || 'normal';
     inputs.plan_date = el('input', {
       type: 'date', value: task.plan_date || '', 'aria-label': '计划开工日',
     });
@@ -36,32 +39,77 @@ export function openTaskModal(task, { onChanged } = {}) {
     inputs.due_time = el('input', {
       type: 'time', value: task.due_time || '', step: '60', 'aria-label': '截止时刻',
     });
+    inputs.note = el('textarea', { rows: '3', 'aria-label': '备注', placeholder: '无备注' });
+    inputs.note.value = task.note || '';
 
-    const complete = el('button', {
-      class: 'btn ok', type: 'button',
-      'aria-label': `完成待办：${task.title}`,
-      ...(task.status === 'done' ? { disabled: '' } : {}),
-      onclick: () => patchTask({ status: 'done' }, (updated) =>
-        updated.completion_worklog
-          ? (updated.case_id ? '已完成，已记入案件时间线 ✓' : '已完成，已记入工作日志 ✓')
-          : '已完成 ✓'
-      ),
-    }, '完成');
-    const drop = el('button', {
-      class: 'btn danger', type: 'button',
-      'aria-label': `放弃待办：${task.title}`,
-      ...(task.status === 'dropped' ? { disabled: '' } : {}),
-      onclick: () => patchTask({ status: 'dropped' }, '已放弃 ✓'),
-    }, '放弃');
-    const reschedule = el('button', {
-      class: 'btn primary', type: 'submit', 'aria-label': `改期：${task.title}`,
-    }, '改期');
-    const cancelSchedule = el('button', {
-      class: 'btn', type: 'button', 'aria-label': `取消排期：${task.title}`,
-      ...(!task.plan_date && !task.due_on ? { disabled: '' } : {}),
-      onclick: () => patchTask({ plan_date: '', due_on: '' }, '已取消排期，待办回到托盘 ✓'),
-    }, '取消排期');
-    const openCase = task.case_id
+    // 与打开时相比改了哪些字段；标题清空返回 null（不许存空标题）
+    const changes = () => {
+      const title = inputs.title.value.trim();
+      if (!title) { inputs.title.focus(); return null; }
+      const out = {};
+      if (title !== (task.title || '')) out.title = title;
+      if (inputs.priority.value !== (task.priority || 'normal')) out.priority = inputs.priority.value;
+      if (inputs.note.value !== (task.note || '')) out.note = inputs.note.value;
+      const dueOn = inputs.due_on.value;
+      const dueTime = dueOn ? inputs.due_time.value : '';
+      if (inputs.plan_date.value !== (task.plan_date || '') || dueOn !== (task.due_on || '')
+        || dueTime !== (task.due_time || '')) {
+        Object.assign(out, { plan_date: inputs.plan_date.value, due_on: dueOn, due_time: dueTime });
+      }
+      return out;
+    };
+
+    const patchTask = (body, message) => run(async () => {
+      const updated = await api(`/tasks/${task.id}`, { method: 'PATCH', body });
+      modal.close(updated);
+      toast(message);
+      await onChanged?.(updated);
+    });
+    // 完成 / 放弃：连同没保存的修改一起提交，提示条带「撤销」
+    const settle = (status) => {
+      const extra = changes();
+      if (!extra) return;
+      run(async () => {
+        await settleTask(task, status, async (updated) => {
+          modal.close(updated);
+          await onChanged?.(updated);
+        }, extra);
+      });
+    };
+
+    const caseName = task.case_name || '不挂案件';
+    const caseSummary = el('div', { class: 'task-modal-case' },
+      el('span', { class: 'case-dot', style: caseColorStyle(task.case_id), 'aria-hidden': 'true' }),
+      el('span', { class: 'task-modal-case-name' }, caseName)
+    );
+
+    const save = el('button', { class: 'btn primary', type: 'submit' }, '保存');
+    const statusActions = isOpen
+      ? [
+        el('button', {
+          class: 'btn ok', type: 'button', 'aria-label': `完成待办：${task.title}`,
+          onclick: () => settle('done'),
+        }, '完成'),
+        el('button', {
+          class: 'btn danger', type: 'button', 'aria-label': `放弃待办：${task.title}`,
+          onclick: () => settle('dropped'),
+        }, '放弃'),
+        el('button', {
+          class: 'btn', type: 'button', 'aria-label': `取消排期：${task.title}`,
+          ...(!task.plan_date && !task.due_on ? { disabled: '' } : {}),
+          onclick: () => patchTask({ plan_date: '', due_on: '' }, '已取消排期，待办回到托盘 ✓'),
+        }, '取消排期'),
+      ]
+      : [
+        el('button', {
+          class: 'btn ok', type: 'button', 'aria-label': `重新打开待办：${task.title}`,
+          onclick: () => {
+            const extra = changes();
+            if (extra) patchTask({ ...extra, status: 'open' }, '已重新打开 ✓');
+          },
+        }, '重新打开'),
+      ];
+    const openCase = task.case_id && showCaseLink
       ? el('a', {
         class: 'btn task-modal-open-case', href: `/case.html?id=${task.case_id}`,
       }, '打开案件')
@@ -71,26 +119,25 @@ export function openTaskModal(task, { onChanged } = {}) {
       class: 'dmodal-form task-modal-form',
       onsubmit: (e) => {
         e.preventDefault();
-        const dueOn = inputs.due_on.value;
-        patchTask({
-          plan_date: inputs.plan_date.value,
-          due_on: dueOn,
-          due_time: dueOn ? inputs.due_time.value : '',
-        }, '排期已更新 ✓');
+        const body = changes();
+        if (!body) return;
+        if (!Object.keys(body).length) { modal.close(null); return; }
+        patchTask(body, '已保存 ✓');
       },
     },
-      el('h3', { class: 'dmodal-title', id: titleId }, task.title),
+      el('h3', { class: 'dmodal-title', id: titleId },
+        isOpen ? '待办' : `待办 · ${task.status === 'done' ? '已完成' : '已放弃'}`),
+      el('label', { class: 'f' }, '标题', inputs.title),
       caseSummary,
       el('div', { class: 'task-modal-dates' },
         el('label', { class: 'f' }, '计划开工日', inputs.plan_date),
         el('label', { class: 'f' }, '硬到期日', inputs.due_on),
         el('label', { class: 'f' }, '截止时刻', inputs.due_time)
       ),
-      el('div', { class: 'task-modal-note' },
-        el('span', { class: 'task-modal-note-label' }, '备注'), note
-      ),
+      el('label', { class: 'f' }, '优先级', inputs.priority),
+      el('label', { class: 'f' }, '备注', inputs.note),
       el('div', { class: 'dmodal-actions task-modal-actions' },
-        complete, drop, reschedule, cancelSchedule, openCase
+        save, ...statusActions, openCase
       )
     );
 
@@ -100,7 +147,7 @@ export function openTaskModal(task, { onChanged } = {}) {
 
     const modal = openModal(dialog, {
       labelledBy: titleId,
-      initialFocus: () => inputs.plan_date,
+      initialFocus: () => inputs.title,
       onClose: resolve,
     });
 

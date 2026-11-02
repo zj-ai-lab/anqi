@@ -16,6 +16,8 @@ import { strip14 } from './charts.js';
 import { datePrompt } from './dateedit.js';
 import { bindFold } from './fold.js';
 import { basisBtn } from './deadline-basis.js';
+import { openTaskModal } from './calendar-task-modal.js';
+import { settleDeadline, settleTask } from './record-actions.js';
 
 await mountNav();
 // 更远的待办 = 归档门（复用 fold.js 持久化 + caret 同步）
@@ -91,9 +93,7 @@ function doneBtn(d) {
     onclick: async (e) => {
       e.preventDefault();
       e.stopPropagation();
-      await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } });
-      toast('已完成 ✓');
-      load();
+      await settleDeadline(d, 'done', load);
     },
   }, '完成');
 }
@@ -205,22 +205,21 @@ function taskRow(t, today) {
   const overdue = !!t.due_on && t.due_on < today;
   const noDate = !t.due_on && !t.plan_date;
   const tail = t.due_on ? `截止 ${md(t.due_on)}` : (t.plan_date ? `计划 ${md(t.plan_date)}` : '');
-  return el('div', { class: `todo-row${overdue ? ' is-overdue' : ''}` },
+  const open = () => openTaskModal(t, { onChanged: load });
+  // 整行可点开编辑（行 hover 本来就高亮）；勾选框、案件链接各管各的
+  return el('div', {
+    class: `todo-row is-openable${overdue ? ' is-overdue' : ''}`,
+    onclick: (e) => { if (!e.target.closest('a, button, input, label')) open(); },
+  },
     el('label', { class: 'ck' },
       el('input', {
         type: 'checkbox',
         'aria-label': `完成：${t.title}`,
-        onchange: async () => {
-          const result = await api(`/tasks/${t.id}`, { method: 'PATCH', body: { status: 'done' } });
-          toast(result.completion_worklog
-            ? (result.case_id ? '已完成，已记入案件时间线 ✓' : '已完成，已记入工作日志 ✓')
-            : '已完成 ✓');
-          load();
-        },
+        onchange: () => settleTask(t, 'done', load),
       }),
       el('span', { class: 'box' })
     ),
-    el('span', { class: 't-text' },
+    el('button', { class: 't-text t-open', type: 'button', title: '点开编辑', onclick: open },
       // U+26A0 + U+FE0E 强制文本变体：不是 emoji 图标
       overdue ? el('span', { class: 'warn-glyph', 'aria-hidden': 'true' }, '⚠︎') : null,
       t.title

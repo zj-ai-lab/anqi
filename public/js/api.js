@@ -49,9 +49,28 @@ export function toast(msg, ms = 2200) {
     document.body.appendChild(t);
   }
   t.textContent = msg;
+  t.classList.remove('has-action');
   t.classList.add('show');
   clearTimeout(t._timer);
   t._timer = setTimeout(() => t.classList.remove('show'), ms);
+}
+
+// 带「撤销」按钮的提示条：一点就生效的动作（完成 / 放弃）误点后可在 ms 内退回。
+// 撤销只触发一次；新的 toast 会顶掉旧按钮。
+export function toastUndo(msg, onUndo, ms = 5000) {
+  toast(msg, ms);
+  const t = document.getElementById('toast');
+  const btn = el('button', {
+    class: 'toast-action', type: 'button',
+    onclick: async () => {
+      btn.disabled = true;
+      clearTimeout(t._timer);
+      t.classList.remove('show', 'has-action');
+      try { await onUndo(); } catch (error) { if (!error.status) toast('❌ ' + error.message); }
+    },
+  }, '撤销');
+  t.append(btn);
+  t.classList.add('has-action');
 }
 
 export function el(tag, attrs = {}, ...children) {
