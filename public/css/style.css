@@ -1670,9 +1670,8 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   background: var(--surface-2); color: var(--ink-2);
 }
 .task-modal-case-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.dmodal.task-modal { width: min(92vw, 440px); max-height: 88vh; overflow: auto; }
+.dmodal.task-modal { width: min(92vw, 440px); }
 .task-modal-dates { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
-.task-modal-form textarea { width: 100%; font-size: 15px; resize: vertical; }
 .task-modal-actions { justify-content: flex-start; flex-wrap: wrap; }
 .task-modal-open-case { margin-left: auto; }
 .task-modal-date-control { display: grid; grid-template-columns: minmax(0, 1fr) 36px 36px; gap: 4px; }
@@ -1956,7 +1955,8 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   background: var(--scrim);
 }
 .dmodal {
-  width: min(92vw, 360px); padding: 20px 22px;
+  /* 矮屏手机不裁切：超高就在弹层内滚动（各变体自带的 max-height 更具体，照旧生效） */
+  width: min(92vw, 360px); max-height: 88vh; overflow: auto; padding: 20px 22px;
   border: 1px solid var(--border); border-radius: var(--r-panel);
   background: var(--surface-pop);
   box-shadow: var(--sh-pop);
@@ -1966,6 +1966,9 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .dmodal-hint { margin: 2px 0 8px; font-size: 12.5px; color: var(--meta); }
 .dmodal-form { display: flex; flex-direction: column; gap: 10px; }
 .dmodal-form input, .dmodal-form select { width: 100%; font-size: 15px; }
+.dmodal-form textarea { width: 100%; font-size: 15px; resize: vertical; }
+/* confirmModal 的说明可能是多行清单（级联重算预览），保留换行 */
+.confirm-modal .dmodal-hint { white-space: pre-line; }
 .dmodal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 6px; }
 
 /* ── 期限依据浮层（deadline-basis.js）：行内问号按钮 + 法条原文弹层 ──

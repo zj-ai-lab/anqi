@@ -1166,7 +1166,7 @@ html.skin-transitioning, html.skin-transitioning * {
 ### A-22 ~ A-26
 
 `.quickbar`（产品灵魂，`position: fixed; bottom: 0`，`nav.js` 注入 `> form`）/ `.qbin` / `.hint`（≥1100px 才显示）
-`#toast`（`.has-action` + `.toast-action`：`api.js` 的 `toastUndo()` 撤销按钮）· `.dmodal-overlay` / `.dmodal`（`dateedit.js`、`calendar-task-modal.js` 与 `fee-settlement.js` 运行时 append）· `.task-modal-case` / `.task-modal-dates`（计划日 / 到期日 / 截止时刻）/ `.task-modal-actions`（`.dmodal.task-modal` 加宽到 440px；标题 / 优先级 / 备注走 `label.f` 表单控件） · `.login-wrap` / `.login-card` / `.login-err` · 滚动条（`::-webkit-scrollbar`）
+`#toast`（`.has-action` + `.toast-action`：`api.js` 的 `toastUndo()` 撤销按钮）· `.dmodal-form textarea`（`datePrompt` 的 `type:'textarea'`）· `.confirm-modal .dmodal-hint`（`confirmModal` 说明保留换行）· `.dmodal-overlay` / `.dmodal`（`dateedit.js`、`calendar-task-modal.js` 与 `fee-settlement.js` 运行时 append）· `.task-modal-case` / `.task-modal-dates`（计划日 / 到期日 / 截止时刻）/ `.task-modal-actions`（`.dmodal.task-modal` 加宽到 440px；标题 / 优先级 / 备注走 `label.f` 表单控件） · `.login-wrap` / `.login-card` / `.login-err` · 滚动条（`::-webkit-scrollbar`）
 
 **A-24 弹层无障碍契约：** `.dmodal` 必须是有可访问名称的 `role="dialog"` + `aria-modal="true"`；打开时只把本弹层以外、此前未 inert 的 `body` 直属节点设为 `inert`，关闭时精确恢复。Tab / Shift+Tab 在当前最上层弹层内循环；Escape 与点击遮罩关闭；关闭后把焦点归还仍在文档中的触发元素。嵌套弹层按栈处理，内层不得解除外层原本 inert 的页面。移动端弹层里的 input/select/textarea 与 disclosure summary 均以 44px 为最低可操作高度。
 

@@ -9,6 +9,7 @@ import { api, el, toast, SEV_LABEL, STATUS_LABEL, todayStr } from './api.js';
 import { mountNav } from './nav.js';
 import { stepper, feeBar } from './charts.js';
 import { datePrompt } from './dateedit.js';
+import { confirmModal } from './modal.js';
 import { fileIconEl } from './icons.js';
 import { feeSettlementActions, openFormulaEditor, openPrimaryFeeSettlement, renderAgreementManager } from './fee-settlement.js';
 import { renderFeeVouchers } from './fee-vouchers.js';
@@ -1288,6 +1289,94 @@ function taskRow(t) {
 }
 
 // ---- 时间线 ----
+// 只提交改过的字段；原值为 null/undefined 时按空串比较（表单控件只会给出字符串）
+const changedFields = (next, prev) => Object.fromEntries(
+  Object.entries(next).filter(([key, value]) => value !== String(prev[key] ?? ''))
+);
+
+// 事件「编辑」：类型以外都可改（类型决定派生哪些期限，改类型 = 删了重录）。
+// 日期或送达方式变了，服务端先回级联重算预览，确认后才落库。
+async function editEvent(e) {
+  const methods = [...document.querySelectorAll('#event-form select[name="service_method"] option')]
+    .map((o) => ({ value: o.value, label: o.textContent }));
+  // AI 提取的送达方式可能不在下拉表里：原值要留成选项，否则一打开就被改空、误触发重算
+  if (e.service_method && !methods.some((m) => m.value === e.service_method)) {
+    methods.push({ value: e.service_method, label: e.service_method });
+  }
+  const v = await datePrompt({
+    title: `编辑「${evLabel[e.type] || e.type}」`,
+    hint: '改日期或送达方式会先预览派生期限的重算；人工设定过的期限默认不动',
+    fields: [
+      { key: 'occurred_on', label: '日期', value: e.occurred_on, required: true },
+      ...(e.type === 'hearing' ? [
+        { key: 'occurred_time', label: '时刻', value: e.occurred_time || '', type: 'time' },
+        { key: 'location', label: '地点', value: e.location || '', type: 'text', placeholder: '法院/法庭' },
+      ] : []),
+      { key: 'service_method', label: '送达方式', value: e.service_method || '', type: 'select', options: methods },
+      { key: 'instrument', label: '文书依据', value: e.instrument || '', type: 'text' },
+      { key: 'note', label: '备注', value: e.note || '', type: 'textarea' },
+    ],
+  });
+  if (!v) return;
+  const body = changedFields(v, e);
+  if (!Object.keys(body).length) return;
+  const r = await api(`/events/${e.id}`, { method: 'PATCH', body });
+  if (!r.needs_confirm) { toast('已保存 ✓'); load(); return; }
+  const ev = r.event;
+  const what = [
+    ev.old_date !== ev.new_date ? `日期 ${ev.old_date} → ${ev.new_date}` : null,
+    ev.old_service_method !== ev.new_service_method
+      ? `送达方式 ${ev.old_service_method || '（不适用）'} → ${ev.new_service_method || '（不适用）'}` : null,
+  ].filter(Boolean).join('，');
+  const msg = [
+    `${what}，派生期限将级联重算：`,
+    ...r.recalc.map((x) => `· ${x.name}：${x.old_due} → ${x.new_due}`),
+    ...(r.excluded.length ? ['不动（保护）：', ...r.excluded.map((x) => `· ${x.name}（${x.reason}）`)] : []),
+  ].join('\n');
+  if (!await confirmModal(msg, { title: '确认重算派生期限', confirmLabel: '确认修改' })) { toast('已取消，未改动'); return; }
+  await api(`/events/${e.id}`, { method: 'PATCH', body: { ...body, confirm: true } });
+  toast(r.recalc.length ? '已保存，派生期限已重算 ✓' : '已保存 ✓');
+  load();
+}
+
+async function editWorklog(w) {
+  const v = await datePrompt({
+    title: '编辑工作日志',
+    fields: [
+      { key: 'content', label: '做了什么', value: w.content, type: 'textarea', required: true },
+      { key: 'worked_on', label: '日期', value: w.worked_on, required: true },
+      { key: 'minutes', label: '耗时（分钟）', value: w.minutes ?? '', type: 'number', min: 0, step: 1 },
+      { key: 'artifacts', label: '产物', value: w.artifacts || '', type: 'text', placeholder: '路径 / 链接' },
+    ],
+  });
+  if (!v) return;
+  const body = changedFields(v, w);
+  if (!Object.keys(body).length) return;
+  await api(`/worklog/${w.id}`, { method: 'PATCH', body });
+  toast('已保存 ✓'); load();
+}
+
+// 期限「编辑」：名称、级别、依据；截止日仍走「改期」（人工设定 / 调参口径在那里）。
+// 计算说明只对手录期限开放——规则派生的会在重算时被引擎覆盖。
+async function editDeadline(d) {
+  const v = await datePrompt({
+    title: '编辑期限',
+    hint: '截止日请用「改期」',
+    fields: [
+      { key: 'name', label: '名称', value: d.name, type: 'text', required: true },
+      { key: 'severity', label: '级别', value: d.severity, type: 'select',
+        options: ['critical', 'high', 'normal'].map((value) => ({ value, label: SEV_LABEL[value] })) },
+      { key: 'basis', label: '法律依据', value: d.basis || '', type: 'text', placeholder: '民诉法 §171' },
+      ...(d.rule_id ? [] : [{ key: 'calc_note', label: '计算说明', value: d.calc_note || '', type: 'text' }]),
+    ],
+  });
+  if (!v) return;
+  const body = changedFields(v, d);
+  if (!Object.keys(body).length) return;
+  await api(`/deadlines/${d.id}`, { method: 'PATCH', body });
+  toast('已保存 ✓'); load();
+}
+
 function tlItem(date, nodeCls, kindPill, bodyEls, actions = null, extraClass = '') {
   return el('div', { class: `tl-item ${extraClass}`.trim() },
     el('span', { class: `tl-node ${nodeCls}`, 'aria-hidden': 'true' }),
@@ -1696,31 +1785,7 @@ function render() {
         ...attachmentsFor('event', e.id),
       ],
       el('span', {},
-        el('button', {
-          class: 'btn small', type: 'button',
-          onclick: async () => {
-            const v = await datePrompt({
-              title: `改「${evLabel[e.type] || e.type}」日期`,
-              hint: '改触发日期会弹级联重算预览；人工设定过的期限默认不动',
-              fields: [{ key: 'occurred_on', label: '事件日期', value: e.occurred_on, required: true }],
-            });
-            const nd = v?.occurred_on;
-            if (!nd || nd === e.occurred_on) return;
-            const r = await api(`/events/${e.id}`, { method: 'PATCH', body: { occurred_on: nd } });
-            if (r.needs_confirm) {
-              const msg = [
-                `改日期 ${r.event.old_date} → ${r.event.new_date}，将级联重算：`,
-                ...r.recalc.map((x) => `  · ${x.name}：${x.old_due} → ${x.new_due}`),
-                ...(r.excluded.length ? ['不动（保护）：', ...r.excluded.map((x) => `  · ${x.name}（${x.reason}）`)] : []),
-                '确认执行？',
-              ].join('\n');
-              if (!confirm(msg)) { toast('已取消'); return; }
-              await api(`/events/${e.id}`, { method: 'PATCH', body: { occurred_on: nd, confirm: true } });
-            }
-            toast('日期已改，派生期限已重算 ✓');
-            load();
-          },
-        }, '改日期'),
+        el('button', { class: 'btn small', type: 'button', 'aria-label': `编辑：${evLabel[e.type] || e.type}`, onclick: () => editEvent(e) }, '编辑'),
         el('button', {
           class: 'btn small danger', type: 'button',
           onclick: async () => {
@@ -1757,6 +1822,7 @@ function render() {
         d.status === 'pending' ? el('span', {},
           confirmReviewBtn(d),
           d.advisory ? ignoreAdvisoryBtn(d) : editDueBtn(d),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', 'aria-label': `编辑期限：${d.name}`, onclick: () => editDeadline(d) }, '编辑'),
           d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: () => settleDeadline(d, 'done', load) }, '完成'),
           d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: () => settleDeadline(d, 'waived', load) }, '放弃'),
           el('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (!confirm('删除该期限？')) return; await api(`/deadlines/${d.id}`, { method: 'DELETE' }); toast('已删除'); load(); } }, '删')
@@ -1777,15 +1843,7 @@ function render() {
       [w.created_by === 'ai' ? el('span', { class: 'pill acc' }, 'AI 加的') : null, w.content, w.minutes ? el('span', { class: 'tl-note' }, `（${w.minutes} 分钟）`) : null,
         w.artifacts ? el('div', { class: 'tl-note' }, `产物：${w.artifacts}`) : null],
       el('span', {},
-        el('button', {
-          class: 'btn small', type: 'button',
-          onclick: async () => {
-            const v = await datePrompt({ title: '改日志日期', fields: [{ key: 'worked_on', label: '工作日期', value: w.worked_on, required: true }] });
-            if (!v || v.worked_on === w.worked_on) return;
-            await api(`/worklog/${w.id}`, { method: 'PATCH', body: v });
-            toast('日期已改 ✓'); load();
-          },
-        }, '改期'),
+        el('button', { class: 'btn small', type: 'button', 'aria-label': '编辑日志', onclick: () => editWorklog(w) }, '编辑'),
         el('button', {
           class: 'btn small danger', type: 'button',
           onclick: async () => { if (!confirm('删除该日志？')) return; await api(`/worklog/${w.id}`, { method: 'DELETE' }); toast('已删除'); load(); },

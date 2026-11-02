@@ -162,6 +162,35 @@ curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/tasks/$TID" -H 'Content-Type: app
   -d '{"status":"open"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.status!=='open'||r.done_at!==''||r.completion_worklog!==null)process.exit(1)})"
 curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/tasks/$TID" -H 'Content-Type: application/json' \
   -d '{"title":"整理冒烟证据清单（改）","note":"补一份","priority":"high"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.title!=='整理冒烟证据清单（改）'||r.note!=='补一份'||r.priority!=='high'||r.status!=='open')process.exit(1)})"
+# 时间线编辑：改送达方式与改日期同口径——先回级联重算预览、confirm 才落库；只改备注/文书不触发。
+# 用单独的案件，不扰动上面冒烟案的计数
+CID2=$(curl -fsS -X POST "http://127.0.0.1:$PORT/api/cases" -H 'Content-Type: application/json' \
+  -d '{"name":"冒烟编辑案（王五）","procedure":"一审"}' | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).id))")
+EID=$(curl -fsS -X POST "http://127.0.0.1:$PORT/api/cases/$CID2/events" -H 'Content-Type: application/json' \
+  -d '{"type":"served","occurred_on":"2099-03-02","service_method":"直接送达"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(!r.derived?.deadlines?.length)process.exit(1);console.log(r.id)})")
+DUE0=$(curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID2" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).deadlines.find(x=>x.rule_id==='defense_period').due_on))")
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/events/$EID" -H 'Content-Type: application/json' \
+  -d '{"service_method":"公告送达"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.needs_confirm!==true||!r.recalc.some(x=>x.new_due>x.old_due)||r.event.new_service_method!=='公告送达'||r.event.old_date!==r.event.new_date)process.exit(1)})"
+curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID2" | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.events[0].service_method!=='直接送达'||r.deadlines.find(x=>x.rule_id==='defense_period').due_on!=='$DUE0')process.exit(1)})"
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/events/$EID" -H 'Content-Type: application/json' \
+  -d '{"service_method":"公告送达","confirm":true}' | node -e "process.stdin.on('data',d=>{if(JSON.parse(d).service_method!=='公告送达')process.exit(1)})"
+curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID2" | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(!(r.deadlines.find(x=>x.rule_id==='defense_period').due_on>'$DUE0'))process.exit(1)})"
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/events/$EID" -H 'Content-Type: application/json' \
+  -d '{"note":"补正送达回证","instrument":"（2026）测0001号"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.needs_confirm||r.note!=='补正送达回证'||r.instrument!=='（2026）测0001号')process.exit(1)})"
+# 日志编辑：内容不许清空，耗时清空存 NULL、非整数拒绝
+LID=$(curl -fsS -X POST "http://127.0.0.1:$PORT/api/worklog" -H 'Content-Type: application/json' \
+  -d "{\"case_id\":$CID2,\"content\":\"冒烟日志\",\"minutes\":30}" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).id))")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H 'Content-Type: application/json' -d '{"content":"  "}' "http://127.0.0.1:$PORT/api/worklog/$LID")" = "400" ]
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H 'Content-Type: application/json' -d '{"minutes":"1.5"}' "http://127.0.0.1:$PORT/api/worklog/$LID")" = "400" ]
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/worklog/$LID" -H 'Content-Type: application/json' \
+  -d '{"content":"冒烟日志（改）","minutes":""}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.content!=='冒烟日志（改）'||r.minutes!==null)process.exit(1)})"
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/worklog/$LID" -H 'Content-Type: application/json' \
+  -d '{"minutes":"45"}' | node -e "process.stdin.on('data',d=>{if(JSON.parse(d).minutes!==45)process.exit(1)})"
+# 期限编辑：名称不许清空；名称 / 级别 / 依据可改
+DID=$(curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID2" | node -e "process.stdin.on('data',d=>console.log(JSON.parse(d).deadlines.find(x=>x.rule_id==='defense_period').id))")
+[ "$(curl -s -o /dev/null -w '%{http_code}' -X PATCH -H 'Content-Type: application/json' -d '{"name":" "}' "http://127.0.0.1:$PORT/api/deadlines/$DID")" = "400" ]
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/deadlines/$DID" -H 'Content-Type: application/json' \
+  -d '{"name":"答辩期（改）","severity":"critical","basis":"冒烟依据"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.name!=='答辩期（改）'||r.severity!=='critical'||r.basis!=='冒烟依据'||r.is_manual_override)process.exit(1)})"
 # 快录整理（1.1.0）：**LLM 不可用时绝不能挡住录入**——这条比整理本身重要
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d '{"text":"x"}' "http://127.0.0.1:$PORT/api/quick/parse")" = "503" ]   # 没配 key → 503，不是 500
