@@ -157,6 +157,11 @@ curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/tasks/$TID" -H 'Content-Type: app
 curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/tasks/$TID" -H 'Content-Type: application/json' \
   -d '{"status":"done"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.completion_worklog!==null)process.exit(1)})"
 curl -fsS "http://127.0.0.1:$PORT/api/cases/$CID" | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d),logs=r.worklog.filter(x=>x.content==='完成待办：整理冒烟证据清单');if(logs.length!==1)process.exit(1)})"
+# 重新打开（前端「撤销」「重新打开」）：回到 open 且清掉 done_at；再完成算新的完成事实
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/tasks/$TID" -H 'Content-Type: application/json' \
+  -d '{"status":"open"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.status!=='open'||r.done_at!==''||r.completion_worklog!==null)process.exit(1)})"
+curl -fsS -X PATCH "http://127.0.0.1:$PORT/api/tasks/$TID" -H 'Content-Type: application/json' \
+  -d '{"title":"整理冒烟证据清单（改）","note":"补一份","priority":"high"}' | node -e "process.stdin.on('data',d=>{const r=JSON.parse(d);if(r.title!=='整理冒烟证据清单（改）'||r.note!=='补一份'||r.priority!=='high'||r.status!=='open')process.exit(1)})"
 # 快录整理（1.1.0）：**LLM 不可用时绝不能挡住录入**——这条比整理本身重要
 [ "$(curl -s -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
   -d '{"text":"x"}' "http://127.0.0.1:$PORT/api/quick/parse")" = "503" ]   # 没配 key → 503，不是 500

@@ -15,6 +15,8 @@ import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
 import { mountAgentDrawer } from './agent-drawer.js';
 import { setLawTexts, basisBtn } from './deadline-basis.js';
+import { openTaskModal } from './calendar-task-modal.js';
+import { settleDeadline, settleTask } from './record-actions.js';
 
 await mountNav();
 
@@ -550,10 +552,7 @@ function track(d) {
 function doneBtn(d, cls = 'btn small rw-done') {
   return el('button', {
     class: cls, type: 'button', 'aria-label': `完成期限：${d.name}`,
-    onclick: async () => {
-      await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } });
-      toast('已完成 ✓'); load();
-    },
+    onclick: () => settleDeadline(d, 'done', load),
   }, '完成');
 }
 
@@ -1241,19 +1240,20 @@ function taskRow(t) {
   const dl = t.due_on ? daysTo(t.due_on) : null;
   const dueCls = dl === null ? '' : dl < 0 ? 'chip c-red' : dl <= 3 ? 'chip c-amber' : 'chip';
   const urgencyClass = dl === null ? '' : dl < 0 ? ' is-overdue' : dl <= 3 ? ' is-soon' : '';
-  return el('div', { class: `todo-row${urgencyClass}` },
+  // 本案页的待办不带 case_name，补上给弹层显示；已在本案里，不再给「打开案件」
+  const open = () => openTaskModal({ ...t, case_name: bundle.case.name }, { onChanged: load, showCaseLink: false });
+  return el('div', {
+    class: `todo-row is-openable${urgencyClass}`,
+    onclick: (e) => { if (!e.target.closest('a, button, input, label')) open(); },
+  },
     el('label', { class: 'ck' },
       el('input', {
         type: 'checkbox', 'aria-label': `完成：${t.title}`,
-        onchange: async () => {
-          const result = await api(`/tasks/${t.id}`, { method: 'PATCH', body: { status: 'done' } });
-          toast(result.completion_worklog ? '已完成，已记入案件时间线 ✓' : '已完成 ✓');
-          load();
-        },
+        onchange: () => settleTask(t, 'done', load),
       }),
       el('span', { class: 'box', 'aria-hidden': 'true' })
     ),
-    el('span', { class: 't-text' },
+    el('button', { class: 't-text t-open', type: 'button', title: '点开编辑', onclick: open },
       dl !== null && dl < 0 ? el('span', { class: 'warn-glyph', 'aria-hidden': 'true' }, '⚠︎') : null,
       t.title
     ),
@@ -1757,10 +1757,16 @@ function render() {
         d.status === 'pending' ? el('span', {},
           confirmReviewBtn(d),
           d.advisory ? ignoreAdvisoryBtn(d) : editDueBtn(d),
-          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'done' } }); toast('已完成 ✓'); load(); } }, '完成'),
-          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'waived' } }); toast('已放弃'); load(); } }, '放弃'),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: () => settleDeadline(d, 'done', load) }, '完成'),
+          d.advisory ? null : el('button', { class: 'btn small', type: 'button', onclick: () => settleDeadline(d, 'waived', load) }, '放弃'),
           el('button', { class: 'btn small danger', type: 'button', onclick: async () => { if (!confirm('删除该期限？')) return; await api(`/deadlines/${d.id}`, { method: 'DELETE' }); toast('已删除'); load(); } }, '删')
-        ) : null,
+        ) : el('span', {},
+          // 已完成 / 已放弃 / 已错过：可恢复为在追（误点「完成」过了撤销窗口也有回头路）
+          el('button', {
+            class: 'btn small', type: 'button', 'aria-label': `恢复为在追：${d.name}`,
+            onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'pending' } }); toast('已恢复为在追 ✓'); load(); },
+          }, '恢复')
+        ),
         d.advisory ? 'deadline-advisory' : ''
       ) };
     }),
