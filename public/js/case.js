@@ -85,7 +85,9 @@ function initSectionNav() {
   };
   const applyHash = (scroll = false) => {
     const targetId = decodeURIComponent(location.hash.slice(1)) || 'case-overview';
-    setActive(byId.has(targetId) ? targetId : (targetId.startsWith('case-') ? targetId : 'case-overview'));
+    setActive(byId.has(targetId) ? targetId
+      : targetId.startsWith('tl-') ? 'case-trace'
+      : (targetId.startsWith('case-') ? targetId : 'case-overview'));
     openTarget(targetId, scroll);
   };
   applyHash(false);
@@ -1377,8 +1379,9 @@ async function editDeadline(d) {
   toast('已保存 ✓'); load();
 }
 
-function tlItem(date, nodeCls, kindPill, bodyEls, actions = null, extraClass = '') {
-  return el('div', { class: `tl-item ${extraClass}`.trim() },
+// anchor = `${kind}-${id}`：其它页用 case.html?id=N#tl-<anchor> 直达这一条
+function tlItem(date, nodeCls, kindPill, bodyEls, actions = null, extraClass = '', anchor = '') {
+  return el('div', { class: `tl-item ${extraClass}`.trim(), id: anchor ? `tl-${anchor}` : undefined },
     el('span', { class: `tl-node ${nodeCls}`, 'aria-hidden': 'true' }),
     el('span', { class: 'tl-date' }, date),
     el('div', { class: 'tl-body' }, kindPill, ' ', ...bodyEls),
@@ -1442,6 +1445,33 @@ function drawTimeline(nextItems = timelineItems) {
   state.textContent = timelineExpanded
     ? `已显示全部 ${total} 条`
     : `已显示 ${visible.length} / 共 ${total} 条（含待处理参考期限）`;
+}
+
+// 今日页 / 日历带 #tl-<kind>-<id> 跳进来：落到时间线那一条并闪一下。
+// 目标被「只看最近几条」或筛选藏住时先放开。只在首次加载后做一次（load 会被反复触发）。
+let timelineTargetRevealed = false;
+function revealTimelineTarget() {
+  if (timelineTargetRevealed) return;
+  const match = /^#tl-((?:event|deadline|log)-\d+)$/.exec(location.hash);
+  if (!match) return;
+  timelineTargetRevealed = true;
+  const anchor = match[1];
+  if (!timelineItems.some((item) => item.anchor === anchor)) {
+    toast('要找的那条记录已不在本案时间线（可能已删除）');
+    return;
+  }
+  if (!document.getElementById(`tl-${anchor}`)) {
+    timelineFilter = 'all';
+    timelineExpanded = true;
+    for (const item of document.querySelectorAll('[data-timeline-filter]')) {
+      item.classList.toggle('is-active', item.dataset.timelineFilter === 'all');
+    }
+    drawTimeline();
+  }
+  const target = document.getElementById(`tl-${anchor}`);
+  target.scrollIntoView({ block: 'center' });
+  target.classList.add('is-target');
+  setTimeout(() => target.classList.remove('is-target'), 2600);
 }
 
 for (const button of document.querySelectorAll('[data-timeline-filter]')) {
@@ -1773,7 +1803,7 @@ function render() {
 
   // 时间线合流：event / deadline / worklog
   const items = [
-    ...bundle.events.map((e) => ({ kind: 'event', date: e.occurred_on, sort2: 2, build: () => tlItem(e.occurred_on, 'tl-node-event',
+    ...bundle.events.map((e) => ({ kind: 'event', anchor: `event-${e.id}`, date: e.occurred_on, sort2: 2, build: () => tlItem(e.occurred_on, 'tl-node-event',
       el('span', { class: 'pill acc' }, evLabel[e.type] || e.type),
       [
         ['llm', 'ai'].includes(e.created_by) ? el('span', { class: 'pill acc' }, 'AI 加的') : null,
@@ -1794,7 +1824,9 @@ function render() {
             toast('已删除'); load();
           },
         }, '删')
-      )
+      ),
+      '',
+      `event-${e.id}`
     ) })),
     ...bundle.deadlines.map((d) => {
       const rule = ruleById.get(d.rule_id);
@@ -1807,7 +1839,7 @@ function render() {
         ? el('span', { class: `pill ${d.severity === 'critical' ? 'crit' : d.severity === 'high' ? 'warn' : 'ok'}` },
             `死线 · ${SEV_LABEL[d.severity]}${overdue ? ' · 已逾期' : ''}`)
         : el('span', { class: `pill ${d.status === 'done' ? 'ok' : ''}` }, `死线 · ${STATUS_LABEL[d.status]}`);
-      return { kind: 'deadline', date: d.due_on, sort2: 1, keepVisible: d.status === 'pending' && !!d.advisory, build: () => tlItem(d.due_on, nodeCls, buildPill(),
+      return { kind: 'deadline', anchor: `deadline-${d.id}`, date: d.due_on, sort2: 1, keepVisible: d.status === 'pending' && !!d.advisory, build: () => tlItem(d.due_on, nodeCls, buildPill(),
         [
           el('b', {}, d.name), ' ',
           basisBtn(d),
@@ -1833,10 +1865,11 @@ function render() {
             onclick: async () => { await api(`/deadlines/${d.id}`, { method: 'PATCH', body: { status: 'pending' } }); toast('已恢复为在追 ✓'); load(); },
           }, '恢复')
         ),
-        d.advisory ? 'deadline-advisory' : ''
+        d.advisory ? 'deadline-advisory' : '',
+        `deadline-${d.id}`
       ) };
     }),
-    ...bundle.worklog.map((w) => ({ kind: 'log', date: w.worked_on, sort2: 3, build: () => tlItem(w.worked_on, 'tl-node-log',
+    ...bundle.worklog.map((w) => ({ kind: 'log', anchor: `log-${w.id}`, date: w.worked_on, sort2: 3, build: () => tlItem(w.worked_on, 'tl-node-log',
       el('span', { class: 'pill' }, '日志'),
       // AI 标签必须放进正文数组（同事件行）：tlItem 第 4 参是要展开的正文，插成独立位置参数会把
       // 正文挤到 actions 位、让 null 被展开，整页时间线崩溃（2026-10-13 真机验收抓到）。
@@ -1848,7 +1881,9 @@ function render() {
           class: 'btn small danger', type: 'button',
           onclick: async () => { if (!confirm('删除该日志？')) return; await api(`/worklog/${w.id}`, { method: 'DELETE' }); toast('已删除'); load(); },
         }, '删')
-      )
+      ),
+      '',
+      `log-${w.id}`
     ) })),
   ];
   items.sort((a, b) => (b.date + b.sort2).localeCompare(a.date + a.sort2));
@@ -2433,6 +2468,9 @@ async function loadReminders() {
 
 document.addEventListener('anjian:changed', load);
 await load();
+revealTimelineTarget();
+// 同一案件页内换 #tl-…（粘贴链接、前进后退）不会重载页面，也要重新定位
+window.addEventListener('hashchange', () => { timelineTargetRevealed = false; revealTimelineTarget(); });
 stopFolderWatch = watchFolder();
 
 // AI 助理抽屉：counts.agent=false（未启用/未配置）时 mountAgentDrawer() 自己

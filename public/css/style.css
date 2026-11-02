@@ -642,7 +642,9 @@ a.chip:hover { background: var(--hover); border-color: var(--border-h); text-dec
 
 /* 头条区（最近死线 = 全页最大的数字，SPEC §4.6 要求 ≥48px） */
 .rw-lead { background: var(--hd-bg); box-shadow: var(--hd-edge); transition: background .12s; }
-.rw-lead:hover { background: var(--hd-bg-h); text-decoration: none; }
+/* 只有真能点的才给 hover（今日页头条整卡直达该期限；案件页头条不可点） */
+.rw-lead.is-openable { cursor: pointer; }
+.rw-lead.is-openable:hover { background: var(--hd-bg-h); text-decoration: none; }
 .hd-main { padding: 18px 14px 16px; min-width: 0; }
 .hd-kick { margin-bottom: 6px; font-size: 12px; font-weight: 650; letter-spacing: .14em; color: var(--red); }
 .hd-num { display: flex; align-items: baseline; gap: 8px; color: var(--red); font-family: var(--f-num); white-space: nowrap; }
@@ -678,7 +680,8 @@ a.chip:hover { background: var(--hover); border-color: var(--border-h); text-dec
 
 /* 紧凑跑道行 */
 .rw-row { border-top: 1px solid var(--line); color: var(--ink); transition: background .12s; }
-.rw-row:hover { background: var(--hover); text-decoration: none; }
+.rw-row.is-openable { cursor: pointer; }
+a.rw-row:hover, .rw-row.is-openable:hover { background: var(--hover); text-decoration: none; }
 .rw-days {
   display: flex; align-items: baseline; justify-content: flex-start; gap: 6px;
   padding: 0 14px; white-space: nowrap;
@@ -1233,6 +1236,15 @@ details.adder[open] { border-style: solid; border-color: var(--green-line); }
 }
 .tl-item { position: relative; display: flex; gap: 14px; padding: 10px 6px 10px 8px; border-radius: var(--r-btn); }
 .tl-item:hover { background: var(--hover); }
+/* 从今日页 / 日历直达的那一条（case.js revealTimelineTarget）：选区色闪一下再褪回 */
+.tl-item.is-target { animation: tl-target 2.4s ease-out; }
+@keyframes tl-target {
+  0%, 45% { background: var(--sel); box-shadow: inset 3px 0 0 var(--focus); }
+  100% { background: transparent; box-shadow: inset 3px 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tl-item.is-target { animation: none; background: var(--sel); box-shadow: inset 3px 0 0 var(--focus); }
+}
 .tl-node {
   position: absolute; left: -24px; top: 16px;
   width: 11px; height: 11px; border-radius: 50%;

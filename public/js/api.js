@@ -93,6 +93,10 @@ export function fmtDaysLeft(n) {
   return `剩 ${n} 日`;
 }
 
+// 案件页时间线某一条的直达链接；落点与高亮由 case.js 的 revealTimelineTarget 负责。
+// 全站口径：期限、开庭等法定事实点了都到这里（编辑 / 改期 / 完成在那一条上），待办则原地开弹层。
+export const caseItemHref = (caseId, kind, itemId) => `/case.html?id=${caseId}#tl-${kind}-${itemId}`;
+
 export function todayStr() {
   return new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Shanghai' });
 }

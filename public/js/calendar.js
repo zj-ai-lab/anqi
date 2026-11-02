@@ -4,7 +4,7 @@
 //   周行 .cal-week 是 7 列嵌套网格；日期格 / 日期数字 / 车道长条 / chip 堆都是它的同级网格项：
 //   .cal-cell 占 grid-row 1/-1 当背景与命中面，.cal-daynum 占第 1 行，长条占车道行，.cal-day-chips 占末行。
 //   —— 长条因此在整个周行里恒占同一水平车道，不再被格内 chip 数量顶得高低错落。
-import { api, el, toast, todayStr, SEV_LABEL, STATUS_LABEL } from './api.js';
+import { api, el, toast, todayStr, SEV_LABEL, STATUS_LABEL, caseItemHref } from './api.js';
 import { mountNav } from './nav.js';
 import { openTaskModal } from './calendar-task-modal.js';
 import { caseColorStyle } from './calendar-ui.js';
@@ -528,11 +528,12 @@ async function load({ refresh = true } = {}) {
     // 事项名在前、案件在后 —— 与期限跑道 .rw-main 同一信息层级：格子窄，先保住「要做什么」。
     // 全文走 title 悬浮（格内必然截断）。
     // 期限 / 开庭是法定事实，永不可拖（安全铁律）：不挂 pointerdown，并显式关掉 <a> 的原生拖走。
+    // 点击直达案件页时间线上这一条（改期 / 完成 / 编辑都在那里）；待办则原地开弹层。
       push(d.due_on, el('a', {
         class: chipClass(d.severity, d.status),
-        href: `/case.html?id=${d.case_id}`,
+        href: caseItemHref(d.case_id, 'deadline', d.id),
         draggable: 'false',
-      title: `${sev}期限 · ${d.name} · ${d.case_name}${st}${d.rolled_from && d.rolled_from < d.due_on ? `\n原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办` : ''}`,
+      title: `${sev}期限 · ${d.name} · ${d.case_name}${st}${d.rolled_from && d.rolled_from < d.due_on ? `\n原届满 ${d.rolled_from} 逢节假日，已顺延至 ${d.due_on} · 建议节前办` : ''}\n点击到案件页处理这条期限`,
       }, el('span', { class: 'cal-chip-label' }, `${d.name}·${d.case_name}`)), 0);
   }
   for (const h of data.hearings) {
@@ -540,9 +541,9 @@ async function load({ refresh = true } = {}) {
     const time = h.occurred_time ? `${h.occurred_time} ` : '';
     push(h.occurred_on, el('a', {
       class: 'cal-chip hearing',
-      href: `/case.html?id=${h.case_id}`,
+      href: caseItemHref(h.case_id, 'event', h.id),
       draggable: 'false',
-      title: `开庭 · ${h.case_name}${h.location ? ' · ' + h.location : ''}${h.note ? ' · ' + h.note : ''}`,
+      title: `开庭 · ${h.case_name}${h.location ? ' · ' + h.location : ''}${h.note ? ' · ' + h.note : ''}\n点击到案件页这场开庭（可改时刻 / 地点）`,
     }, el('span', { class: 'cal-chip-label' }, `${time}开庭·${h.case_name}`)), 1, h.occurred_time || '');
   }
   for (const t of monthTasks) {
