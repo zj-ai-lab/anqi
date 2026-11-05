@@ -109,7 +109,7 @@
     "better-sqlite3": "^13.0.3",
     "electron-updater": "^6.8.9",
     "express": "^5.2.1",
-    "unpdf": "1.8.1"
+    "unpdf": "2.1.0"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
