@@ -115,7 +115,7 @@
     "@electron/rebuild": "^4.2.0",
     "electron": "^43.7.5",
     "electron-builder": "^26.15.7",
-    "minimatch": "^10.2.6"
+    "minimatch": "^11.0.4"
   },
   "allowScripts": {
     "electron@43.7.5": true,
