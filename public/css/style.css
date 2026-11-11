@@ -2086,6 +2086,15 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
 .settlement-status.warn, .settlement-warning {
   border-color: var(--amber-line); background: var(--amber-bg); color: var(--amber);
 }
+.settlement-conflict {
+  margin-top: 10px; border: 1px solid var(--amber-line); border-radius: var(--r-btn);
+  background: var(--surface-solid); font-size: 12.5px; line-height: 1.45;
+}
+.settlement-conflict > b, .settlement-conflict > .meta { display: block; padding: 8px 10px 0; }
+.settlement-conflict > .meta { color: var(--meta); }
+.settlement-conflict-steps { margin: 6px 0 8px; padding: 0 10px 0 28px; }
+.settlement-conflict-steps li + li { margin-top: 4px; }
+.settlement-conflict .row { padding: 8px 10px; }
 .settlement-formula-grid {
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
 }

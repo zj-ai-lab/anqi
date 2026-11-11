@@ -793,7 +793,7 @@ function buildPreview(feeId, body) {
       settlements,
     });
     if (legacyConflicts.length) {
-      fail(409, 'legacy_share_adoption_conflict', '该款已有重叠的 legacy/manual 分成，须先完成人工修复', {
+      fail(409, 'legacy_share_adoption_conflict', '这笔律师费下已有手动记的同一笔分成，系统不能重复计算；请先删除该手动记录，或把这项分成改为不关联这笔律师费', {
         shares: legacyConflicts,
       });
     }

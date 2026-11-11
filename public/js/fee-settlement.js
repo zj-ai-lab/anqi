@@ -1,4 +1,6 @@
 import { api, el, toast, todayStr } from './api.js';
+import { describeConflictShare } from './share-correct.js';
+import { deleteManualShare } from './share-actions.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const RUN_LABEL = { receipt: '收款记账', correction: '修改结算', reversal: '撤销收款' };
@@ -938,7 +940,43 @@ function errorText(error) {
   if (error.code === 'provisional_formula_not_assignable') return '这条分成的扣费方案还没定，先在案件资金区点“完善扣费”。';
   if (error.code === 'assignment_version_conflict') return '分成办法已在别处更新，请刷新后重试。';
   if (error.code === 'settlement_source_not_head') return '这笔收款已有后续修改，请刷新后再操作。';
+  if (error.code === 'legacy_share_adoption_conflict') return '这笔律师费下已有手动记的同一笔分成，系统不能重复计算。处理办法见下方。';
   return error.message;
+}
+
+// 手动记录与本次结算重叠时，不能只甩一句「不行」：把冲突的那几条摆出来，
+// 并给出两条都能走通的路（以手动记录为准 / 以系统计算为准）。
+function legacyConflictPanel(error, { onResolved }) {
+  const shares = error?.data?.shares || [];
+  if (error?.code !== 'legacy_share_adoption_conflict' || !shares.length) return null;
+  const rows = shares.map((share) => {
+    const remove = el('button', { class: 'btn small danger', type: 'button' }, '删除这条手动记录');
+    const actions = el('span', { class: 'tl-actions' }, remove);
+    remove.addEventListener('click', async () => {
+      remove.disabled = true;
+      try {
+        await deleteManualShare(share, { onChanged: onResolved });
+      } catch (deleteError) {
+        // 待修复的历史分成不能在这里绕过裁决，直接把人带到修复工作台。
+        if (deleteError.code === 'legacy_repair_required') {
+          actions.replaceChildren(el('a', { class: 'btn small', href: '/share-repairs.html' }, '去修复工作台处理'));
+        }
+      } finally {
+        remove.disabled = false;
+      }
+    });
+    return el('div', { class: 'row' },
+      el('span', { class: 'grow' }, describeConflictShare(share)),
+      actions);
+  });
+  return el('div', { class: 'settlement-conflict' },
+    el('b', {}, '同一笔分成不能手动记一遍、系统再算一遍'),
+    el('div', { class: 'meta' }, '任选一种办法处理后，再点「算一算」：'),
+    el('ol', { class: 'settlement-conflict-steps' },
+      el('li', {}, '以手动记录为准：在上面「这笔钱怎么走」里，把这项分成改选为「这笔律师费不关联这项分成」。'),
+      el('li', {}, '以系统计算为准：删除下面的手动记录，由系统按约定重新算。')),
+    ...rows
+  );
 }
 
 export async function openFeeSettlement({ fee, onChanged = null, runKind = null, initialSnapshotId = null } = {}) {
@@ -1033,6 +1071,13 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
       status.className = 'settlement-status';
       status.textContent = '输入已变化，请重新算一算。';
     }
+    function showLegacyConflict(error) {
+      const panel = legacyConflictPanel(error, { onResolved: () => reload({ refreshHost: true }) });
+      if (!panel) return;
+      previewBox.replaceChildren(panel);
+      // 处理办法在「算一算」下方，弹层较长时可能在视野外：带进视野，避免只看到一句「不行」。
+      requestAnimationFrame(() => panel.scrollIntoView({ block: 'nearest' }));
+    }
     controls.form.addEventListener('input', invalidate);
     controls.form.addEventListener('change', invalidate);
 
@@ -1083,6 +1128,7 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
             previewBox.replaceChildren();
             status.className = 'settlement-status warn';
             status.textContent = errorText(error);
+            showLegacyConflict(error);
             if (['settlement_preview_stale', 'assignment_version_conflict', 'settlement_source_not_head'].includes(error.code)) {
               await reload({ refreshHost: true });
             }
@@ -1106,6 +1152,7 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
         activePreview = null;
         status.className = 'settlement-status warn';
         status.textContent = errorText(error);
+        showLegacyConflict(error);
       } finally {
         previewButton.disabled = Boolean(
           runKind !== 'reversal'
