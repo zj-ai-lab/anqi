@@ -21,6 +21,8 @@ import {
   getFeeSharePlans,
   previewSettlement,
   putFeeSharePlans,
+  unvoidFee,
+  voidFee,
 } from '../lib/settlement-service.js';
 
 const r = Router();
@@ -376,6 +378,24 @@ r.post('/fees/:id/settlements/preview', (req, res) => {
 r.post('/fees/:id/settlements/confirm', (req, res) => {
   try {
     res.json(confirmSettlement(req.params.id, req.body || {}, req.actor));
+  } catch (error) {
+    return settlementFailure(res, error);
+  }
+});
+
+// 作废 / 撤回作废：收款已撤销的律师费不再收取（类比发票冲红后的作废）。
+// 通用 PATCH 对有结算历史的款项一律拒绝改状态，这两个入口是唯一的出口，原因必填并进审计。
+r.post('/fees/:id/void', (req, res) => {
+  try {
+    res.json(voidFee(req.params.id, req.body || {}, req.actor));
+  } catch (error) {
+    return settlementFailure(res, error);
+  }
+});
+
+r.post('/fees/:id/void/undo', (req, res) => {
+  try {
+    res.json(unvoidFee(req.params.id, req.body || {}, req.actor));
   } catch (error) {
     return settlementFailure(res, error);
   }

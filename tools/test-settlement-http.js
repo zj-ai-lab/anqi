@@ -1187,9 +1187,146 @@ try {
     '更正后本款应付合计 = 新金额 × 五成'
   );
 
+  // 作废回归：收款撤销之后这笔律师费不再收取——类比发票冲红后的作废。
+  // 冲红分录是那次 reversal；作废只让款项退出待收并留原因，款项与结算链一条不删，且可以撤回。
+  const voidCase = await request('POST', '/api/cases', {
+    name: '作废示例案（郑十）', procedure: '一审', client: '郑十',
+  });
+  const voidFeeItem = await request('POST', `/api/cases/${voidCase.id}/fees`, {
+    label: '作废示例款', amount: '600.00', due_on: '2026-03-01',
+  });
+  const voidAgreement = createAgreement(voidCase.id, '钱十一', 5000, '五成分成');
+  await request('PUT', `/api/fees/${voidFeeItem.id}/share-plans`, {
+    agreement_id: voidAgreement.agreementId,
+    status: 'assigned',
+    formula_revision_id: voidAgreement.revisionId,
+    revision_choice: 'initial',
+    decision_note: '作废回归',
+    version: 0,
+  });
+  const feeVersion = () => db.prepare('SELECT version FROM fee_items WHERE id=?').get(voidFeeItem.id).version;
+
+  const voidWithoutHistory = await request('POST', `/api/fees/${voidFeeItem.id}/void`, {
+    reason: '记错了', version: feeVersion(),
+  }, 409);
+  assert.equal(voidWithoutHistory.code, 'fee_void_not_needed', '没有结算记录的款项用减免或删除，不走作废');
+
+  const voidReceiptPreview = await request('POST', `/api/fees/${voidFeeItem.id}/settlements/preview`, {
+    run_kind: 'receipt', paid_on: '2026-03-02',
+  });
+  const voidReceipt = await request(
+    'POST', `/api/fees/${voidFeeItem.id}/settlements/confirm`, confirmBody(voidReceiptPreview)
+  );
+  const voidWhilePaid = await request('POST', `/api/fees/${voidFeeItem.id}/void`, {
+    reason: '记错了', version: feeVersion(),
+  }, 409);
+  assert.equal(voidWhilePaid.code, 'fee_void_requires_reversal', '已收的款项必须先撤销收款');
+  assert.match(voidWhilePaid.error, /撤销这次收款/);
+
+  const voidReversalPreview = await request('POST', `/api/fees/${voidFeeItem.id}/settlements/preview`, {
+    run_kind: 'reversal',
+    source_run_id: voidReceipt.run.id,
+    request_id: 'http-void-reversal-1',
+    reason: '合同解除，款项退回',
+  });
+  const voidReversal = await request(
+    'POST', `/api/fees/${voidFeeItem.id}/settlements/confirm`, confirmBody(voidReversalPreview)
+  );
+  assert.equal(voidReversal.fee.status, 'unpaid');
+
+  // 通用入口仍然拒绝：有结算历史的款项不能直接减免，也不能删除。
+  const voidGenericWaive = await request('PATCH', `/api/fees/${voidFeeItem.id}`, {
+    status: 'waived', version: feeVersion(),
+  }, 409);
+  assert.equal(voidGenericWaive.code, 'settlement_preview_required');
+  const voidGenericDelete = await request('DELETE', `/api/fees/${voidFeeItem.id}`, undefined, 409);
+  assert.equal(voidGenericDelete.code, 'fee_delete_blocked_by_settlement_context');
+
+  // 原因与版本都必填，版本须与当前一致。
+  const voidNoReason = await request('POST', `/api/fees/${voidFeeItem.id}/void`, { version: feeVersion() }, 400);
+  assert.equal(voidNoReason.code, 'reason_required');
+  const voidNoVersion = await request('POST', `/api/fees/${voidFeeItem.id}/void`, { reason: '不再收取' }, 400);
+  assert.equal(voidNoVersion.code, 'fee_version_invalid');
+  const voidStale = await request('POST', `/api/fees/${voidFeeItem.id}/void`, {
+    reason: '不再收取', version: feeVersion() + 7,
+  }, 409);
+  assert.equal(voidStale.code, 'fee_version_conflict');
+
+  const beforeVoid = writeCounts();
+  const versionBeforeVoid = feeVersion();
+  const voided = await request('POST', `/api/fees/${voidFeeItem.id}/void`, {
+    reason: '合同解除，不再收取', version: versionBeforeVoid,
+  });
+  assert.equal(voided.status, 'waived');
+  assert.equal(voided.voided, true);
+  assert.equal(voided.void_reason, '合同解除，不再收取');
+  assert.equal(voided.version, versionBeforeVoid + 1);
+  assert.equal(voided.settlement_runs.length, 2, '作废不删除也不新增结算记录：原收款与撤销都在');
+  const afterVoid = writeCounts();
+  assert.deepEqual(
+    { runs: afterVoid.runs, snapshots: afterVoid.snapshots, shares: afterVoid.shares, audits: afterVoid.audits },
+    { runs: beforeVoid.runs, snapshots: beforeVoid.snapshots, shares: beforeVoid.shares, audits: beforeVoid.audits + 1 },
+    '作废只多一条审计，不动结算链与分成台账'
+  );
+  assert.deepEqual(
+    db.prepare("SELECT action,detail FROM audit_log WHERE entity='fee' AND entity_id=? ORDER BY id DESC LIMIT 1").get(voidFeeItem.id),
+    { action: 'void', detail: '合同解除，不再收取' }
+  );
+  const voidCaseFees = await request('GET', `/api/cases/${voidCase.id}/fees`);
+  assert.equal(voidCaseFees.items[0].voided, true);
+  assert.equal(voidCaseFees.total_unpaid, 0, '作废后退出待收');
+  assert.equal(voidCaseFees.total_paid, 0);
+  const voidOverview = await request('GET', '/api/fees/overview');
+  const voidGroup = voidOverview.cases.find((item) => item.case_id === voidCase.id);
+  assert.equal(voidGroup.unpaid, 0, '作废后退出待收（逾期只在待收里算）');
+  assert.equal(voidGroup.waived, 600, '作废的金额归入「放弃 / 减免」一栏，不凭空消失');
+
+  const voidTwice = await request('POST', `/api/fees/${voidFeeItem.id}/void`, {
+    reason: '再点一次', version: feeVersion(),
+  }, 409);
+  assert.equal(voidTwice.code, 'fee_already_voided');
+  const voidedPreview = await request('POST', `/api/fees/${voidFeeItem.id}/settlements/preview`, {
+    run_kind: 'correction',
+    source_run_id: voidReversal.run.id,
+    request_id: 'http-void-correction-1',
+    base_amount_fen: 60000,
+    paid_on: '2026-03-05',
+    reason: '作废状态下不应能重新确认收款',
+  }, 409);
+  assert.equal(voidedPreview.code, 'fee_status_conflict', '作废的款项要先撤回作废才能重新收款');
+
+  // 撤回作废：回到待收，重新进入待收统计；再撤回一次被拒。
+  const unvoided = await request('POST', `/api/fees/${voidFeeItem.id}/void/undo`, { version: feeVersion() });
+  assert.equal(unvoided.status, 'unpaid');
+  assert.equal(unvoided.voided, false);
+  assert.equal(unvoided.void_reason, '');
+  assert.equal((await request('GET', `/api/cases/${voidCase.id}/fees`)).total_unpaid, 600);
+  const unvoidTwice = await request('POST', `/api/fees/${voidFeeItem.id}/void/undo`, { version: feeVersion() }, 409);
+  assert.equal(unvoidTwice.code, 'fee_not_voided');
+
+  // 普通减免（没有结算历史）不是作废，两套入口互不串。
+  const plainWaiveFee = await request('POST', `/api/cases/${voidCase.id}/fees`, {
+    label: '普通减免示例款', amount: '100.00',
+  });
+  await request('PUT', `/api/fees/${plainWaiveFee.id}/share-plans`, {
+    agreement_id: voidAgreement.agreementId,
+    status: 'not_applicable',
+    revision_choice: 'not_applicable',
+    decision_note: '本款不分',
+    version: 0,
+  });
+  const plainWaived = await request('PATCH', `/api/fees/${plainWaiveFee.id}`, {
+    status: 'waived', version: db.prepare('SELECT version FROM fee_items WHERE id=?').get(plainWaiveFee.id).version,
+  });
+  assert.equal(plainWaived.status, 'waived');
+  const plainRead = (await request('GET', `/api/cases/${voidCase.id}/fees`)).items.find((item) => item.id === plainWaiveFee.id);
+  assert.equal(plainRead.voided, false, '普通减免不得显示成作废');
+  const plainUndo = await request('POST', `/api/fees/${plainWaiveFee.id}/void/undo`, { version: plainRead.version }, 409);
+  assert.equal(plainUndo.code, 'fee_not_voided');
+
   assert.equal(db.pragma('integrity_check', { simple: true }), 'ok');
   assert.deepEqual(db.pragma('foreign_key_check'), []);
-  console.log('settlement HTTP tests: plan/preview/confirm + zero-delta + retired history + overlap guards + repair semantics + delete guards + correction paths passed');
+  console.log('settlement HTTP tests: plan/preview/confirm + zero-delta + retired history + overlap guards + repair semantics + delete guards + correction paths + fee void passed');
 } catch (error) {
   let serverLog = '';
   try { serverLog = fs.readFileSync(logPath, 'utf8'); } catch { /* no log */ }

@@ -2125,6 +2125,8 @@ body.cal-dragging { user-select: none; cursor: grabbing; }
   display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px;
 }
 .settlement-request-form > .span-2 { grid-column: span 2; }
+.settlement-void-option { display: flex; align-items: flex-start; gap: 8px; font-size: 12.5px; line-height: 1.45; color: var(--ink-2); cursor: pointer; }
+.settlement-void-option input[type=checkbox] { flex: none; width: auto; margin-top: 2px; }
 .settlement-preview-box { margin-top: 10px; }
 .settlement-preview { display: flex; flex-direction: column; gap: 10px; }
 .settlement-amounts {

@@ -1,6 +1,7 @@
 import { api, el, toast, todayStr } from './api.js';
 import { describeConflictShare } from './share-correct.js';
 import { deleteManualShare } from './share-actions.js';
+import { datePrompt } from './dateedit.js';
 
 const MAX_SAFE = BigInt(Number.MAX_SAFE_INTEGER);
 const RUN_LABEL = { receipt: '收款记账', correction: '修改结算', reversal: '撤销收款' };
@@ -900,7 +901,61 @@ function requestControls({ bundle, runKind }) {
     reasonInput = inputOf({ placeholder: runKind === 'reversal' ? '说明为何撤销这次收款' : '说明本次更正内容', required: '' });
     form.append(field('更正 / 撤销原因', reasonInput, 'span-2'));
   }
-  return { form, amountInput, paidOnInput, reasonInput, source };
+  // 撤销收款时可以顺手把这笔律师费作废：撤销只是把钱「退回待收」，
+  // 这笔钱确实不再收了（记错了、合同解除了）才需要作废，否则它会一直挂在待收里。
+  let voidInput = null;
+  if (runKind === 'reversal') {
+    voidInput = el('input', { type: 'checkbox' });
+    form.append(el('label', { class: 'settlement-void-option span-2' },
+      voidInput,
+      el('span', {}, '撤销后作废这笔律师费（不再收取，退出待收与逾期统计；之后可以撤回作废）')));
+  }
+  return { form, amountInput, paidOnInput, reasonInput, voidInput, source };
+}
+
+// ── 作废 / 撤回作废 ─────────────────────────────────────────────────
+// 作废只对「收款已撤销、回到待收」的律师费开放，类比发票冲红后的作废：
+// 冲红的分录就是那次撤销收款，这里只是让这笔钱不再挂在待收里，并记下原因。
+async function voidFee(fee, { onChanged = null, reason = '' } = {}) {
+  let finalReason = reason;
+  if (!finalReason) {
+    const values = await datePrompt({
+      title: `作废「${fee.label}」`,
+      hint: '这笔律师费的收款已经撤销。作废后它退出待收与逾期统计，款项和历次结算记录都保留；之后可以撤回作废。',
+      fields: [{
+        key: 'reason', type: 'text', required: true, label: '作废原因',
+        value: (fee.settlement_runs || []).at(-1)?.reason || '',
+        placeholder: '例如：款项记错 / 合同解除，不再收取',
+      }],
+    });
+    if (!values) return false;
+    finalReason = values.reason.trim();
+    if (!finalReason) return false;
+  }
+  await api(`/fees/${fee.id}/void`, { body: { reason: finalReason, version: fee.version } });
+  toast('已作废，款项与结算记录保留 ✓');
+  await onChanged?.();
+  return true;
+}
+
+function voidFeeButton(fee, onChanged) {
+  return el('button', {
+    class: 'btn small danger', type: 'button',
+    title: '这笔律师费不再收取时使用；款项与历次结算记录都会保留',
+    onclick: () => voidFee(fee, { onChanged }),
+  }, '作废这笔律师费');
+}
+
+function unvoidFeeButton(fee, onChanged) {
+  return el('button', {
+    class: 'btn small', type: 'button',
+    onclick: async () => {
+      if (!confirm(`撤回「${fee.label}」的作废？它会恢复为待收，重新进入待收与逾期统计。`)) return;
+      await api(`/fees/${fee.id}/void/undo`, { body: { version: fee.version } });
+      toast('已撤回作废，恢复为待收 ✓');
+      await onChanged?.();
+    },
+  }, '撤回作废');
 }
 
 function publicPreview(preview) {
@@ -1121,6 +1176,13 @@ export async function openFeeSettlement({ fee, onChanged = null, runKind = null,
           try {
             const result = await api(`/fees/${fee.id}/settlements/confirm`, { body: confirmBody });
             toast(result.idempotent ? '该结算已确认（幂等返回）' : `${RUN_LABEL[runKind]}已确认 ✓`);
+            // 撤销已落库；勾了「撤销后作废」就接着作废。作废失败不影响撤销结果，
+            // 款项停在待收，行上仍有「作废这笔律师费」可以再点。
+            if (runKind === 'reversal' && controls.voidInput?.checked && result.fee) {
+              try {
+                await voidFee(result.fee, { reason: confirmBody.reason });
+              } catch { /* api() 已提示原因 */ }
+            }
             await onChanged?.();
             modal.close(result);
           } catch (error) {
@@ -1268,6 +1330,18 @@ export function feeSettlementActions({ fee, onChanged, extraActions = [] }) {
   // 已减免款不参与当前收款，未逐款确认的约定要等恢复待收后才重新成为待办。
   const chips = planChips(fee, { includeUnresolved: fee.status !== 'waived' });
   if (fee.status === 'waived') {
+    if (fee.voided) {
+      // 已作废：只留事实与一条回头路，不再提示分成办法。
+      return el('span', { class: 'tl-actions settlement-actions' },
+        el('span', { class: 'settlement-plan-chips' },
+          el('span', { class: 'chip c-red' }, '已作废'),
+          fee.void_reason ? el('span', { class: 'meta' }, `原因：${fee.void_reason}`) : null),
+        el('span', { class: 'settlement-action-buttons' },
+          el('button', { class: 'btn small', type: 'button', onclick: () => openFeeSettlement({ fee, onChanged }) }, '查看结算记录'),
+          unvoidFeeButton(fee, onChanged),
+          ...extraActions)
+      );
+    }
     if (fee.settlement_context?.assignment) {
       chips.push(el('span', { class: 'chip c-green' }, '分成办法已保留'));
     }
@@ -1301,6 +1375,8 @@ export function feeSettlementActions({ fee, onChanged, extraActions = [] }) {
       class: 'btn small primary', type: 'button',
       onclick: () => openFeeSettlement({ fee, onChanged, runKind: 'correction' }),
     }, primaryLabel('重新确认收款')));
+    // 收款已撤销、回到待收：这笔钱确实不再收了，就作废它，别让它一直挂在待收里。
+    if (fee.status === 'unpaid') buttons.push(voidFeeButton(fee, onChanged));
   }
   return el('span', { class: 'tl-actions settlement-actions' },
     chips.length ? el('span', { class: 'settlement-plan-chips' }, ...chips) : null,
