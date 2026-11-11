@@ -189,7 +189,11 @@ function renderLedger(totals, cases, today) {
 function statusChip(f) {
   const prefix = f.is_external_collected ? '他方' : '';
   if (f.status === 'paid') return el('span', { class: 'ledger-chip is-ok' }, f.paid_on ? `${prefix}已收 · ${f.paid_on}` : `${prefix}已收`);
-  if (f.status === 'waived') return el('span', { class: 'ledger-chip is-muted' }, `${prefix}减免`);
+  if (f.status === 'waived') {
+    return f.voided
+      ? el('span', { class: 'ledger-chip is-muted', title: f.void_reason ? `作废原因：${f.void_reason}` : '' }, `${prefix}已作废`)
+      : el('span', { class: 'ledger-chip is-muted' }, `${prefix}减免`);
+  }
   if (!f.due_on) return el('span', { class: 'ledger-chip is-muted' }, `${prefix}待收 · 节点未到`);
   const overdue = f.due_on < todayStr();
   return el('span', { class: `ledger-chip ${overdue ? 'is-crit' : 'is-warn'}` },

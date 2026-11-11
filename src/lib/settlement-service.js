@@ -1126,11 +1126,91 @@ function settlementHistory(feeId) {
   }));
 }
 
+// ── 作废（撤销收款之后，这笔律师费不再收取）────────────────────────────
+// 类比发票冲红作废：冲红分录就是那次 reversal run（追加的冲销快照与正负台账行），
+// 「作废」只把款项本身从待收里拿掉并留下原因——原款项、原结算链一条不删。
+// 不新增状态与列：作废 = 结算链末端已回到未收（reversal）且款项为 waived，由事实推出；
+// 因为通用 PATCH 对有结算历史的款项一律拒绝减免，这个组合只可能经由本入口形成。
+function feeVoidState(fee) {
+  const head = currentHead(fee.id);
+  const reversed = Boolean(head) && head.target_status === 'unpaid';
+  return { head, reversed, voided: reversed && fee.status === 'waived' };
+}
+
+function feeVoidRecord(fee) {
+  const state = feeVoidState(fee);
+  if (!state.voided) return null;
+  const entry = db.prepare(
+    `SELECT detail, at FROM audit_log
+      WHERE entity = 'fee' AND entity_id = ? AND action = 'void'
+      ORDER BY id DESC LIMIT 1`
+  ).get(fee.id);
+  return {
+    reason: entry?.detail || state.head.reason || '',
+    voided_at: entry?.at || '',
+    reversal_run_id: state.head.id,
+  };
+}
+
+function requireFeeVersion(fee, body) {
+  if (!Number.isInteger(body?.version) || body.version <= 0) {
+    fail(400, 'fee_version_invalid', 'version 必填且须为正整数');
+  }
+  if (body.version !== fee.version) {
+    fail(409, 'fee_version_conflict', '款项版本已变化，请刷新后重试', { expected_version: fee.version });
+  }
+}
+
+export function voidFee(feeId, body, actor) {
+  const reason = text(body?.reason, 'reason', { required: true, max: 200 });
+  return withImmediateTransaction(() => {
+    const fee = getFee(feeId);
+    requireFeeVersion(fee, body);
+    const state = feeVoidState(fee);
+    if (state.voided) fail(409, 'fee_already_voided', '这笔律师费已经作废');
+    if (!state.head) {
+      fail(409, 'fee_void_not_needed', '这笔律师费没有收款结算记录，不需要作废；不再收取可直接减免，记错了可直接删除');
+    }
+    if (!state.reversed || fee.status === 'paid') {
+      fail(409, 'fee_void_requires_reversal', '这笔律师费的收款还没有撤销；请先「撤销这次收款」，再作废');
+    }
+    if (fee.status !== 'unpaid') {
+      fail(409, 'fee_status_conflict', '只有待收状态的律师费可以作废');
+    }
+    const updated = db.prepare(
+      `UPDATE fee_items SET status = 'waived', paid_on = '', version = version + 1
+        WHERE id = ? AND version = ? AND status = 'unpaid'`
+    ).run(fee.id, fee.version);
+    if (updated.changes !== 1) fail(409, 'fee_version_conflict', '款项版本已变化，请刷新后重试');
+    audit(actor, 'void', 'fee', fee.id, reason);
+    return enrichFeeForRead(getFee(fee.id));
+  });
+}
+
+export function unvoidFee(feeId, body, actor) {
+  return withImmediateTransaction(() => {
+    const fee = getFee(feeId);
+    requireFeeVersion(fee, body);
+    if (!feeVoidState(fee).voided) fail(409, 'fee_not_voided', '这笔律师费不是作废状态');
+    const updated = db.prepare(
+      `UPDATE fee_items SET status = 'unpaid', version = version + 1
+        WHERE id = ? AND version = ? AND status = 'waived'`
+    ).run(fee.id, fee.version);
+    if (updated.changes !== 1) fail(409, 'fee_version_conflict', '款项版本已变化，请刷新后重试');
+    audit(actor, 'unvoid', 'fee', fee.id, '撤回作废，恢复为待收');
+    return enrichFeeForRead(getFee(fee.id));
+  });
+}
+
 export function enrichFeeForRead(fee, shares = null, settlementContext = null) {
   const bundle = loadPlanBundle(fee);
   const actual = shares || actualShares(fee.id);
+  const voidRecord = feeVoidRecord(fee);
   return {
     ...fee,
+    voided: Boolean(voidRecord),
+    void_reason: voidRecord?.reason || '',
+    voided_at: voidRecord?.voided_at || '',
     shares: actual,
     is_external_collected: isExternalCollectedFee(actual),
     share_plans: bundle.agreements,
