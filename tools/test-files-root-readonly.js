@@ -25,6 +25,8 @@ const child = spawn(process.execPath, ['server.js'], {
     HOST: '127.0.0.1',
     ANJIAN_UNSAFE_NO_AUTH: '1',
     ANJIAN_FILES_ROOT: missingRoot,
+    // 模拟桌面版外壳：用户选的案件文件夹位置后来不在了（移动硬盘没插、文件夹改名）。
+    ANJIAN_DESKTOP: '1',
     LEGALRAG_URL: '',
     LEGALRAG_INTERNAL_KEY: '',
   },
@@ -49,6 +51,8 @@ try {
   console.log(`T3_ROOT_PROBE status=${response.status} error=${JSON.stringify(body.error || '')} root_exists=${rootExists}`);
   assert.equal(response.status, 503, 'read-only folder listing must report an unavailable mount');
   assert.equal(body.error, '文件根不存在');
+  assert.equal(body.desktop, true, '桌面版位置失效时须带上标记，页面才能指引用户去菜单里重选');
+  assert.equal(JSON.stringify(body).includes(missingRoot), false, '失效提示不得带出宿主绝对路径');
   assert.equal(rootExists, false, 'GET must not create a shadow empty files root');
 } finally {
   child.kill('SIGTERM');

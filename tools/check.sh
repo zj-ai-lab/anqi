@@ -437,7 +437,7 @@ node tools/test-agent-http.js
 echo "[41/108] 打包清单守卫（build.files 不得排除 server.js 静态 import 图里的任何 src/** 文件）"
 node tools/test-pack-manifest.js
 
-echo "[42/108] electron backend-env（dataDir 路径拼接 + ANJIAN_TEST_USERDATA 的 env+argv 双门）"
+echo "[42/108] electron backend-env（dataDir 路径拼接 + ANJIAN_TEST_USERDATA 的 env+argv 双门 + 案件文件夹位置解析与把关）"
 node tools/test-electron-backend-env.js
 
 # 红线「agent_enabled=false 时整块 UI 不渲染」此前只有源码可读性背书，没有任何

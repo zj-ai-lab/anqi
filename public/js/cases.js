@@ -26,6 +26,10 @@ try {
     for (const folder of workspaces.folders.filter((item) => item.bound_case_id == null)) {
       folderSelect.append(el('option', { value: folder.name }, `使用已有：${folder.name}`));
     }
+    // 桌面版：已有的案卷放在别处时，告诉人去哪里把「案件文件夹位置」改过去。
+    if (workspaces.desktop) {
+      folderSelect.title = '这里列出的是「案件文件夹位置」下面的文件夹；已有的案卷放在别处时，可在菜单栏「案齐 → 案件文件夹位置…」把位置改过去';
+    }
   }
 } catch {
   folderSelect.disabled = true;

@@ -222,6 +222,9 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
   if (Object.keys(changed).length) await patchCase(changed);
 });
 
+// 桌面版：下拉里列的是「案件文件夹位置」下面的子文件夹，位置本身在应用菜单里改。
+const DESKTOP_FILES_ROOT_HINT = ' 这里列出的是「案件文件夹位置」下面的文件夹；已有的案卷放在别处时，可在菜单栏「案齐 → 案件文件夹位置…」把位置改过去。';
+
 async function loadWorkspacePicker() {
   const select = document.getElementById('case-workspace-select');
   const note = document.getElementById('case-workspace-note');
@@ -253,13 +256,13 @@ async function loadWorkspacePicker() {
     select.disabled = false;
     bindButton.disabled = select.options.length === 0;
     createButton.disabled = false;
-    note.textContent = `当前项目：${current}。案件夹就是本案 AI 助理的工作目录；换绑不移动、不复制、也不删除原文件。`;
+    note.textContent = `当前项目：${current}。案件夹就是本案 AI 助理的工作目录；换绑不移动、不复制、也不删除原文件。${result.desktop ? DESKTOP_FILES_ROOT_HINT : ''}`;
   } catch (error) {
     select.replaceChildren(el('option', { value: current }, current || '案件工作区不可用'));
     select.disabled = true;
     bindButton.disabled = true;
     createButton.disabled = true;
-    note.textContent = `案件工作区读取失败：${error.message || error}`;
+    note.textContent = `案件工作区读取失败：${error.message || error}${error.data?.desktop ? DESKTOP_FILES_ROOT_HINT : ''}`;
   }
 }
 
