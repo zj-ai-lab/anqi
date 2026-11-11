@@ -7,6 +7,7 @@ import { api, el, toast, todayStr } from './api.js';
 import { mountNav } from './nav.js';
 import { datePrompt } from './dateedit.js';
 import { feeSettlementActions, openFeeSettlement, openPrimaryFeeSettlement } from './fee-settlement.js';
+import { manualShareButtons } from './share-actions.js';
 import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
 
@@ -488,9 +489,16 @@ function shareItemRow(s, today) {
           toast(`${receivable ? '应收' : '应分'}月份已更新 ✓`);
           await load();
         },
-      }, '改月份')
+      }, '改月份'),
+      ...manualShareActions(s)
     )
   );
+}
+
+// 手动记录在这里也能更正；删除仍留在案件页，只有不挂任何案件的外部分成在这里删
+// （它们没有案件页可去）。系统结算生成的行不出按钮，更正走上方律师费的「修改这笔结算」。
+function manualShareActions(s) {
+  return manualShareButtons(s, { onChanged: load, allowDelete: s.case_id == null });
 }
 
 function shareSettledText(s) {
@@ -508,7 +516,8 @@ function settledShareRow(s) {
     shareDirection(s.direction),
     el('span', { class: 'pill ok' }, `${receivable ? '已收' : '已分'} · ${s.settled_on || '日期未记'}`),
     ...shareAmountNodes(s),
-    s.note ? el('span', { class: 'meta' }, s.note) : null
+    s.note ? el('span', { class: 'meta' }, s.note) : null,
+    manualShareActions(s).length ? el('span', { class: 'tl-actions' }, ...manualShareActions(s)) : null
   );
 }
 

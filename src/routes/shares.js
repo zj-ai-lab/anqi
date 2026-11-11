@@ -42,7 +42,19 @@ const ENGINE_SOURCE_FIELDS = new Set([
 ]);
 const ENGINE_LIFECYCLE_FIELDS = new Set(['due_month', 'note', 'status', 'settled_on']);
 
+const ENGINE_FACTS_IMMUTABLE_MESSAGE = '系统结算生成的分成不能直接改金额或对象；请在对应律师费上「修改这笔结算」或「撤销这次收款」';
+// 人工更正手动记录时，审计要留下改前改后（DESIGN §1.4「更正与冲销只追加」对 legacy/manual 事实纠正的要求）。
+const SHARE_AUDIT_FIELDS = ['counterpart', 'person_id', 'fee_item_id', 'base_amount', 'amount', 'due_month', 'status', 'settled_on', 'external_case', 'note'];
+
 const blank = (v) => v === undefined || v === null || v === '';
+
+function shareChangeDetail(before, after) {
+  const show = (value) => (value === null || value === undefined || value === '' ? '空' : String(value));
+  return SHARE_AUDIT_FIELDS
+    .filter((field) => before[field] !== after[field])
+    .map((field) => `${field}: ${show(before[field])}→${show(after[field])}`)
+    .join('; ');
+}
 const actorOf = (req) => String(req.actor || DEFAULT_ACTOR).trim() || DEFAULT_ACTOR;
 
 function repairVersion(value) {
@@ -842,10 +854,14 @@ r.patch('/shares/:id', (req, res) => {
     const protectedAttempt = Object.keys(b).find((key) => !ENGINE_LIFECYCLE_FIELDS.has(key));
     if (protectedAttempt) {
       return res.status(409).json({
-        error: '结算引擎台账的金额、身份与来源事实不可修改',
+        error: ENGINE_FACTS_IMMUTABLE_MESSAGE,
         code: 'engine_share_facts_immutable',
       });
     }
+  }
+  // 手动记录从已结清退回待收 / 待分或改成减免时，旧的结清日期不能留在记录里。
+  if (!engineRow && 'status' in b && b.status !== 'settled' && row.status === 'settled' && !('settled_on' in b)) {
+    b.settled_on = '';
   }
   const sets = [];
   const args = [];
@@ -970,7 +986,7 @@ r.patch('/shares/:id', (req, res) => {
       const protectedAttempt = Object.keys(b).find((key) => !ENGINE_LIFECYCLE_FIELDS.has(key));
       if (protectedAttempt) {
         return {
-          error: '结算引擎台账的金额、身份与来源事实不可修改',
+          error: ENGINE_FACTS_IMMUTABLE_MESSAGE,
           code: 'engine_share_facts_immutable',
           http: 409,
         };
@@ -1028,8 +1044,9 @@ r.patch('/shares/:id', (req, res) => {
       };
     }
     db.prepare(`UPDATE fee_shares SET ${sets.join(', ')} WHERE id = ?`).run(...args, current.id);
-    audit(req.actor, 'update', 'share', current.id, Object.keys(b).join(','));
-    return { share: db.prepare('SELECT * FROM fee_shares WHERE id = ?').get(current.id) };
+    const updated = db.prepare('SELECT * FROM fee_shares WHERE id = ?').get(current.id);
+    audit(req.actor, 'update', 'share', current.id, shareChangeDetail(current, updated) || Object.keys(b).join(','));
+    return { share: updated };
   });
   if (result.error) return res.status(result.http).json(result);
   res.json(result.share);
@@ -1047,10 +1064,15 @@ r.delete('/shares/:id', (req, res) => {
   }
   if (row.settlement_snapshot_id != null || row.assignment_id != null
       || row.entry_kind === 'calculated' || row.entry_kind === 'adjustment') {
-    return res.status(409).json({ error: '结算引擎台账不能删除', code: 'engine_share_crud_forbidden' });
+    return res.status(409).json({
+      error: '系统结算生成的分成不能直接删除；请在对应律师费上「修改这笔结算」或「撤销这次收款」',
+      code: 'engine_share_crud_forbidden',
+    });
   }
   db.prepare('DELETE FROM fee_shares WHERE id = ?').run(row.id);
-  audit(req.actor, 'delete', 'share', row.id, `${row.counterpart} ${row.amount}`);
+  audit(req.actor, 'delete', 'share', row.id,
+    `${row.direction} ${row.counterpart} ${row.amount} ${row.due_month} ${row.status}`
+    + (row.fee_item_id != null ? ` fee#${row.fee_item_id}` : ''));
   res.json({ ok: true });
 });
 

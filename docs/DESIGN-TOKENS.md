@@ -1171,7 +1171,7 @@ html.skin-transitioning, html.skin-transitioning * {
 
 **A-24 弹层无障碍契约：** `.dmodal` 必须是有可访问名称的 `role="dialog"` + `aria-modal="true"`；打开时只把本弹层以外、此前未 inert 的 `body` 直属节点设为 `inert`，关闭时精确恢复。Tab / Shift+Tab 在当前最上层弹层内循环；Escape 与点击遮罩关闭；关闭后把焦点归还仍在文档中的触发元素。嵌套弹层按栈处理，内层不得解除外层原本 inert 的页面。移动端弹层里的 input/select/textarea 与 disclosure summary 均以 44px 为最低可操作高度。
 
-**A-24a 分成计划/公式/结算弹层：** `.dmodal.settlement-modal` 只扩展共享弹层宽高与滚动；内部使用 `.settlement-step`、`.settlement-plan-row`、`.settlement-formula-grid`、`.settlement-deduction-row`、`.settlement-trace-row`、`.settlement-history-item` 等层 A 骨架类。案件页约定管理另用 `.settlement-agreement-group` / `.settlement-agreement-group-head` 把“我应收 / 我应付”分组，应收置前；分组仍在同一 `.panel` 内，不能嵌套面板材质。计算 trace 行不是 `.panel`，避免 jade 重复叠加 blur。所有颜色、表面、边框色、阴影仍只取令牌；边框恒 1px，未决强调使用 `inset box-shadow`，不推动内容。
+**A-24a 分成计划/公式/结算弹层：** `.dmodal.settlement-modal` 只扩展共享弹层宽高与滚动；内部使用 `.settlement-step`、`.settlement-plan-row`、`.settlement-formula-grid`、`.settlement-deduction-row`、`.settlement-trace-row`、`.settlement-history-item` 等层 A 骨架类。案件页约定管理另用 `.settlement-agreement-group` / `.settlement-agreement-group-head` 把“我应收 / 我应付”分组，应收置前；分组仍在同一 `.panel` 内，不能嵌套面板材质。计算 trace 行不是 `.panel`，避免 jade 重复叠加 blur。所有颜色、表面、边框色、阴影仍只取令牌；边框恒 1px，未决强调使用 `inset box-shadow`，不推动内容。手动记录与本次结算重叠时的处理面板用 `.settlement-conflict`（标题、说明、`.settlement-conflict-steps` 两条出路、逐条 `.row` 冲突记录与就地动作），同属层 A：边框取 `--amber-line`、底取 `--surface-solid`，不新增色值，行内按钮沿用 `.btn.small` 的触控尺度。
 
 ---
 

@@ -97,8 +97,9 @@ echo "[22/108] 结算整数公式单元测试"
 node tools/test-settlement.js
 node tools/test-fee-accounting.js
 
-echo "[23/108] 律师资金卡 view model 测试"
+echo "[23/108] 律师资金卡 view model 测试 + 分成更正纯逻辑"
 node tools/test-settlement-view.js
+node tools/test-share-correct.js
 
 echo "[24/108] 期限引擎单元测试"
 DB_PATH="$TMPDIR_CHECK/engine.db" node tools/test-engine.js

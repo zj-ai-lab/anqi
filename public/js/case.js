@@ -11,7 +11,9 @@ import { stepper, feeBar } from './charts.js';
 import { datePrompt } from './dateedit.js';
 import { confirmModal } from './modal.js';
 import { fileIconEl } from './icons.js';
-import { feeSettlementActions, openFormulaEditor, openPrimaryFeeSettlement, renderAgreementManager } from './fee-settlement.js';
+import { feeSettlementActions, openFeeSettlement, openFormulaEditor, openPrimaryFeeSettlement, renderAgreementManager } from './fee-settlement.js';
+import { isEngineShare } from './share-correct.js';
+import { manualShareButtons } from './share-actions.js';
 import { renderFeeVouchers } from './fee-vouchers.js';
 import { bindFold, setFoldOpen } from './fold.js';
 import { mountAgentDrawer } from './agent-drawer.js';
@@ -1109,9 +1111,12 @@ function shareStatus(s) {
       : `${receivable ? '待收' : '待分'} · ${s.due_month}`);
 }
 
+// 每一行都要留一条更正的路：待处理行可结清 / 改月份；手动记录任何状态都能更正或删除；
+// 系统结算生成的行不能直接改删，给出「修改结算」直达该律师费的追加式更正。
 function shareActions(s) {
-  if (s.status !== 'pending') return null;
-  const actions = [
+  const actions = [];
+  const refresh = () => Promise.all([loadFees(), loadShares()]);
+  if (s.status === 'pending') actions.push(
     el('button', {
       class: 'btn small primary', type: 'button',
       onclick: async () => {
@@ -1140,21 +1145,25 @@ function shareActions(s) {
         loadShares();
       },
     }, '改月份')
-  ];
-  const engineGenerated = s.settlement_snapshot_id != null
-    || s.assignment_id != null
-    || s.entry_kind === 'calculated'
-    || s.entry_kind === 'adjustment';
-  if (!engineGenerated && !s.is_void) actions.push(el('button', {
-      class: 'btn small danger', type: 'button',
-      onclick: async () => {
-        if (!confirm(`删除与「${s.counterpart}」的这笔分成？`)) return;
-        await api(`/shares/${s.id}`, { method: 'DELETE' });
-        toast('分成记录已删除');
-        loadShares();
+  );
+  if (isEngineShare(s)) {
+    if (s.fee_item_id != null) actions.push(el('button', {
+      class: 'btn small', type: 'button',
+      title: '这笔分成由系统按结算算出，不能直接改或删；在这里修改这笔结算，系统会追加一条更正记录',
+      onclick: () => {
+        // 款项与分成并行加载，点的时候再取，保证拿到的是最新的款项与结算记录。
+        const fee = lastFeeItems.find((item) => item.id === s.fee_item_id);
+        if (!fee || (fee.settlement_runs || []).at(-1)?.target_status !== 'paid') {
+          toast('这笔律师费的结算记录有变化，请刷新页面后再试');
+          return;
+        }
+        openFeeSettlement({ fee, onChanged: refresh, runKind: 'correction' });
       },
-    }, '删'));
-  return el('span', { class: 'tl-actions' }, ...actions);
+    }, '修改结算'));
+  } else {
+    actions.push(...manualShareButtons(s, { onChanged: refresh }));
+  }
+  return actions.length ? el('span', { class: 'tl-actions' }, ...actions) : null;
 }
 
 function shareRow(s, repair = null) {
