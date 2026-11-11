@@ -15,6 +15,9 @@ import { missingConditions, conditionChangePreview, reconcileConditions, RULES, 
 import { computeElapsed } from '../lib/elapsed.js';
 
 const FILES_ROOT = process.env.ANJIAN_FILES_ROOT || '';
+// 桌面版外壳会带上这个标记：文件根的位置由用户在应用菜单里选，页面据此给出指引。
+// 只回一个布尔值，文件根的绝对路径仍然不出后端。
+const DESKTOP = process.env.ANJIAN_DESKTOP === '1';
 
 import {CASE_TYPES, inferCaseType} from '../../public/js/case-types.js';
 const EDITABLE = [ 'case_type',
@@ -83,12 +86,13 @@ export function reconcilePrecondition(caseId, value, actor) {
 }
 
 function workspacePayload() {
-  if (!FILES_ROOT) return { configured: false, folders: [] };
+  if (!FILES_ROOT) return { configured: false, desktop: DESKTOP, folders: [] };
   const { names } = listCaseDirectories(FILES_ROOT);
   const cases = db.prepare('SELECT id,name,folder_path FROM cases ORDER BY id').all();
   const bindings = new Map(cases.map((row) => [caseDirectoryName(row), row]));
   return {
     configured: true,
+    desktop: DESKTOP,
     folders: names.map((name) => {
       const owner = bindings.get(name);
       return {
@@ -125,7 +129,7 @@ r.get('/case-folders', (req, res) => {
     res.json(workspacePayload());
   } catch (error) {
     if (['root_unavailable', 'root_invalid'].includes(error?.code)) {
-      return res.status(503).json({ error: error.message });
+      return res.status(503).json({ error: error.message, desktop: DESKTOP });
     }
     throw error;
   }

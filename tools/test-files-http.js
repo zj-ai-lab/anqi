@@ -178,6 +178,8 @@ try {
   result = await request('GET', '/api/case-folders');
   const listed = result.data.folders.find((folder) => folder.name === '同步盘已有案卷');
   assert.equal(listed.bound_case_id, workspaceCase.id, '目录选择器必须标出已绑定案件');
+  assert.equal(result.data.desktop, false, '非桌面版部署不得提示去应用菜单改位置');
+  assert.equal(JSON.stringify(result.data).includes(filesRoot), false, '目录选择器不得返回文件根的宿主绝对路径');
   await request('POST', '/api/cases', {
     name: '不得重复绑定', folder_path: '同步盘已有案卷', procedure: '一审',
   }, 409);

@@ -6,14 +6,16 @@
 // 首启检测：读 userData/config.json
 //   未配置 → 引导窗口（选数据目录 / 设密码 / 可选填 API key）→ 写 config.json → 启动
 //   已配置 → 注入 env → fork server.js → 健康检查 → 主窗口
-const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
+const { app, BrowserWindow, Menu, MenuItem, ipcMain, dialog, shell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { fork } = require('node:child_process');
 const http = require('node:http');
 const { initAutoUpdater } = require('./updater');
-const { buildBackendEnv, shouldRedirectTestUserData } = require('./backend-env');
+const {
+  buildBackendEnv, defaultFilesRoot, filesRootFor, filesRootProblem, shouldRedirectTestUserData,
+} = require('./backend-env');
 const { shouldPreventClose } = require('./window-policy');
 
 // dev 环境（未签名）禁用 sandbox，避免 macOS "Operation not permitted" 刷屏。
@@ -157,6 +159,142 @@ function healthzOk(port) {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// 结束当前后端子进程并等它真的退出（改案件文件夹位置时要换一套 env 重启）。
+function stopBackend() {
+  return new Promise((resolve) => {
+    const proc = backendProc;
+    if (!proc) return resolve();
+    // 正常是 SIGTERM 后几百毫秒内退出；5 秒还没退就强杀，绝不让新旧两个后端同时开着同一个库。
+    const timer = setTimeout(() => { proc.kill('SIGKILL'); }, 5000);
+    proc.once('exit', () => { clearTimeout(timer); resolve(); });
+    proc.kill();
+  });
+}
+
+async function showBackend(config) {
+  const port = await startBackend(config);
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    await mainWindow.loadURL(`http://127.0.0.1:${port}/`);
+    mainWindow.show();
+  } else {
+    createMainWindow(port);
+  }
+}
+
+// ── 案件文件夹位置（菜单「案件文件夹位置…」）────────────────────────────
+// 只换文件根的位置，不搬任何文件；「一个案件 = 根下面的一个子文件夹」不变。
+// 位置把关在 ./backend-env.js 的 filesRootProblem()（可单测）；这里只负责原生
+// 对话框、写 config.json 和按新 env 重启后端。新位置起不来就原样退回旧位置。
+let changingFilesRoot = false;
+
+function realPathOrNull(target) {
+  try { return fs.realpathSync.native(target); } catch { return null; }
+}
+
+async function chooseFilesRoot() {
+  if (changingFilesRoot) return;
+  const config = readConfig();
+  if (!config || !backendProc) return; // 首次引导还没完成，没有可改的位置
+  changingFilesRoot = true;
+  try {
+    const parent = mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined;
+    const ask = (options) => (parent ? dialog.showMessageBox(parent, options) : dialog.showMessageBox(options));
+    const current = filesRootFor(config);
+    const fallback = defaultFilesRoot(config);
+    const isCustom = current !== fallback;
+    const buttons = isCustom ? ['选择文件夹…', '恢复默认位置', '取消'] : ['选择文件夹…', '取消'];
+    const entry = await ask({
+      type: 'info',
+      message: '案件文件夹位置',
+      detail: `现在：${current}\n\n案齐在这个文件夹下面为每个案件对应一个子文件夹。`
+        + '如果你已经有一套案卷文件夹，可以把位置改到它们所在的上一级文件夹，之后在案件里直接选用已有文件夹。',
+      buttons,
+      defaultId: 0,
+      cancelId: buttons.length - 1,
+    });
+    if (entry.response === buttons.length - 1) return;
+
+    let target = fallback;
+    if (entry.response === 0) {
+      const options = {
+        title: '选择放案卷的文件夹',
+        defaultPath: current,
+        properties: ['openDirectory', 'createDirectory'],
+      };
+      const picked = parent ? await dialog.showOpenDialog(parent, options) : await dialog.showOpenDialog(options);
+      if (picked.canceled || !picked.filePaths.length) return;
+      target = realPathOrNull(picked.filePaths[0]);
+      const problem = target === null
+        ? '这个文件夹打不开，请换一个。'
+        : filesRootProblem({
+          picked: target,
+          dataDir: realPathOrNull(config.dataDir) || config.dataDir,
+          homeDir: realPathOrNull(app.getPath('home')) || app.getPath('home'),
+          appRoot: realPathOrNull(APP_ROOT) || APP_ROOT,
+        });
+      if (problem) {
+        await ask({ type: 'warning', message: '不能用这个位置', detail: problem, buttons: ['好'] });
+        return;
+      }
+    }
+    if (target === current) return;
+
+    const confirmed = await ask({
+      type: 'question',
+      message: '更改案件文件夹位置？',
+      detail: `新位置：${target}\n\n`
+        + '· 案齐不会移动、复制或删除任何文件。\n'
+        + '· 已有案件会按文件夹名到新位置下找同名文件夹；找不到的，案件文件页会提示重新选择。\n'
+        + '· 案齐后台会重启一次，正在进行的 AI 助理对话会中断。',
+      buttons: ['更改并重启', '取消'],
+      defaultId: 0,
+      cancelId: 1,
+    });
+    if (confirmed.response !== 0) return;
+
+    const nextConfig = { ...config };
+    if (target === fallback) delete nextConfig.filesRoot; else nextConfig.filesRoot = target;
+    await stopBackend();
+    try {
+      writeConfig(nextConfig);
+      await showBackend(nextConfig);
+    } catch (error) {
+      writeConfig(config);
+      await stopBackend();
+      try {
+        await showBackend(config);
+      } catch (restoreError) {
+        dialog.showErrorBox('案齐启动失败', restoreError.message || String(restoreError));
+        app.quit();
+        return;
+      }
+      dialog.showErrorBox('没能更改案件文件夹位置', `已恢复原来的位置。\n\n${error.message || error}`);
+    }
+  } finally {
+    changingFilesRoot = false;
+  }
+}
+
+// 在 Electron 默认菜单的第一个菜单（macOS 是「案齐」应用菜单）里加一项，其余菜单原样保留。
+function installFilesRootMenu() {
+  const item = { label: '案件文件夹位置…', click: () => { chooseFilesRoot(); } };
+  const menu = Menu.getApplicationMenu();
+  const host = menu?.items?.[0]?.submenu;
+  if (!host) {
+    // 默认菜单拿不到时（理论上不会发生）自己搭一份最小菜单，保证入口一定存在。
+    Menu.setApplicationMenu(Menu.buildFromTemplate([
+      { label: app.name, submenu: [item, { type: 'separator' }, { role: 'quit' }] },
+      { role: 'editMenu' },
+      { role: 'viewMenu' },
+      { role: 'windowMenu' },
+    ]));
+    return;
+  }
+  host.insert(1, new MenuItem({ type: 'separator' }));
+  host.insert(2, new MenuItem(item));
+  Menu.setApplicationMenu(menu);
+}
+
 // ── 主窗口 ──────────────────────────────────────────────────────────
 function createMainWindow(port) {
   mainWindow = new BrowserWindow({
@@ -296,6 +434,7 @@ if (!gotLock) {
   });
 
   app.whenReady().then(async () => {
+    installFilesRootMenu();
     const config = readConfig();
     if (!config) {
       createOnboardingWindow();

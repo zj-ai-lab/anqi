@@ -15,7 +15,10 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildBackendEnv, shouldRedirectTestUserData, TEST_USERDATA_ACK_SWITCH } from '../electron/backend-env.js';
+import {
+  buildBackendEnv, defaultFilesRoot, filesRootFor, filesRootProblem,
+  shouldRedirectTestUserData, TEST_USERDATA_ACK_SWITCH,
+} from '../electron/backend-env.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -62,7 +65,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
   });
   assert.equal(envWithKey.DEEPSEEK_API_KEY, 'sk-not-a-real-key', '配置了 deepseekKey 时必须透传给子进程');
 
-  console.log('  [1/3] buildBackendEnv()：ok（DB_PATH/ANJIAN_FILES_ROOT/ANJIAN_AGENT_SESSION_ROOT 均在 dataDir 下且互不相同）');
+  console.log('  [1/5] buildBackendEnv()：ok（DB_PATH/ANJIAN_FILES_ROOT/ANJIAN_AGENT_SESSION_ROOT 均在 dataDir 下且互不相同）');
 }
 
 // ---- shouldRedirectTestUserData：必须 env + argv 开关同时出现才生效 ----
@@ -93,7 +96,7 @@ const REPO_ROOT = path.resolve(__dirname, '..');
   shouldRedirectTestUserData({ ANJIAN_TEST_USERDATA: '/tmp/x' }, (name) => { queriedName = name; return true; });
   assert.equal(queriedName, TEST_USERDATA_ACK_SWITCH, `必须查询固定的开关名 "${TEST_USERDATA_ACK_SWITCH}"，实际查询了 "${queriedName}"`);
 
-  console.log('  [2/3] shouldRedirectTestUserData()：ok（env 与 argv 开关必须同时出现，单独 env 不生效）');
+  console.log('  [2/5] shouldRedirectTestUserData()：ok（env 与 argv 开关必须同时出现，单独 env 不生效）');
 }
 
 // ---- server.js 必须真的读 ANJIAN_AGENT_SESSION_ROOT 并传给 AgentSupervisor
@@ -119,7 +122,81 @@ const REPO_ROOT = path.resolve(__dirname, '..');
     '传给 AgentSupervisor 的 sessionRoot——electron/main.js 的 buildBackendEnv() 只负责产出这个变量，' +
     '真正让它生效的是 server.js 这一侧的消费，两边同一个变量名任何一侧改名/拼错都会让桌面版 session transcript 静默写回 app 资源树本体'
   );
-  console.log('  [3/3] server.js 消费 ANJIAN_AGENT_SESSION_ROOT 的接线：ok（变量名与 fallback 写法均未漂移）');
+  console.log('  [3/5] server.js 消费 ANJIAN_AGENT_SESSION_ROOT 的接线：ok（变量名与 fallback 写法均未漂移）');
+}
+
+// ---- 案件文件夹位置：config.filesRoot 可选，默认仍在 dataDir 下 ----
+{
+  const config = { dataDir: '/Users/test-user/Documents/案齐数据', user: 'lawyer', passHash: 'not-a-real-hash' };
+  const fallback = path.join(config.dataDir, '案件夹');
+  assert.equal(defaultFilesRoot(config), fallback);
+  assert.equal(filesRootFor(config), fallback, '没改过位置时用默认位置');
+  assert.equal(filesRootFor({ ...config, filesRoot: '' }), fallback, '空值等价未设置');
+  assert.equal(filesRootFor({ ...config, filesRoot: '   ' }), fallback);
+  assert.equal(filesRootFor({ ...config, filesRoot: 42 }), fallback, '类型不对一律回默认');
+  assert.equal(
+    filesRootFor({ ...config, filesRoot: '案卷' }), fallback,
+    '相对路径绝不能交给后端——它会解析到后端 cwd，也就是已签名的 app 资源树本体'
+  );
+  assert.equal(filesRootFor({ ...config, filesRoot: '../../etc' }), fallback);
+  assert.equal(filesRootFor({ ...config, filesRoot: '/Users/test-user/案卷/' }), '/Users/test-user/案卷', '绝对路径规范化后原样使用');
+
+  const env = buildBackendEnv({
+    baseEnv: {}, config: { ...config, filesRoot: '/Users/test-user/案卷' }, port: 1, internalKey: 'x',
+  });
+  assert.equal(env.ANJIAN_FILES_ROOT, '/Users/test-user/案卷', '改过位置后后端必须用新位置');
+  assert.equal(env.DB_PATH, path.join(config.dataDir, 'anjian.db'), '改案件文件夹位置不得带走数据库');
+  assert.equal(env.ANJIAN_AGENT_SESSION_ROOT, path.join(config.dataDir, 'agent-sessions'), '也不得带走 AI 助理会话记录');
+  assert.equal(env.ANJIAN_DESKTOP, '1', '桌面版标记必须在，页面靠它提示「位置可在菜单里更改」');
+
+  console.log('  [4/5] filesRootFor()：ok（缺省/空/非字符串/相对路径一律回默认，绝对路径生效且不带走 DB 与会话目录）');
+}
+
+// ---- filesRootProblem：用户在系统文件夹选择器里选完之后的把关 ----
+{
+  const base = {
+    dataDir: '/Users/test-user/Documents/案齐数据',
+    homeDir: '/Users/test-user',
+    appRoot: '/Applications/案齐.app/Contents/Resources/app',
+  };
+  const problem = (picked) => filesRootProblem({ ...base, picked });
+
+  // 可以用的位置：专门放案卷的文件夹（含同步盘、外置盘），以及默认位置本身。
+  for (const ok of [
+    '/Users/test-user/案卷',
+    '/Users/test-user/Documents/案卷',
+    '/Users/test-user/OneDrive/案件/2026',
+    '/Volumes/外置硬盘/案卷',
+    '/Users/test-user/Documents/案齐数据/案件夹',
+  ]) {
+    assert.equal(problem(ok), null, `「${ok}」应当可用`);
+  }
+
+  // 不能用的位置，每一类都要给出人能看懂的原因。
+  assert.match(problem('/'), /整块磁盘/);
+  assert.match(problem('/Users/test-user'), /个人文件夹/, '个人文件夹本身：文稿、下载都会被当成案件夹');
+  assert.match(problem('/Users'), /个人文件夹/, '个人文件夹的上级同理');
+  assert.match(problem('/Users/test-user/Documents'), /数据目录/, '包含数据目录：数据库会出现在案件夹列表里，AI 助理沙箱也会拒绝');
+  assert.match(problem('/Users/test-user/Documents/案齐数据'), /数据目录/);
+  assert.match(problem('/Users/test-user/Documents/案齐数据/agent-sessions'), /数据目录里的其他文件夹/);
+  assert.match(problem('/Users/test-user/Documents/案齐数据/案件夹/张三案'), /数据目录里的其他文件夹/, '默认位置的子文件夹是某个案件的案件夹，不能再当根');
+  assert.match(problem('/Applications/案齐.app/Contents/Resources/app/data'), /程序自身/);
+  assert.match(problem('/Applications/案齐.app'), /程序自身/, '包住程序本体的位置同样不行');
+  assert.match(problem('案卷'), /请选择一个文件夹/, '相对路径不是有效选择');
+  assert.match(problem(undefined), /请选择一个文件夹/);
+
+  // 名字只是前缀相同的兄弟目录不是「在里面」，不能被误伤。
+  assert.equal(problem('/Users/test-user/Documents/案齐数据备份'), null);
+  assert.equal(problem('/Users/test-user2/案卷'), null);
+
+  // main.js 必须真的接上这道把关和菜单入口——只写了纯函数没接线等于没做。
+  const mainSrc = fs.readFileSync(path.join(REPO_ROOT, 'electron', 'main.js'), 'utf8');
+  assert.match(mainSrc, /filesRootProblem\(\{/, 'electron/main.js 必须在写入 config 前调用 filesRootProblem()');
+  assert.match(mainSrc, /app\.whenReady\(\)\.then\(async \(\) => \{\s*installFilesRootMenu\(\);/, '菜单入口必须在 app ready 后安装');
+  assert.match(mainSrc, /fs\.realpathSync\.native/, '比较前必须先解析符号链接，否则可以用软链接绕过位置把关');
+  assert.doesNotMatch(mainSrc, /ipcMain\.handle\('(?!onboarding:)/, '改位置只走原生菜单与原生对话框，不给页面新增 IPC 通道');
+
+  console.log('  [5/5] filesRootProblem()：ok（磁盘根/个人文件夹/数据目录/程序本体一律拒绝并给出原因；main.js 接线在位）');
 }
 
 console.log('electron backend-env 自检全部通过');
