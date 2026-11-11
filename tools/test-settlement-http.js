@@ -1045,9 +1045,151 @@ try {
   assert.equal(reactivateConflict.code, 'active_agreement_conflict');
   assert.equal(reactivateConflict.agreement_id, retiredReplacement.id);
 
+  // 更正路径回归：手动记录与系统结算在同一笔律师费上相遇时，必须存在能走到底的路——
+  // ① 手动记录不论状态都能更正，审计留改前改后；② 保留手动记录、把这项分成改为不关联本款；
+  // ③ 删掉手动记录后系统结算可以确认；④ 系统结算生成的分成只能经「修改这笔结算」追加更正。
+  const fixCase = await request('POST', '/api/cases', {
+    name: '更正路径示例案（周八）', procedure: '一审', client: '周八',
+  });
+  const fixFee = await request('POST', `/api/cases/${fixCase.id}/fees`, {
+    label: '更正路径已收款', amount: '1000.00',
+  });
+  await request('PATCH', `/api/fees/${fixFee.id}`, { status: 'paid', paid_on: '2026-07-01' });
+  const fixManual = await request('POST', '/api/shares', {
+    case_id: fixCase.id,
+    fee_item_id: fixFee.id,
+    direction: 'payable',
+    counterpart: '吴九',
+    amount: '300.00',
+    due_month: '2026-07',
+  });
+  await request('PATCH', `/api/shares/${fixManual.id}`, { status: 'settled', settled_on: '2026-07-05' });
+  const fixAgreement = await request('POST', `/api/cases/${fixCase.id}/share-agreements`, {
+    direction: 'payable',
+    counterpart: '吴九',
+    effective_on: '2026-01-01',
+    label: '五成初始公式',
+    change_note: '更正路径回归',
+    result_kind: 'rate',
+    result_basis: 'gross',
+    result_rate_bps: 5000,
+    deductions: [],
+  });
+  let fixPlans = await request('PUT', `/api/fees/${fixFee.id}/share-plans`, {
+    agreement_id: fixAgreement.id,
+    status: 'assigned',
+    formula_revision_id: fixAgreement.latest_revision.id,
+    revision_choice: 'initial',
+    decision_note: '想改由系统计算',
+    version: 0,
+  });
+  const fixPlanVersion = () => fixPlans.agreements.find((row) => row.id === fixAgreement.id).plan.version;
+  const fixReceiptInput = { run_kind: 'receipt', paid_on: '2026-07-01' };
+
+  const fixConflict = await request(
+    'POST', `/api/fees/${fixFee.id}/settlements/preview`, fixReceiptInput, 409
+  );
+  assert.equal(fixConflict.code, 'legacy_share_adoption_conflict');
+  const fixConflictRow = fixConflict.shares.find((share) => share.id === fixManual.id);
+  assert(fixConflictRow, '冲突响应必须点名是哪一条手动记录');
+  assert.equal(fixConflictRow.amount, 300, '冲突行须带金额，界面才能说清是哪一笔');
+  assert.equal(fixConflictRow.due_month, '2026-07');
+  assert.equal(fixConflictRow.status, 'settled');
+  assert.match(fixConflict.error, /删除该手动记录/);
+  assert.match(fixConflict.error, /不关联/);
+  assert.doesNotMatch(fixConflict.error, /legacy|manual/, '面向人的文案不出现内部词');
+
+  // ① 已结清的手动记录仍可更正金额；退回待分时自动清掉旧的结清日期。
+  const fixAmount = await request('PATCH', `/api/shares/${fixManual.id}`, { amount: 250 });
+  assert.equal(fixAmount.amount, 250);
+  assert.equal(fixAmount.status, 'settled');
+  assert.match(
+    db.prepare(
+      "SELECT detail FROM audit_log WHERE entity='share' AND entity_id=? AND action='update' ORDER BY id DESC LIMIT 1"
+    ).get(fixManual.id).detail,
+    /amount: 300→250/,
+    '手动记录的事实更正必须在审计里留改前改后'
+  );
+  const fixReopened = await request('PATCH', `/api/shares/${fixManual.id}`, { status: 'pending' });
+  assert.equal(fixReopened.status, 'pending');
+  assert.equal(fixReopened.settled_on, '', '退回待分不得残留旧的结清日期');
+  assert.match(
+    db.prepare(
+      "SELECT detail FROM audit_log WHERE entity='share' AND entity_id=? AND action='update' ORDER BY id DESC LIMIT 1"
+    ).get(fixManual.id).detail,
+    /status: settled→pending; settled_on: 2026-07-05→空/
+  );
+
+  // ② 以手动记录为准：把这项分成改为不关联本款，系统不再重复计算，手动记录原样保留。
+  fixPlans = await request('PUT', `/api/fees/${fixFee.id}/share-plans`, {
+    agreement_id: fixAgreement.id,
+    status: 'not_applicable',
+    revision_choice: 'not_applicable',
+    decision_note: '这笔按手动记录为准',
+    version: fixPlanVersion(),
+  });
+  const fixKeepManual = await request('POST', `/api/fees/${fixFee.id}/settlements/preview`, fixReceiptInput);
+  assert.deepEqual(fixKeepManual.settlements, [], '不关联后本款不产生系统分成');
+  assert.equal(db.prepare('SELECT amount FROM fee_shares WHERE id=?').get(fixManual.id).amount, 250);
+
+  // ③ 以系统计算为准：改回关联 → 仍冲突 → 删除手动记录 → 结算可确认。
+  fixPlans = await request('PUT', `/api/fees/${fixFee.id}/share-plans`, {
+    agreement_id: fixAgreement.id,
+    status: 'assigned',
+    formula_revision_id: fixAgreement.latest_revision.id,
+    revision_choice: 'initial',
+    decision_note: '改由系统计算',
+    version: fixPlanVersion(),
+  });
+  const fixStillConflict = await request(
+    'POST', `/api/fees/${fixFee.id}/settlements/preview`, fixReceiptInput, 409
+  );
+  assert.equal(fixStillConflict.code, 'legacy_share_adoption_conflict');
+  await request('DELETE', `/api/shares/${fixManual.id}`);
+  assert.match(
+    db.prepare(
+      "SELECT detail FROM audit_log WHERE entity='share' AND entity_id=? AND action='delete'"
+    ).get(fixManual.id).detail,
+    /payable 吴九 250 2026-07 pending fee#\d+/,
+    '删除手动记录须在审计里留下被删事实'
+  );
+  const fixReceiptPreview = await request('POST', `/api/fees/${fixFee.id}/settlements/preview`, fixReceiptInput);
+  const fixReceipt = await request(
+    'POST', `/api/fees/${fixFee.id}/settlements/confirm`, confirmBody(fixReceiptPreview)
+  );
+  assert.equal(fixReceipt.shares[0].amount_fen, 50000);
+
+  // ④ 系统结算生成的分成不能直接删改，错误文案须指明去哪里更正；「修改这笔结算」能走通。
+  const fixEngineShareId = fixReceipt.shares[0].id;
+  const fixEngineDelete = await request('DELETE', `/api/shares/${fixEngineShareId}`, undefined, 409);
+  assert.equal(fixEngineDelete.code, 'engine_share_crud_forbidden');
+  assert.match(fixEngineDelete.error, /修改这笔结算/);
+  const fixEnginePatch = await request('PATCH', `/api/shares/${fixEngineShareId}`, { amount: 1 }, 409);
+  assert.equal(fixEnginePatch.code, 'engine_share_facts_immutable');
+  assert.match(fixEnginePatch.error, /修改这笔结算/);
+  const fixCorrectionPreview = await request('POST', `/api/fees/${fixFee.id}/settlements/preview`, {
+    run_kind: 'correction',
+    source_run_id: fixReceipt.run.id,
+    request_id: 'http-fix-correction-1',
+    base_amount_fen: 80000,
+    paid_on: '2026-07-01',
+    reason: '律师费金额记错，更正为 800 元',
+  });
+  const fixCorrection = await request(
+    'POST', `/api/fees/${fixFee.id}/settlements/confirm`, confirmBody(fixCorrectionPreview)
+  );
+  assert.equal(fixCorrection.fee.amount_fen, 80000);
+  assert.equal(
+    db.prepare(
+      "SELECT SUM(amount_fen) AS total FROM fee_shares WHERE fee_item_id=? AND is_void=0 AND cancelled_at=''"
+    ).get(fixFee.id).total,
+    40000,
+    '更正后本款应付合计 = 新金额 × 五成'
+  );
+
   assert.equal(db.pragma('integrity_check', { simple: true }), 'ok');
   assert.deepEqual(db.pragma('foreign_key_check'), []);
-  console.log('settlement HTTP tests: plan/preview/confirm + zero-delta + retired history + overlap guards + repair semantics + delete guards passed');
+  console.log('settlement HTTP tests: plan/preview/confirm + zero-delta + retired history + overlap guards + repair semantics + delete guards + correction paths passed');
 } catch (error) {
   let serverLog = '';
   try { serverLog = fs.readFileSync(logPath, 'utf8'); } catch { /* no log */ }

@@ -351,6 +351,14 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 **1.7.5 分成台账动作一致性**：费用页的"例外直记"仍只服务某笔已收律师费下的历史/特殊应付事实，不开放方向选择，也不伪装成公式结算；但必须显式填写 `due_month` 并可留 `note`，避免后端默认当前月导致历史台账进入错误年度统计与 L0。费用页和案件页的 pending 台账都可修改月份；物理删除仍只放在案件上下文，并且只对普通 `manual|legacy`、非作废、非待修复行展示。`calculated|adjustment` 或带 assignment/snapshot 来源的引擎行不得展示后端必然拒绝的删除按钮，金额与来源事实继续只追加、不覆盖。
 
+**1.7.6 分成台账的更正出口**：台账上的每一行都必须有一条走得通的更正路径，不能只在后端拒绝、界面上不给去处。
+
+1. 普通 `manual|legacy`、非作废行不论 `pending / settled / waived`，都提供「更正」（金额、月份、状态、结清日期、备注，走 `PATCH /shares/:id`）与「删」；有 open 修复单的行仍只给「去修复」。更正属于 1.4「legacy/manual 事实纠正」，`audit_log` 必须记改前改后；从已结清退回待处理时同步清空 `settled_on`。合作对象或方向记错不在弹层里改，删除后重新记录。
+2. 费用页的待处理行与本年已结明细同样提供「更正」；「删」仍只放在案件上下文，唯一例外是 `case_id IS NULL` 的外部分成（没有案件页）。
+3. 引擎行在案件页提供「修改结算」，直达该款项的 correction 弹层；后端拒绝直接改删引擎行时，错误文案必须写明「修改这笔结算 / 撤销这次收款」。
+4. preview / confirm 遇 `legacy_share_adoption_conflict` 时，响应的 `shares` 须带 `amount`、`due_month`、`status`，结算弹层据此列出冲突的手动记录，并给出两条出路：把该约定改为不关联本款（以手动记录为准），或就地删除手动记录后重新预览（以系统计算为准）；删除遇 `legacy_repair_required` 时改为引导去修复工作台。面向人的文案不出现 legacy / manual / engine 等内部词。
+5. 判断「是否引擎行」的口径前后端一致，前端只有一处实现（`public/js/share-correct.js`），案件页、费用页、结算弹层不得各写一份。
+
 **2.2.4 案件详情·律师费款项——每笔款独立折叠（默认关）**：`#case-money > #fee-list` 内每一笔款包成 `<details class="fee-row-fold" data-fold-id="fee-row-{fee_id}">`；默认折叠、本机记忆在 `anjian-fold`（与全站原生折叠同池）。summary 仅展示 **chevron + 标签 + 状态徽章 + 警示 chip（"需配置分成"/"X 条分成待定"）+ 金额**，body 才挂 contract clause 原文、所有动作按钮、分成子行与凭证行。设计动机：3 笔款全展开时屏幕一屏装不下，律师一眼看不到全案资金总貌；折叠后一眼能扫完整案，单击才付出阅读代价。所有按钮依旧在 body 内可点击；summary 故意不放任何可点击控件，避免点动作同时切换折叠。
 
 **2.2.5 案件详情·律师费款项 body——动作独立成行**：`.fee-row-body` 不再把 `.tl-actions` 塞在 `.pay-row` 末尾。`mainRow` 只留 `p1（标签+条款）+ 状态徽章 + 金额`，3 个动作按钮拆到独立的 `.fee-row-actions` 行（`justify-content: flex-end`、`border-top: 1px solid var(--line)`、`padding: 6px 14px 10px`）。设计动机：3 个按钮占 ~280px 列宽，把 `.p1` 挤到 92px 极窄列，合同条款被迫在"V2 合同第八"处强 wrap；拆开后 `.p1` 回到 ~370px，整段条款回到一行。同样适用于费用页和今日页的 `.pay-row` 复用——`.fee-row-actions` 只挂在 `.fee-row-body` 内，不污染其他 `.pay-row` 上下文。

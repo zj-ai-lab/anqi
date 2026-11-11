@@ -6,7 +6,7 @@ export function normalizeCounterpart(value) {
 
 function overlapSql({ excludeShareId = null, legacyOnly = false } = {}) {
   return `
-    SELECT id,case_id,fee_item_id,agreement_id,direction,counterpart,status,entry_kind,
+    SELECT id,case_id,fee_item_id,agreement_id,direction,counterpart,amount,due_month,status,entry_kind,
            settlement_snapshot_id,is_void,cancelled_at,cancelled_by_run_id
       FROM fee_shares
      WHERE fee_item_id = ?
