@@ -56,19 +56,22 @@ if (!fs.existsSync(NODE_MODULES)) {
 const lock = JSON.parse(fs.readFileSync(LOCKFILE, 'utf8'));
 const packages = lock.packages || {};
 
-// key 形如 "node_modules/@img/sharp-darwin-arm64" 或
-// "node_modules/koffi-darwin-x64"（无 scope 的情况本仓库暂未用到，但一并
-// 支持，不假设一定带 scope）。
-const DARWIN_ARCH_RE = /^node_modules\/((?:@[^/]+\/)?)([^/]+)-darwin-(arm64|x64)$/;
+// key 形如 "node_modules/@img/sharp-darwin-arm64"（顶层提升）或上游 0.2.x 起
+// koffi 的嵌套形式
+// "node_modules/@deepseek-ai/dsh-fs-local/node_modules/@koromix/koffi-darwin-arm64"
+// ——上游不再把 @koromix/koffi-darwin-* 提升到顶层，每个依赖它的 DSH 包自带
+// 一份嵌套拷贝；补装必须落到同一个嵌套位置，Node 解析才找得到。无 scope 的
+// 情况本仓库暂未用到，但一并支持，不假设一定带 scope。
+const DARWIN_ARCH_RE = /^(.*?node_modules\/)((?:@[^/]+\/)?)([^/]+)-darwin-(arm64|x64)$/;
 
-// family key -> { scope, base, arches: { arm64: {version, resolved, integrity}, x64: {...} } }
+// family key -> { prefix, scope, base, arches: { arm64: {version, resolved, integrity}, x64: {...} } }
 const families = new Map();
 for (const [key, entry] of Object.entries(packages)) {
   const m = DARWIN_ARCH_RE.exec(key);
   if (!m) continue;
-  const [, scope, base, arch] = m;
-  const familyKey = `${scope}${base}`;
-  if (!families.has(familyKey)) families.set(familyKey, { scope, base, arches: {} });
+  const [, prefix, scope, base, arch] = m;
+  const familyKey = `${prefix}|${scope}${base}`;
+  if (!families.has(familyKey)) families.set(familyKey, { prefix, scope, base, arches: {} });
   families.get(familyKey).arches[arch] = entry;
 }
 
@@ -86,7 +89,11 @@ for (const [familyKey, family] of families) {
 
   for (const arch of TARGET_ARCHES) {
     const pkgName = `${family.scope}${family.base}-darwin-${arch}`;
-    const destDir = path.join(NODE_MODULES, ...pkgName.split('/'));
+    // prefix 是 lockfile key 里从开头到该包所属 node_modules/ 的整段路径
+    // （顶层为 "node_modules/"，嵌套为 "node_modules/@deepseek-ai/dsh-fs-local/node_modules/"）。
+    // 去掉最外层 "node_modules/" 后与 NODE_MODULES 拼接，即得该包的实际安装位置。
+    const relativeDir = family.prefix.replace(/^node_modules\//, '') + pkgName;
+    const destDir = path.join(NODE_MODULES, ...relativeDir.split('/'));
     if (fs.existsSync(destDir)) {
       skipped += 1;
       continue;
@@ -98,7 +105,7 @@ for (const [familyKey, family] of families) {
       process.exit(1);
     }
 
-    console.log(`ensure-cross-arch-optional-deps: 补装 ${pkgName}@${entry.version}（宿主 npm ci 只装了当前架构，${arch} 侧缺失）`);
+    console.log(`ensure-cross-arch-optional-deps: 补装 ${relativeDir}@${entry.version}（宿主 npm ci 只装了当前架构，${arch} 侧缺失）`);
     downloadAndExtract(pkgName, entry, destDir);
     installed += 1;
   }

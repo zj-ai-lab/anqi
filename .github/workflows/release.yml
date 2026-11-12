@@ -128,7 +128,6 @@ jobs:
             bin="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/dsh-app-boot/lib/index.js"
             link="${resources}/agent-runtime/assets/node_modules"
             sharp_native="${resources}/agent-runtime/runtime/node_modules/@img/sharp-darwin-${arch}"
-            koffi_native="${resources}/agent-runtime/runtime/node_modules/@koromix/koffi-darwin-${arch}"
             ripgrep_native="${resources}/agent-runtime/runtime/node_modules/@vscode/ripgrep-darwin-${arch}"
             system_native="${resources}/agent-runtime/runtime/node_modules/@deepseek-ai/node-addon-system-darwin-${arch}"
             test -f "$bin" || {
@@ -143,10 +142,18 @@ jobs:
               echo "FATAL: ${sharp_native}/lib 下没有 sharp-darwin-${arch}-*.node——${outdir}（${arch}）产物里没有匹配架构的 sharp 原生模块，AI 助理常挂插件 attachment-local 一加载就会崩（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
               exit 1
             }
-            test -f "$koffi_native/darwin_${arch}/koffi.node" || {
-              echo "FATAL: $koffi_native/darwin_${arch}/koffi.node 不存在——${outdir}（${arch}）产物里没有匹配架构的 koffi 原生模块（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
+            # DSH 0.2.x 起上游不再把 @koromix/koffi-darwin-* 提升到顶层，每个
+            # 依赖它的 DSH 包在 node_modules 里自带一份嵌套拷贝。核验两侧：
+            # 每一侧都至少要有一个嵌套二进制，且 arm64/x64 侧数量一致——数量
+            # 一致说明补装脚本把嵌套位置逐个补齐了；只补一侧时 Intel Mac 上
+            # dsh-fs-local 等常挂包会加载失败。
+            koffi_root="${resources}/agent-runtime/runtime/node_modules"
+            koffi_arm=$(find "$koffi_root" -path "*@koromix/koffi-darwin-arm64/darwin_arm64/koffi.node" 2>/dev/null | wc -l | tr -d ' ')
+            koffi_x64=$(find "$koffi_root" -path "*@koromix/koffi-darwin-x64/darwin_x64/koffi.node" 2>/dev/null | wc -l | tr -d ' ')
+            if [ "$koffi_arm" -lt 1 ] || [ "$koffi_arm" != "$koffi_x64" ]; then
+              echo "FATAL: ${outdir}（${arch}）产物里嵌套 koffi 原生模块缺失或两架构数量不一致（arm64=${koffi_arm} x64=${koffi_x64}）——0.2.x 起 koffi-darwin-* 嵌套在各 DSH 包下，两架构必须逐位置共存（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
               exit 1
-            }
+            fi
             test -f "$ripgrep_native/bin/rg" || {
               echo "FATAL: $ripgrep_native/bin/rg 不存在——${outdir}（${arch}）产物里没有匹配架构的 ripgrep 二进制，dsh-tool-fs-search 会在文件搜索时失败（见 build/ensure-cross-arch-optional-deps.mjs 是否被跳过或失效）"
               exit 1

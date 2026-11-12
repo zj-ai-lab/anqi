@@ -8,6 +8,7 @@
 
 | 版本 | 日期 | 要点 |
 |---|---|---|
+| **2.12.9** | 2026-11-12 | AI 助理运行时升级 DSH 0.2.2-rc.2 对齐上游（170 包同版钉死）：preset 体系迁 registry+声明行、`{{cwd}}` 变量移除后 persona 改写、显式 tool-executor、workflow 换 PTC、第三方插件 patch 改重启 worker 生效；Node 底线 24.9（Electron 内嵌满足）；无 migration、无新环境变量。 |
 | **2.12.8** | 2026-11-11 | 律师费作废：收过款又撤销了收款、确实不再收取的款项可以「作废」（类比发票冲红后作废），退出待收与逾期统计、保留款项与全部结算记录、带原因、可撤回；撤销收款时可一步勾选作废；无 migration。 |
 | **2.12.7** | 2026-11-11 | 手动记的分成不论状态都能「更正」或「删」，结算遇到手动记录重叠时列出冲突并给出两种处理办法，系统结算的分成可从台账行直达「修改结算」；macOS 桌面版可在菜单「案件文件夹位置…」把案件夹指到已有的案卷总文件夹（不搬文件）；期限 / 开庭跨页点击直达案件时间线那一条；依赖补丁升级；无 migration。 |
 | **2.12.6** | 2026-11-02 | 案件时间线的开庭 / 程序事件、工作日志、期限可直接「编辑」内容（此前只能改日期）；改送达方式与改日期一样先预览派生期限重算、确认后才落库（修正只改送达方式不重算的缺口）；无 migration。 |
@@ -82,20 +83,6 @@
 | **0.3.0** | 2026-07-11 | 账号密码登录与 30 天会话；律师费台账 |
 | **0.2.0** | 2026-07-11 | 确定性期限引擎与 L0 digest |
 | **0.1.0** | 2026-07-11 | P0 电子台账：SQLite、REST、Web UI 与 CLI |
-
----
-
-## 未发布 — AI 助理运行时升级（DSH 0.2.2-rc.2）
-
-**状态：开发分支，尚未合并 `main`。**
-
-- 运行时闭包整体从 `0.1.5-rc.3` 升到 `0.2.2-rc.2`（170 个 DSH 包同版钉死），schemastery 对齐 `3.19.0`；Node 底线随上游升到 24.9（Electron 内嵌 Node 24.21 满足，服务器直跑需检查 node 版本）。
-- preset 体系随上游重构：目录扫描式的 `dsh-agent-presets`（已停发）换为 `dsh-agent-preset-registry` + 组合内 `dsh-agent-preset` 声明行，anqi / anqi-global 两个 preset 的插件清单内联进 `anqi.cordis.yml`（原 `assets/preset/` 目录删除）；默认 preset 仍由 `DSH_ANQI_SCOPE` 钉死，第三方 preset 依旧进不来。
-- `{{cwd}}` 提示词变量被上游移除：persona 文案改为不依赖变量，目录上下文由新挂载的 working-directory 服务提供；刻意不挂 tool-working-directory，模型仍然不能自由 cd，沙箱根钉死案件夹。
-- 工具执行按新架构挂显式 `tool-executor-native`（启动必需），PTC 执行器显式关闭；workflow 从已停发的 worker-thread 换 `ptc-runtime` + `workflow-ptc`（full 档能力不变）；子代理 control 行自带 list_agents，独立 /list-agents 行删除；`cordis-plugin-hmr` 更名 `dsh-hmr`；补挂 mcp-resources（dsh-mcp-client 的硬 peer）；web search 显式保持 `deepseek-official` 旧版计费路径，不引入 Search API 计费面；先读后写策略（fs-observation-policy）在上游改默认关闭后显式保持开启。
-- 第三方插件补丁（设置页 `agent_plugin_patch`）从「原地热重载」降级为「重启 worker 生效」：上游移除了非 profile 补丁的 watch 通道，设置修改时的既有 `stopAll()` 联动正好承接——下次打开抽屉按新补丁重建。composition 门禁的热重载断言同步改为重启契约。
-- `tools/update-dsh-runtime.mjs` 兼容 dsh-tools 从精确 pin 改范围声明 schemastery（`~3.19.0`）：范围解析为该范围内最新精确版再钉。parity 排除清单收录 0.2.x 新 row 的归类（插件管理/远程访问/配置编辑/DeepSeek 账号/OTel/cd 工具/agent-team 暂不引入）。
-- 门禁与回归：base parity（99 row 全审）、workspace containment、project/full/global 真实 JSON-RPC boot、EVENT_TYPES fail-closed、插件补丁重启生效断言全部通过；`tools/check.sh` 108 步全量通过。无 migration、无新环境变量、无前端改动。
 
 ---
 
@@ -229,6 +216,16 @@
 - 词表缺失或格式不对时 `dsh-anqi` 拒绝加载、preset 挂载失败，不静默退回无枚举的自由字符串。工具集合、技能与 preflight 契约不变；每次模型请求的工具定义约增加 5KB。
 - 测试：`test-agent-direct-tools.js`（两个 scope 的枚举 = 词表、说明含每个 `id=中文`、非法值不发请求、注入缺失/损坏拒绝加载）、`test-agent-supervisor.js`（两种 worker 注入同一份词表）、`test-agent-runtime-composition.js`（真实 DSH 缺词表即挂载失败）、`test-agent-global-internal-http.js`（服务端仍拒绝词表外 type 且不落库）。
 - 真模型复测（DeepSeek，隔离临时库、虚构案件）：总入口一句「今天在测试人民法院领了张三诉李四案的一审判决书」首次调用即选 `judgment_served`，引擎派生上诉期；「下周三去测试人民法院领判决」按将来的事记成待办，没有试错事件类型。
+
+## 2.12.9 — AI 助理运行时升级（DSH 0.2.2-rc.2）
+
+- 运行时闭包整体从 `0.1.5-rc.3` 升到 `0.2.2-rc.2`（170 个 DSH 包同版钉死），schemastery 对齐 `3.19.0`；Node 底线随上游升到 24.9（Electron 内嵌 Node 24.21 满足，服务器直跑自建部署需检查 node 版本）。
+- preset 体系随上游重构：目录扫描式的 `dsh-agent-presets`（已停发）换为 `dsh-agent-preset-registry` + 组合内 `dsh-agent-preset` 声明行，anqi / anqi-global 两个 preset 的插件清单内联进 `anqi.cordis.yml`（原 `assets/preset/` 目录删除）；默认 preset 仍由 `DSH_ANQI_SCOPE` 钉死，第三方 preset 依旧进不来。
+- `{{cwd}}` 提示词变量被上游移除：persona 文案改为不依赖变量，目录上下文由新挂载的 working-directory 服务提供；刻意不挂 tool-working-directory，模型仍然不能自由 cd，沙箱根钉死案件夹。
+- 工具执行按新架构挂显式 `tool-executor-native`（启动必需），PTC 执行器显式关闭；workflow 从已停发的 worker-thread 换 `ptc-runtime` + `workflow-ptc`（full 档能力不变）；子代理 control 行自带 list_agents，独立 /list-agents 行删除；`cordis-plugin-hmr` 更名 `dsh-hmr`；补挂 mcp-resources（dsh-mcp-client 的硬 peer）；web search 显式保持 `deepseek-official` 旧版计费路径，不引入 Search API 计费面；先读后写策略（fs-observation-policy）在上游改默认关闭后显式保持开启。
+- 第三方插件补丁（设置页 `agent_plugin_patch`）从「原地热重载」降级为「重启 worker 生效」：上游移除了非 profile 补丁的 watch 通道，设置修改时的既有 `stopAll()` 联动正好承接——下次打开抽屉按新补丁重建。
+- `tools/update-dsh-runtime.mjs` 兼容 dsh-tools 从精确 pin 改范围声明 schemastery（`~3.19.0`）：范围解析为该范围内最新精确版再钉。parity 排除清单收录 0.2.x 新 row 的归类（插件管理/远程访问/配置编辑/DeepSeek 账号/OTel/cd 工具/agent-team 暂不引入）。
+- 门禁与回归：base parity（99 row 全审）、workspace containment、project/full/global 真实 JSON-RPC boot、EVENT_TYPES fail-closed、插件补丁重启生效断言全部通过；`tools/check.sh` 108 步全量通过。无 migration、无新环境变量、无前端逻辑改动。
 
 ## 2.12.8 — 律师费作废
 
