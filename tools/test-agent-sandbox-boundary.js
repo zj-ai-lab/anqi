@@ -247,7 +247,13 @@ try {
     graceMs: 1_000,
   });
 
-  const run = (command) => sandboxCtx.shell.run(sandboxCtx.shell.resolve({ command }));
+  // DSH 0.2.x 的 ShellExecutor API：resolve(request) 出 spec，execute(spec) 出
+  // execution，settled 的前景投影在 execution.result()（exitCode/stdout.text/
+  // sandbox 均在 ShellRunResult 上）；旧的 ctx.shell.run() 一体封装已移除。
+  const run = async (command) => {
+    const execution = await sandboxCtx.shell.execute(sandboxCtx.shell.resolve({ command }));
+    return execution.result();
+  };
   const insideFile = path.join(sandboxRoot, 'inside.txt');
   const inside = await run(`printf 'inside-ok' > ${JSON.stringify(insideFile)} && cat ${JSON.stringify(insideFile)}`);
   assert.equal(inside.exitCode, 0);

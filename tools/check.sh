@@ -474,7 +474,7 @@ node tools/test-agent-model-options.js
 # 真实启动 project/full 两种 worker 核对工具集；containment 单测覆盖标准
 # read/write 与绕过 ctx.fs 的 glob/grep；parity 门会在上游 dsh-base 新增 row
 # 时 fail loud，迫使更新者挂载或明确分类。
-echo "[46/108] DSH 完整能力、案件 workspace containment、插件热更新与 base parity"
+echo "[46/108] DSH 完整能力、案件 workspace containment、插件补丁（重启生效）与 base parity"
 node tools/test-dsh-base-parity.js
 node tools/test-agent-workspace-guard.js
 node tools/test-agent-runtime-composition.js

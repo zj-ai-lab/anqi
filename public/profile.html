@@ -180,7 +180,7 @@
             <div class="formrow">
               <label class="f grow">DSH 插件 patch 文件<input id="agent-plugin-patch" placeholder="/绝对路径/cordis.patch.yml" autocomplete="off" spellcheck="false"></label>
             </div>
-            <p class="page-sub" id="agent-plugin-safety-note">仅完整档加载。支持上游 Cordis patch / 第三方 DSH 或 MCP 插件，并监听文件热更新；MCP 工具名形如 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>。插件与其启动的 server 等同在本机执行代码，只填写你已逐项审查且信任的普通 YAML 文件。案件项目档不加载第三方 patch，也不启用 bash/联网；新增或更新后必须通过 npm run check。</p>
+            <p class="page-sub" id="agent-plugin-safety-note">仅完整档加载。支持上游 Cordis patch / 第三方 DSH 或 MCP 插件，保存设置后自动停用现有助理会话、下次打开按新 patch 重建；MCP 工具名形如 <code>mcp__&lt;server&gt;__&lt;tool&gt;</code>。插件与其启动的 server 等同在本机执行代码，只填写你已逐项审查且信任的普通 YAML 文件。案件项目档不加载第三方 patch，也不启用 bash/联网；新增或更新后必须通过 npm run check。</p>
           </details>
         </div>
         <div class="formrow">

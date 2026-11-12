@@ -14,7 +14,6 @@ const baseIds = ids(path.join(
 ));
 const anqiIds = new Set([
   ...ids(path.join(ROOT, 'src/agent/assets/anqi.cordis.yml')),
-  ...ids(path.join(ROOT, 'src/agent/assets/preset/anqi/agent.cordis.yml')),
 ]);
 
 // These are intentionally host/CLI UI concerns rather than missing agent
@@ -48,6 +47,29 @@ const intentionalHostExclusions = new Set([
   // web_fetch stays off (anqi.cordis.yml tool-web fetch: false): the model would
   // choose the request target, so no fetch provider is mounted.
   'web-fetch-http',
+  // 0.2.x host/UI or account rows that stay out of the anqi sidecar: runtime
+  // plugin management is a dsh CLI concern (settings-page plugin patches mount
+  // through DSH_PLUGIN_PATCH instead), remote access and the config editor are
+  // interactive-host surfaces, and authorization/deepseek-account/
+  // llm-deepseek-account are the DeepSeek sign-in stack — anqi authenticates
+  // provider API keys, never DSH accounts.
+  'tool-plugin-manager',
+  'plugin-manager',
+  'remote-access',
+  'config-editor',
+  'authorization',
+  'deepseek-account',
+  'llm-deepseek-account',
+  // OTel exporter base; session telemetry stays local (see session-telemetry-otel).
+  'otel',
+  // working-directory the *service* is mounted (agent-instructions and the
+  // session cwd context depend on it); only the model-facing cd tool stays off —
+  // the sandbox root is pinned per case and must not be movable mid-session.
+  'tool-working-directory',
+  // New 0.2.x multi-agent team orchestration; not evaluated for the anqi full
+  // tier yet. Revisit with the next upstream bump.
+  'agent-team',
+  'tool-agent-team',
 ]);
 
 const unreviewed = baseIds.filter((id) => !anqiIds.has(id) && !intentionalHostExclusions.has(id));

@@ -304,7 +304,7 @@ docker start anqi
 
 数据去向：AI 助理的会话记录（transcript）落在与 `DB_PATH` 同一持久化范围内——Docker 部署下默认写入 `data/agent-sessions/`（与 `data/` 卷同一挂载点，跟随你的备份策略一起保存）；macOS 桌面版写入应用数据目录下的等价位置。图片输入的字节另存于 DSH home 的 `attachments/v1/`，transcript、SSE 与 UI 历史只保留 attachment 引用；备份/迁移时须把该目录与 session 数据一起带走。启动助理要求案件绑定的 `folder_path` 在 `ANJIAN_FILES_ROOT` 下真实存在；案件标题可以与目录名不同，改标题不会切换目录。
 
-第三方 DSH 插件：只在「完整 DSH」档的高级选项填写一个你已审查的绝对路径 `cordis.patch.yml`。该 patch 使用上游 Cordis 格式，文件变化会对现有 worker 热重载；插件本身是与当前本机用户等权执行的 Node 代码，不是数据文件，切勿加载来源不明的插件。依赖 DSH Web Client 专用 UI 插槽的插件不会自动出现在案齐抽屉里。项目维护者升级上游 runtime 时使用 `npm run agent:update-runtime -- <exact-version>`；它会跑真实启动/隔离/parity 门禁，App 用户仍通过经过验收的案齐版本获得 runtime 更新。
+第三方 DSH 插件：只在「完整 DSH」档的高级选项填写一个你已审查的绝对路径 `cordis.patch.yml`。该 patch 使用上游 Cordis 格式，在 worker 启动时加载；修改设置保存后会停用现有助理会话，下次打开按新 patch 重建（不原地热重载）。插件本身是与当前本机用户等权执行的 Node 代码，不是数据文件，切勿加载来源不明的插件。依赖 DSH Web Client 专用 UI 插槽的插件不会自动出现在案齐抽屉里。项目维护者升级上游 runtime 时使用 `npm run agent:update-runtime -- <exact-version>`；它会跑真实启动/隔离/parity 门禁，App 用户仍通过经过验收的案齐版本获得 runtime 更新。
 
 镜像体积代价：Docker 镜像因此增大约 192MB（275MB → 467MB，x86_64 实测，DeepSeek Agent SDK 及其原生模块的预编译产物），无论是否启用都会打进同一份镜像——这是为了让「先部署、后按需开启」不需要重新拉镜像；如果确定完全不需要这项功能，可以自行裁剪 Dockerfile 中对应的一层。
 

@@ -24,14 +24,22 @@ const ctx = {
     disposers.push(dispose);
     return dispose;
   },
+  // DSH 0.2.x 的 HarnessSdkJsonRpcServer 构造器经 ctx.inject(["goals"], …) 订阅
+  // 可选 goal 服务；本测试不提供该服务，真实 cordis 里对应 fiber 只等待、回调
+  // 永不触发。假件给一个等价的可处置占位（构造只要求 .dispose() 存在）。
+  inject(_names, _callback) {
+    return { dispose() {} };
+  },
   agents: {
     get(id) {
       return id === agent.id ? agent : undefined;
     },
   },
   get(name) {
-    assert.equal(name, 'commands');
-    return commandService;
+    // 0.2.x 的 sdk server 会查多个可选服务（commands/subagents/goals/…）；
+    // 本测试只提供 commands，其余一律 undefined（=服务缺失路径）。
+    if (name === 'commands') return commandService;
+    return undefined;
   },
 };
 

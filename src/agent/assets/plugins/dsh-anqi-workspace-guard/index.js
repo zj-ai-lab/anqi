@@ -161,9 +161,12 @@ export function installConfidentialSandbox(ctx, config) {
   }
 
   const originalConfine = ctx.sandbox.confine.bind(ctx.sandbox);
-  const guardedConfine = (argv, rawPolicy) => {
+  // DSH 0.2.x 起 sandbox provider 的 confine 是异步的并接受取消 signal（返回
+  // Promise<ConfinedArgv>）；wrapper 跟着 async 化并透传 signal，保持 fail-closed
+  // 语义不变：策略断言仍在拿到 runner 之前同步抛出。
+  const guardedConfine = async (argv, rawPolicy, signal) => {
     const policy = assertPolicy(rawPolicy, filesRoot, databasePath);
-    const upstream = originalConfine(argv, policy);
+    const upstream = await originalConfine(argv, policy, signal);
     const program = path.basename(upstream.argv[0] || '');
     if (program === 'bwrap') return confineBwrap(argv, policy, upstream, filesRoot, databaseRoot, tempRoot);
     if (program === 'landlock-run') return confineLandlock(argv, policy, upstream, tempRoot);

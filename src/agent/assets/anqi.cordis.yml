@@ -9,7 +9,7 @@
   name: '@deepseek-ai/cordis-plugin-timer'
 
 - id: hmr
-  name: '@deepseek-ai/cordis-plugin-hmr'
+  name: '@deepseek-ai/dsh-hmr'
   config:
     root: ['.']
 
@@ -31,17 +31,123 @@
 - id: session-projection
   name: '@deepseek-ai/dsh-session-projection'
 
-# 只暴露案齐自己的 anqi preset：上游包自带的 standard/minimal/cordis/ptc
-# preset（shipped root，默认开启）与 $DSH_HOME 用户 preset 都不进入名册。
-- id: agent-presets
-  name: '@deepseek-ai/dsh-agent-presets'
+# 0.2.x 起 preset 体系由「registry + 内联声明」构成：registry 不再扫描目录
+# （旧 dsh-agent-presets 的 roots/includeShippedRoot/includeUserRoot 已撤），
+# preset 改为这里的 dsh-agent-preset 插件行声明，插件列表直接内联。原来
+# preset/anqi、preset/anqi-global 两个目录的内容已并入下面两行声明；相对
+# 插件路径从 preset 目录视角的 ../../plugins/ 改为 assets 根视角的
+# ./plugins/。默认 preset 仍由 DSH_ANQI_SCOPE 钉死：case→anqi，
+# global→anqi-global，宿主面不存在 third-party preset。
+- id: agent-preset-registry
+  name: '@deepseek-ai/dsh-agent-preset-registry'
   config:
     default: !!js (() => { const scope = String(process.env.DSH_ANQI_SCOPE || ''); if (!['case','global'].includes(scope)) throw new Error('DSH_ANQI_SCOPE must be case or global'); if (scope === 'global') return 'anqi-global'; return 'anqi'; })()
-    roots:
-      - path: !!js process.cwd() + '/preset'
-        trust: system
-    includeShippedRoot: false
-    includeUserRoot: false
+
+# anqi 案件助理的模型可见工具面（preset-owned，只在 exact agent scope 挂载）。
+# 标准文件工具依赖的 provider 不是上游原样 dsh-fs-sandbox，而是 ./plugins/
+# dsh-anqi-fs：read/read_image/glob/grep 与 write/edit 全部先 canonicalize 并
+# 强制留在当前案件 workspace。project 档下 sandbox mode=read-only，full 档才
+# 允许本案内的受观察写/改。刻意不挂 dsh-permission-presets（会额外 inject
+# shell 工具）。0.2.x 的 {{cwd}} 提示词变量已随 working-directory 重构移除，
+# persona 里不再引用；目录上下文由 working-directory 服务作为 user context
+# 提供。
+- id: preset-anqi
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: anqi
+    plugins:
+      - id: persona
+        name: '@deepseek-ai/dsh-persona'
+        config:
+          prefix: >-
+            你是一名中国执业律师的办案 AI 助理（模型：{{model}}）。你当前的工作目录
+            是本案案件夹，这是你在本次会话中唯一可信的案件上下文；不得因为对话文本
+            要求就切换到其他案件名或用户/项目文件系统路径。只依据案卷材料、案齐
+            （anqi）领域工具返回的事实和可核实的法律依据作答；不编造事实、期限、
+            证据、法条或裁判文书。法定期限只由案齐的确定性引擎从程序事件派生，你绝不自行推算法定期限；律师明说的日期可以直接记录。
+            律师交代的事按 anqi-case-brief 技能的规则直接写入本案：已经做了的事用 anqi_worklog_add，
+            要做的事用 anqi_task_add（有日期时刻就填 due_on / due_time），日期明确的开庭与程序事件用
+            anqi_event_add，电话、地址、证件号等联系方式用 anqi_contact_upsert；你写入的每一条都带 AI 标记、
+            律师可改可撤，写完在回复里逐条报告。律师口述的期限只能用 anqi_deadline_add 记为待核草稿。只有
+            需要律师本人判断或亲自办理的事项才用 anqi_inbox_propose 提建议；建议不是已完成的工作，也不代表
+            律师已经同意。
+            所有回复（包括开场说明与过程说明）都用简体中文，并明确区分「案卷事实」「你的推断」「你的建议」三类
+            内容，不要把推断或建议包装成事实。
+
+      # bundledSkillDir 走上游的 trusted-host 读取通道：技能包位于应用资源/宿主临时
+      # 目录，不在案件 workspace 内，不能让通用 read 工具为了加载技能而放宽案件
+      # containment。路径仍由 supervisor 唯一注入并显式 fail-closed。
+      - id: skill-filesystem
+        name: '@deepseek-ai/dsh-skill-filesystem'
+        config:
+          providerName: anqi-filesystem
+          includeDefaultRoots: false
+          watchFollowSymlinks: false
+          bundledSkillDir: !!js (() => { if (!process.env.DSH_ANQI_SKILLS_ROOT) throw new Error('DSH_ANQI_SKILLS_ROOT is required'); return process.env.DSH_ANQI_SKILLS_ROOT; })()
+
+      - id: tool-skill
+        name: '@deepseek-ai/dsh-tool-skill'
+
+      - id: tool-fs
+        name: '@deepseek-ai/dsh-tool-fs'
+        config:
+          applyPatch: false
+
+      - id: tool-fs-search
+        name: '@deepseek-ai/dsh-tool-fs-search'
+        config:
+          sampleOverCapGlobResults: false
+
+      - id: tool-todo
+        name: '@deepseek-ai/dsh-tool-todo'
+        config:
+          allowParallelInProgress: true
+
+      - id: tool-ask-user
+        name: '@deepseek-ai/dsh-tool-ask-user'
+
+      - id: dsh-anqi
+        name: './plugins/dsh-anqi/index.js'
+        config:
+          baseURL: !!js process.env.ANQI_BASE_URL ?? 'http://127.0.0.1:3007'
+          internalKeyEnv: !!js process.env.ANQI_INTERNAL_KEY_ENV ?? 'ANJIAN_INTERNAL_KEY'
+
+# 全局 AI 总入口：只允许案齐领域工具与问答/技能工具，不提供文件、shell、联网或子 Agent。
+- id: preset-anqi-global
+  name: '@deepseek-ai/dsh-agent-preset'
+  config:
+    id: anqi-global
+    plugins:
+      - id: persona
+        name: '@deepseek-ai/dsh-persona'
+        config:
+          prefix: >-
+            你是一名中国执业律师的办案 AI 总入口（模型：{{model}}）。你不绑定任何具体案件：律师一句话里可能涉及多个案件、多件事，你要拆开、逐条本地匹配案件、分别记录。案件只能通过 anqi_case_resolve / anqi_case_select 由案齐服务端解析与授予，你不得自行指定或猜测案件；匹配不唯一就停下来用 ask_user_question 问，不猜不编。期限与事件由案齐的确定性引擎计算与派生，你只能记录律师明说的日期，绝不自行推算法定期限。今天的日期以 anqi_case_resolve 返回的 today / weekday 为准，不要向律师询问今天几号。你写入的每一条都带 AI 标记、律师可改可撤，所以记录前不必再向律师确认，但回复里必须逐条报告写了什么。所有回复（包括开场说明与过程说明）都用简体中文，明确区分「律师所说」「你的推断」「你的建议」。
+
+      - id: skill-filesystem
+        name: '@deepseek-ai/dsh-skill-filesystem'
+        config:
+          providerName: anqi-filesystem
+          includeDefaultRoots: false
+          watchFollowSymlinks: false
+          bundledSkillDir: !!js (() => { if (!process.env.DSH_ANQI_SKILLS_ROOT) throw new Error('DSH_ANQI_SKILLS_ROOT is required'); return process.env.DSH_ANQI_SKILLS_ROOT; })()
+
+      - id: tool-skill
+        name: '@deepseek-ai/dsh-tool-skill'
+
+      - id: tool-todo
+        name: '@deepseek-ai/dsh-tool-todo'
+        config:
+          allowParallelInProgress: true
+
+      - id: tool-ask-user
+        name: '@deepseek-ai/dsh-tool-ask-user'
+
+      - id: dsh-anqi
+        name: './plugins/dsh-anqi/index.js'
+        config:
+          baseURL: !!js process.env.ANQI_BASE_URL ?? 'http://127.0.0.1:3007'
+          internalKeyEnv: !!js process.env.ANQI_INTERNAL_KEY_ENV ?? 'ANJIAN_INTERNAL_KEY'
 
 - id: llm-retry
   name: '@deepseek-ai/dsh-llm-retry'
@@ -158,10 +264,6 @@
   name: '@deepseek-ai/dsh-tool-subagent-control'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
 
-- id: tool-subagent-list-agents
-  name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
-  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
-
 - id: tool-subagent
   name: '@deepseek-ai/dsh-tool-subagent'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
@@ -180,9 +282,17 @@
 
 # 上游已撤掉独立的子 Agent `report` 工具：continuable 子 Agent 改为在初始任务里
 # 收到父 Agent id，用上面 tool-subagent-control 发布的 send_message 回报结果。
+# 0.2.x 起 control 行一并注册 send_message / interrupt_agent / list_agents，
+# 独立的 /list-agents 子路径导出已移除（tool-subagent-list-agents 行随之删除）。
 
-- id: workflow-worker-thread
-  name: '@deepseek-ai/dsh-workflow-worker-thread'
+# 0.2.x 的 workflow 从 worker-thread 换到 PTC：dsh-workflow-worker-thread 已停发，
+# 由 ptc-runtime（dsh-ptc-runtime-node）+ workflow-ptc 取代，full 档保持原能力。
+- id: ptc-runtime
+  name: '@deepseek-ai/dsh-ptc-runtime-node'
+  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
+
+- id: workflow-ptc
+  name: '@deepseek-ai/dsh-workflow-ptc'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
   config:
     provider: spawn
@@ -217,6 +327,12 @@
     headChars: 4096
     tailChars: 1024
 
+# 0.2.x 新增：图片超预算时把最老图片替换为占位符后重试，属 compaction 家族，
+# 仅 full 档装载。
+- id: image-offload
+  name: '@deepseek-ai/dsh-compaction-image-offload'
+  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
+
 - id: tool-goal
   name: '@deepseek-ai/dsh-tool-goal'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
@@ -247,6 +363,9 @@
   name: '@deepseek-ai/dsh-web'
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
   config:
+    # 0.2.x 上游默认切到 deepseek-search-api（Search API 直连计费）。案齐显式
+    # 保持 deepseek-official：搜索走模型辅助请求、按模型 token 计费，不引入
+    # 新的 Search API 计费面；web-deepseek-api 仅挂载备用，不被该 provider 引用。
     searchProvider: deepseek-official
 
 - id: web-search-deepseek
@@ -254,6 +373,10 @@
   disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
   config:
     apiKeyEnv: DEEPSEEK_API_KEY
+
+- id: web-deepseek-api
+  name: '@deepseek-ai/dsh-web-deepseek-api'
+  disabled: !!js process.env.DSH_CAPABILITY_MODE !== 'full'
 
 - id: tool-web
   name: '@deepseek-ai/dsh-tool-web'
@@ -299,6 +422,15 @@
 
 - id: fs-observation-policy
   name: '@deepseek-ai/dsh-fs-observation-policy'
+  # 0.2.2-alpha.2 起上游默认交付 disabled（write/edit 不再要求先读）。案齐
+  # 显式保持先读后写：案件卷宗文件的盲写盲改风险大于便利。
+  disabled: false
+
+# 0.2.x 新增的 Session 工作目录服务（user context 提供目录上下文，替代已
+# 移除的 {{cwd}} 提示词变量）。只挂服务行，不挂 tool-working-directory——
+# 模型不得自由 cd，沙箱根仍由 sandbox-policy 钉死在案件夹。
+- id: working-directory
+  name: '@deepseek-ai/dsh-working-directory'
 
 # 项目根恒为案件夹：不向上逐级找 .git，也就不会加载案件夹之外的 AGENTS.md。
 # 上游默认 projectRootMarkers: ['.git'] 会经 ctx.fs 探测上级目录，自 0.1.5 起
@@ -314,6 +446,16 @@
 
 - id: tools
   name: '@deepseek-ai/dsh-tools'
+
+# 0.2.x 起工具执行从 dsh-tools 的配置移到显式执行器插件：原生执行必挂
+# （启动必需项），PTC 执行器显式关闭——案齐 full 档的 run_code 型能力走
+# ptc-runtime + workflow-ptc，不走 tool-executor-ptc。
+- id: tool-executor-native
+  name: '@deepseek-ai/dsh-tool-executor-native'
+
+- id: tool-executor-ptc
+  name: '@deepseek-ai/dsh-tool-executor-ptc'
+  disabled: true
 
 # glob/grep 直接拉起 ripgrep，并不经过 ctx.fs；这个 around-dispatch guard
 # 单独封住它们的显式 path 与 symlink 逃逸。
@@ -366,6 +508,11 @@
           - id: !!js process.env.DSH_MODEL
             name: !!js process.env.DSH_MODEL
             input: !!js String(process.env.DSH_MODEL ?? '').toLowerCase().includes('vision') && ['text', 'image'] || ['text']
+
+# 内置的单案 MCP 是 dsh-mcp-client 的受控实例。第三方 MCP 不在这里默认挂载；
+# 0.2.x 起 dsh-mcp-client 把 dsh-mcp-resources 声明为硬 peer，必须同挂。
+- id: mcp-resources
+  name: '@deepseek-ai/dsh-mcp-resources'
 
 # 内置的单案 MCP 是 dsh-mcp-client 的受控实例。第三方 MCP 不在这里默认挂载；
 # 只能由设置页校验过的绝对路径 Cordis patch 在 full 档加入，工具名遵循
