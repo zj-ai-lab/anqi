@@ -136,12 +136,18 @@ for (const name of ['read', 'read_image', 'write', 'edit', 'glob', 'grep', 'bash
 console.log('agent runtime composition global scope: project-only tools + global skill passed');
 
 // 事件类型词表由 supervisor 注入；缺了必须在挂载 preset 时就失败，不能静默发布没有 type 枚举的 anqi_event_add。
+// 0.2.x 起 loader 的失败前缀从 "failed to apply loader entry dsh-anqi" 变为
+// "dsh-anqi (<path>):"——正则只锚定插件名与必含的错误说明，不依赖前缀格式。
 await assert.rejects(
   bootAndPreflight('project', { envOverrides: { DSH_ANQI_EVENT_TYPES: '' } }),
-  /failed to apply loader entry dsh-anqi[\s\S]*DSH_ANQI_EVENT_TYPES/,
+  /dsh-anqi[\s\S]*DSH_ANQI_EVENT_TYPES/,
 );
 console.log('agent runtime composition: missing DSH_ANQI_EVENT_TYPES fails preset mount (fail-closed)');
 
+// DSH 0.2.x 移除了 app-boot 的 watchUserPatches（热重载只剩 profile 体系），
+// 可信第三方插件补丁从「原地热重载」降级为「重启 worker 生效」：设置页改
+// agent_plugin_patch 时 supervisor.stopAll() 已有联动，下次 spawn 用新补丁。
+// 这里验证新契约：同一补丁文件被修改后，新 worker 按新内容装载。
 const hotRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'anqi-dsh-plugin-hot-'));
 try {
   const pluginFile = path.join(hotRoot, 'hot-plugin.mjs');
@@ -166,21 +172,13 @@ export function apply(ctx) {
   const mountedPatch = `- insert:\n    - id: anqi-hot-plugin-probe\n      name: ${JSON.stringify(pluginFile)}\n`;
   fs.writeFileSync(patchFile, mountedPatch);
 
-  await bootAndPreflight('full', {
-    pluginPatch: patchFile,
-    async onReady({ rpc, preflight, sessionId }) {
-      assert.ok(preflight.tools.visibleNames.includes('anqi_hot_plugin_probe'));
-      fs.writeFileSync(patchFile, '[]\n');
-      const deadline = Date.now() + 5_000;
-      while (Date.now() < deadline) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
-        const snapshot = await rpc('session/preflight', { sessionId });
-        if (!snapshot.tools.visibleNames.includes('anqi_hot_plugin_probe')) return;
-      }
-      assert.fail('Cordis plugin patch changed but the live DSH worker did not hot-reload it');
-    },
-  });
-  console.log('agent plugin compatibility test: trusted Cordis patch mounted and hot-removed without worker restart');
+  const mountedTools = await bootAndPreflight('full', { pluginPatch: patchFile });
+  assert.ok(mountedTools.has('anqi_hot_plugin_probe'), 'full 档应装载补丁声明的 anqi_hot_plugin_probe');
+
+  fs.writeFileSync(patchFile, '[]\n');
+  const afterEditTools = await bootAndPreflight('full', { pluginPatch: patchFile });
+  assert.equal(afterEditTools.has('anqi_hot_plugin_probe'), false, '补丁清空后的新 worker 不应再装载 anqi_hot_plugin_probe');
+  console.log('agent plugin compatibility test: trusted Cordis patch mounts at boot and applies after worker restart');
 } finally {
   fs.rmSync(hotRoot, { recursive: true, force: true });
 }

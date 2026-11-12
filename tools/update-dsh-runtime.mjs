@@ -98,9 +98,24 @@ if (missingDirect.length > 0) {
   );
   process.exit(1);
 }
-const schemastery = published.get('@deepseek-ai/dsh-tools')?.dependencies?.[SCHEMASTERY];
-if (!/^\d+\.\d+\.\d+$/.test(schemastery ?? '')) {
-  process.stderr.write(`dsh-tools@${requested} does not pin an exact ${SCHEMASTERY} (saw ${schemastery}); nothing was changed\n`);
+// dsh-tools pinned schemastery exactly through 0.1.5 and switched to a range
+// (`~3.19.0`) in 0.2.x. Resolve either form to one exact version — the newest
+// published version inside the range — so the runtime keeps a single pin while
+// both sides share one Schema runtime.
+const schemasteryRange = published.get('@deepseek-ai/dsh-tools')?.dependencies?.[SCHEMASTERY];
+let schemastery = null;
+if (/^\d+\.\d+\.\d+$/.test(schemasteryRange ?? '')) {
+  schemastery = schemasteryRange;
+} else if (/^[~^]\d+\.\d+\.\d+$/.test(schemasteryRange ?? '')) {
+  const listing = await fetch(`${base}${SCHEMASTERY.replace('/', '%2f')}`);
+  if (!listing.ok) throw new Error(`registry answered ${listing.status} for ${SCHEMASTERY} listing`);
+  const versions = Object.keys((await listing.json()).versions ?? {});
+  const prefix = schemasteryRange.slice(1).split('.').slice(0, 2).join('.');
+  const inRange = versions.filter((v) => /^\d+\.\d+\.\d+$/.test(v) && v.startsWith(`${prefix}.`));
+  schemastery = inRange.sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).at(-1) ?? null;
+}
+if (!schemastery) {
+  process.stderr.write(`dsh-tools@${requested} does not constrain ${SCHEMASTERY} to a resolvable exact version (saw ${schemasteryRange}); nothing was changed\n`);
   process.exit(1);
 }
 

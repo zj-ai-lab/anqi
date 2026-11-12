@@ -85,6 +85,20 @@
 
 ---
 
+## 未发布 — AI 助理运行时升级（DSH 0.2.2-rc.2）
+
+**状态：开发分支，尚未合并 `main`。**
+
+- 运行时闭包整体从 `0.1.5-rc.3` 升到 `0.2.2-rc.2`（170 个 DSH 包同版钉死），schemastery 对齐 `3.19.0`；Node 底线随上游升到 24.9（Electron 内嵌 Node 24.21 满足，服务器直跑需检查 node 版本）。
+- preset 体系随上游重构：目录扫描式的 `dsh-agent-presets`（已停发）换为 `dsh-agent-preset-registry` + 组合内 `dsh-agent-preset` 声明行，anqi / anqi-global 两个 preset 的插件清单内联进 `anqi.cordis.yml`（原 `assets/preset/` 目录删除）；默认 preset 仍由 `DSH_ANQI_SCOPE` 钉死，第三方 preset 依旧进不来。
+- `{{cwd}}` 提示词变量被上游移除：persona 文案改为不依赖变量，目录上下文由新挂载的 working-directory 服务提供；刻意不挂 tool-working-directory，模型仍然不能自由 cd，沙箱根钉死案件夹。
+- 工具执行按新架构挂显式 `tool-executor-native`（启动必需），PTC 执行器显式关闭；workflow 从已停发的 worker-thread 换 `ptc-runtime` + `workflow-ptc`（full 档能力不变）；子代理 control 行自带 list_agents，独立 /list-agents 行删除；`cordis-plugin-hmr` 更名 `dsh-hmr`；补挂 mcp-resources（dsh-mcp-client 的硬 peer）；web search 显式保持 `deepseek-official` 旧版计费路径，不引入 Search API 计费面；先读后写策略（fs-observation-policy）在上游改默认关闭后显式保持开启。
+- 第三方插件补丁（设置页 `agent_plugin_patch`）从「原地热重载」降级为「重启 worker 生效」：上游移除了非 profile 补丁的 watch 通道，设置修改时的既有 `stopAll()` 联动正好承接——下次打开抽屉按新补丁重建。composition 门禁的热重载断言同步改为重启契约。
+- `tools/update-dsh-runtime.mjs` 兼容 dsh-tools 从精确 pin 改范围声明 schemastery（`~3.19.0`）：范围解析为该范围内最新精确版再钉。parity 排除清单收录 0.2.x 新 row 的归类（插件管理/远程访问/配置编辑/DeepSeek 账号/OTel/cd 工具/agent-team 暂不引入）。
+- 门禁与回归：base parity（99 row 全审）、workspace containment、project/full/global 真实 JSON-RPC boot、EVENT_TYPES fail-closed、插件补丁重启生效断言全部通过；`tools/check.sh` 108 步全量通过。无 migration、无新环境变量、无前端改动。
+
+---
+
 ## 2.7.1 — 律师费双向分成结算
 
 - 同一笔律师费可以分别设置“我应收”和“我应付”的分成；确认收款时逐条选择本款形成应收、形成应付或不关联，再统一预览和记账。
