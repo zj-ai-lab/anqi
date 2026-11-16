@@ -9,12 +9,11 @@ import { isDate } from './dates.js';
 import { isEventType } from './vocab.js';
 import { ensureCandidateFact } from './candidate-facts.js';
 import {
-  caseDirectoryName,
   normalizeRelativeFilePath,
   openSecureFile,
-  resolveCaseDirectoryForCase,
   walkSecureFiles,
 } from './secure-files.js';
+import { caseFolderPathOf, isGroupedCaseFolder, resolveCaseFolderForCase } from './case-folders.js';
 import {
   DOCUMENT_EXTRACTOR,
   DOCUMENT_MIN_CONFIDENCE,
@@ -24,6 +23,9 @@ import {
   extractDocument,
 } from './document-extractor.js';
 
+// LegalRAG 按案件名在它挂载的同一棵案件夹树里找案件，只认文件根下的一级文件夹；
+// 放在分组文件夹里的案件（folder_path=「分组/案件夹」）暂不接文件桥，明确报出来而不是让注册 404。
+const GROUPED_CASE_UNSUPPORTED = '放在分组文件夹里的案件暂不接 LegalRAG 文件桥';
 const SUPPORTED = new Set([
   '.pdf', '.docx', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tif', '.tiff',
   '.txt', '.md', '.csv', '.xlsx',
@@ -53,7 +55,8 @@ function caseAndFile(caseId, relPath) {
   const row = db.prepare('SELECT id,name,folder_path,status FROM cases WHERE id=?').get(caseId);
   if (!row) throw new Error('案件不存在');
   if (!process.env.ANJIAN_FILES_ROOT) throw new Error('未配置 ANJIAN_FILES_ROOT');
-  const context = resolveCaseDirectoryForCase(process.env.ANJIAN_FILES_ROOT, row);
+  if (isGroupedCaseFolder(caseFolderPathOf(row))) throw new Error(GROUPED_CASE_UNSUPPORTED);
+  const context = resolveCaseFolderForCase(process.env.ANJIAN_FILES_ROOT, row);
   if (!context.exists) throw new Error('文件不存在');
   const rel = normalizeRelativeFilePath(relPath);
   const opened = openSecureFile(context, rel);
@@ -164,8 +167,9 @@ export function reconcileLegalRagFiles({ bootstrap = false } = {}) {
   let files = 0;
   let queued = 0;
   for (const caseRow of cases) {
+    if (isGroupedCaseFolder(caseFolderPathOf(caseRow))) continue;
     let context;
-    try { context = resolveCaseDirectoryForCase(process.env.ANJIAN_FILES_ROOT, caseRow); } catch { continue; }
+    try { context = resolveCaseFolderForCase(process.env.ANJIAN_FILES_ROOT, caseRow); } catch { continue; }
     if (!context.exists) continue;
     const current = currentFiles(caseRow.id);
     const byPath = new Map(current.map((row) => [row.rel_path, row]));
@@ -445,10 +449,18 @@ async function registerNext() {
   // 017 之前遗留的多层 folder_path（如 OneDrive/OpenClaw项目/xxx）不是合法
   // 目录名，caseDirectoryName 会回落 cases.name，这里若直接发原始 folder_path
   // 会让注册一律 404 "case not found"。
-  const caseName = caseDirectoryName({
+  const caseName = caseFolderPathOf({
     folder_path: row.case_folder_path,
     name: row.case_title,
   }) || row.case_title;
+  if (isGroupedCaseFolder(caseName)) {
+    // 排队之后案件才被换绑进分组：不发注册、不重试，直接标失败并写明原因。
+    db.prepare(
+      `UPDATE legalrag_files SET sync_status='failed',last_error=?,
+         updated_at=datetime('now','+8 hours') WHERE id=?`
+    ).run(GROUPED_CASE_UNSUPPORTED, row.id);
+    return;
+  }
   try {
     const response = await bridgeFetch('/api/v1/integrations/documents/register', {
       method: 'POST', timeout: REGISTER_TIMEOUT,

@@ -91,7 +91,8 @@
   `TASK_FIELDS` / `WORKLOG_FIELDS` / `RECOMMENDATION_FIELDS` / `DIGEST_ROW_FIELDS` 逐字段 `pick()`，
   `contacts` 不在任何一份名单里；`src/routes/internal.js` 的 `buildCaseView()` 本身也不 JOIN contacts。
 - **结构** — 文件面：worker 的 fs 沙箱根 = `DSH_CWD` = supervisor 用
-  `src/lib/secure-files.js` 的 `resolveCaseDirectory()` 解析出的那一个案件夹
+  `src/lib/case-folders.js` 的 `resolveCaseFolderForCase()`（带当前分组清单调用
+  `src/lib/secure-files.js` 的 `resolveCaseDirectory()`）解析出的那一个案件夹
   （`src/agent/assets/anqi.cordis.yml` 的 `sandbox-policy.workspaceRoot` / `fs-sandbox.cwd`，缺失即抛错，无 `process.cwd()` 兜底）。
 - **机械** — `tools/test-agent-session-read-http.js`（check 第 34 步）：逐分桶同时断言「本案的行在」
   与「他案的行不在」，并覆盖 electron-auto key 的挂载栈收窄。
@@ -216,9 +217,13 @@
 
 ## 门禁 3 · 每个 worker 的 session、真实 `cwd` 和 case 权限不可被 prompt 改写
 
-- **结构** — `cwd` 只来自 `resolveCaseDirectoryForCase(filesRoot, caseRow)`，最终由
-  `cases.folder_path` 指向 `ANJIAN_FILES_ROOT` 下的单层真实目录（禁 symlink）；案件标题与
-  目录指针相互独立，模型没有任何输入能影响绑定。
+- **结构** — `cwd` 只来自 `resolveCaseFolderForCase(filesRoot, caseRow)`，最终由
+  `cases.folder_path` 指向 `ANJIAN_FILES_ROOT` 下的真实目录：一级文件夹，或已登记分组下的
+  一级文件夹（最多两层，分组与案件夹逐级禁 symlink、真实路径须在上一级之内）；分组只能由
+  人在设置页经 `PUT /api/case-folder-groups` 登记，案件标题与目录指针相互独立，模型没有任何
+  输入能影响绑定。分组下的案件 bwrap 仍遮蔽整个文件根，逐级 `--dir` 补出分组目录后只挂回本案夹
+  （路径层与 HTTP：`tools/test-secure-files-groups.js`、`tools/test-case-folder-groups-http.js`，check 第 20 步；
+  bwrap 遮蔽 → 逐级补目录 → 只挂回本案夹的参数顺序：`tools/test-agent-workspace-guard.js`，check 第 46 步）。
 - **结构** — `sessionId` 由 supervisor 铸造（`anqi-${randomUUID()}`）并在 **spawn 之前**
   `bindSession()` 登记；worker 终态收尾时 `unbindSession()`。
 - **结构** — skill 根不接受案件 YAML：supervisor 用 `verifyTrustedSkillsRoot()` 拒绝符号链接与

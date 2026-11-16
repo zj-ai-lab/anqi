@@ -10,6 +10,7 @@ import { bindFold } from './fold.js';
 import { mountCriminalFields } from './criminal-fields.js';
 
 import {CASE_TYPES,caseType,typeClass,typeOrder,procedureLabel} from './case-types.js';
+import { appendFolderOptions, defaultGroupFor } from './case-folder-picker.js';
 await mountNav();
 
 const selectedIds = new Set();
@@ -17,15 +18,29 @@ const selectedIds = new Set();
 const meta = await api('/meta');
 
 const folderSelect = document.getElementById('nc-folder-path');
+const caseTypeSelect = document.querySelector('#new-case-form select[name="case_type"]');
+let folderPayload = null;
+// 「自动创建」那一项写明会放进哪个分组（按案件类型的默认分组，设置页可改）。
+// 下拉只有一栏宽（桌面约 11 个汉字），有分组时用短文案，完整说明放在 option 的 title 里。
+function syncAutoFolderOption() {
+  if (!folderPayload?.configured) return;
+  const group = defaultGroupFor(folderPayload, caseTypeSelect.value);
+  const option = folderSelect.options[0];
+  option.textContent = group ? `同名新建在「${group}」下` : '自动创建同名案件文件夹';
+  option.title = group ? `自动创建与案件名称同名的文件夹，放进分组「${group}」（按案件类型，设置页可改）` : '';
+}
 try {
   const workspaces = await api('/case-folders');
   if (!workspaces.configured) {
     folderSelect.disabled = true;
     folderSelect.options[0].textContent = '未配置案件文件根（仍按案件名保存指针）';
   } else {
-    for (const folder of workspaces.folders.filter((item) => item.bound_case_id == null)) {
-      folderSelect.append(el('option', { value: folder.name }, `使用已有：${folder.name}`));
-    }
+    folderPayload = workspaces;
+    appendFolderOptions(folderSelect, workspaces.folders.filter((item) => item.bound_case_id == null), {
+      label: (folder) => `使用已有：${folder.group ? folder.name.slice(folder.group.length + 1) : folder.name}`,
+    });
+    caseTypeSelect.addEventListener('change', syncAutoFolderOption);
+    syncAutoFolderOption();
     // 桌面版：已有的案卷放在别处时，告诉人去哪里把「案件文件夹位置」改过去。
     if (workspaces.desktop) {
       folderSelect.title = '这里列出的是「案件文件夹位置」下面的文件夹；已有的案卷放在别处时，可在菜单栏「案齐 → 案件文件夹位置…」把位置改过去';

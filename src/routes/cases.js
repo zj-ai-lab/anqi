@@ -1,14 +1,23 @@
 import { Router } from 'express';
 import { db, audit, setChangeRuleId, withChangeContext } from '../db.js';
 import { todayCN, isDate } from '../lib/dates.js';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   caseDirectoryName,
   ensureCaseDirectory,
   listCaseDirectories,
   normalizeCaseDirectoryName,
+  normalizeCaseFolderPath,
   removeCreatedCaseDirectory,
   resolveCaseDirectory,
+  resolveFilesRoot,
 } from '../lib/secure-files.js';
+import {
+  MAX_CASE_FOLDER_GROUPS,
+  readCaseFolderConfig,
+  writeCaseFolderConfig,
+} from '../lib/case-folders.js';
 import { procedures, stagesOf, tasksForStage } from '../lib/vocab.js';
 import { criminalFieldKeys, validateCriminalFields } from '../lib/case-fields.js';
 import { missingConditions, conditionChangePreview, reconcileConditions, RULES, recomputeForDeadline, enrichDeadlineRow } from '../lib/engine.js';
@@ -41,9 +50,31 @@ const LIST_SQL = `
     CAST(julianday(date('now','+8 hours')) - julianday(c.stage_entered_at) AS INTEGER) AS stage_days
   FROM cases c`;
 
-function workspaceOwner(directoryName, exceptCaseId = null) {
+function workspaceOwner(directoryName, folderOptions, exceptCaseId = null) {
   const rows = db.prepare('SELECT id,name,folder_path FROM cases').all();
-  return rows.find((row) => row.id !== exceptCaseId && caseDirectoryName(row) === directoryName) || null;
+  return rows.find((row) => row.id !== exceptCaseId && caseDirectoryName(row, folderOptions) === directoryName) || null;
+}
+
+const FOLDER_PATH_ERROR = 'folder_path 须为文件根下一个非隐藏的文件夹名，或「分组/文件夹」（分组须先在设置里登记）';
+
+// 建案 / 换绑共用：校验请求里的案件夹路径，返回 { folderPath } 或 { error }。
+// 分组文件夹本身不能当案件夹——这是「案件夹不互相嵌套」的一半，另一半由分组设置把关。
+function validateFolderPath(value, folderConfig) {
+  const folderPath = normalizeCaseFolderPath(value, { groups: folderConfig.groups });
+  if (!folderPath) return { error: FOLDER_PATH_ERROR };
+  if (folderConfig.groups.includes(folderPath)) {
+    return { error: `「${folderPath}」是分组文件夹，不能直接作为案件夹；请选它下面的文件夹` };
+  }
+  return { folderPath };
+}
+
+// 自动创建同名案件夹：标题必须本身就是合法的单层目录名（标题里的「/」不当分组），
+// 再按案件类型放进默认分组（设置里没配就放文件根下）。
+function defaultFolderPath(caseName, caseType, folderConfig) {
+  const leaf = normalizeCaseDirectoryName(caseName);
+  if (!leaf) return null;
+  const group = folderConfig.defaults[caseType];
+  return group ? `${group}/${leaf}` : leaf;
 }
 
 const DIRECT_LITIGATION_REASON = '复议前置：须先复议，直接起诉期限不适用';
@@ -85,23 +116,98 @@ export function reconcilePrecondition(caseId, value, actor) {
   setChangeRuleId(null);
 }
 
+// folders[].name 是可直接回传的 folder_path（「案件夹」或「分组/案件夹」），group 为所属分组
+// （文件根下的为空串）；groups 是分组清单与各自已绑定的案件数，defaults 是按案件类型的默认分组。
 function workspacePayload() {
-  if (!FILES_ROOT) return { configured: false, desktop: DESKTOP, folders: [] };
-  const { names } = listCaseDirectories(FILES_ROOT);
+  const folderConfig = readCaseFolderConfig();
+  const folderOptions = { groups: folderConfig.groups };
   const cases = db.prepare('SELECT id,name,folder_path FROM cases ORDER BY id').all();
-  const bindings = new Map(cases.map((row) => [caseDirectoryName(row), row]));
+  const bindings = new Map(cases.map((row) => [caseDirectoryName(row, folderOptions), row]));
+  const caseCount = (group) => cases
+    .filter((row) => caseDirectoryName(row, folderOptions)?.startsWith(`${group}/`)).length;
+  if (!FILES_ROOT) {
+    return {
+      configured: false,
+      desktop: DESKTOP,
+      folders: [],
+      groups: folderConfig.groups.map((name) => ({ name, exists: false, case_count: caseCount(name) })),
+      defaults: folderConfig.defaults,
+    };
+  }
+  const listing = listCaseDirectories(FILES_ROOT, folderOptions);
+  const folder = (name, group) => {
+    const owner = bindings.get(name);
+    return {
+      name,
+      group,
+      bound_case_id: owner?.id ?? null,
+      bound_case_name: owner?.name ?? '',
+    };
+  };
   return {
     configured: true,
     desktop: DESKTOP,
-    folders: names.map((name) => {
-      const owner = bindings.get(name);
-      return {
-        name,
-        bound_case_id: owner?.id ?? null,
-        bound_case_name: owner?.name ?? '',
-      };
-    }),
+    folders: [
+      ...listing.names.map((name) => folder(name, '')),
+      ...listing.groups.flatMap((group) => group.names.map((name) => folder(`${group.name}/${name}`, group.name))),
+    ],
+    groups: listing.groups.map((group) => ({ name: group.name, exists: group.exists, case_count: caseCount(group.name) })),
+    defaults: folderConfig.defaults,
   };
+}
+
+// 分组设置的写入口：只有这里能改 case_folder_groups。三条把关保证已绑定的案件
+// 解析结果不因改分组而变：
+//   1. 新登记的分组不能已是某个案件的案件夹（否则案件夹会套住其他案件夹）；
+//   2. 新登记的分组不能与某个案件的旧多段指针同前缀（017 前遗留的 a/b 指针会被改判）；
+//   3. 分组下还有案件时不能移除（移除后这些指针会失效）。
+function validateFolderGroups(body) {
+  if (!Array.isArray(body?.groups)) return { status: 400, error: 'groups 须为数组' };
+  const groups = [];
+  for (const value of body.groups) {
+    const name = normalizeCaseDirectoryName(value);
+    if (!name) return { status: 400, error: `分组名「${String(value ?? '')}」须为一个非隐藏的文件夹名（不含 /）` };
+    if (!groups.includes(name)) groups.push(name);
+  }
+  if (groups.length > MAX_CASE_FOLDER_GROUPS) return { status: 400, error: `分组最多 ${MAX_CASE_FOLDER_GROUPS} 个` };
+  const defaults = {};
+  const rawDefaults = body.defaults ?? {};
+  if (typeof rawDefaults !== 'object' || Array.isArray(rawDefaults)) return { status: 400, error: 'defaults 须为对象' };
+  for (const [type, value] of Object.entries(rawDefaults)) {
+    if (!CASE_TYPES.includes(type)) return { status: 400, error: `未知的案件类型「${type}」` };
+    if (value === '' || value == null) continue;
+    const group = normalizeCaseDirectoryName(value);
+    if (!group || !groups.includes(group)) return { status: 400, error: `「${type}」的默认分组「${value}」不在分组清单里` };
+    defaults[type] = group;
+  }
+
+  const previous = readCaseFolderConfig();
+  const previousOptions = { groups: previous.groups };
+  const cases = db.prepare('SELECT id,name,folder_path FROM cases ORDER BY id').all();
+  for (const group of groups) {
+    const owner = cases.find((row) => caseDirectoryName(row, previousOptions) === group);
+    if (owner) return { status: 409, error: `「${group}」已是案件「${owner.name}」的案件夹，不能登记为分组` };
+    if (!previous.groups.includes(group)) {
+      const legacy = cases.find((row) => String(row.folder_path || '').trim().startsWith(`${group}/`));
+      if (legacy) {
+        return { status: 409, error: `案件「${legacy.name}」记录的旧路径以「${group}/」开头，请先在该案件页重新选择案件夹，再登记这个分组` };
+      }
+    }
+    if (FILES_ROOT) {
+      let stat = null;
+      try { stat = fs.lstatSync(path.join(resolveFilesRoot(FILES_ROOT).absolute, group)); } catch { stat = null; }
+      if (stat && (stat.isSymbolicLink() || !stat.isDirectory())) {
+        return { status: 400, error: `文件根下的「${group}」不是普通文件夹，不能登记为分组` };
+      }
+    }
+  }
+  for (const group of previous.groups.filter((name) => !groups.includes(name))) {
+    const bound = cases.filter((row) => caseDirectoryName(row, previousOptions)?.startsWith(`${group}/`));
+    if (bound.length) {
+      return { status: 409, error: `分组「${group}」下还有 ${bound.length} 个案件（如「${bound[0].name}」），先把它们换绑到别处再移除` };
+    }
+  }
+  return { config: { groups, defaults } };
 }
 
 export function createCasesRouter(supervisor) {
@@ -122,9 +228,28 @@ r.get('/cases', (req, res) => {
   res.json(db.prepare(sql).all(...args));
 });
 
-// 案件工作区选择器的数据源：只暴露配置根下的单层真实目录，不接受/返回任意
-// 宿主绝对路径。未配置文件根时返回空能力而不是让整个案件模块不可用。
+// 案件工作区选择器的数据源：只暴露配置根下的真实目录（一级文件夹，以及已登记分组
+// 下的一级文件夹），不接受/返回任意宿主绝对路径。未配置文件根时返回空能力而不是让
+// 整个案件模块不可用。
 r.get('/case-folders', (req, res) => {
+  try {
+    res.json(workspacePayload());
+  } catch (error) {
+    if (['root_unavailable', 'root_invalid'].includes(error?.code)) {
+      return res.status(503).json({ error: error.message, desktop: DESKTOP });
+    }
+    throw error;
+  }
+});
+
+r.put('/case-folder-groups', (req, res) => {
+  const checked = validateFolderGroups(req.body || {});
+  if (checked.error) return res.status(checked.status).json({ error: checked.error });
+  withChangeContext({ actor: req.actor }, () => {
+    writeCaseFolderConfig(checked.config);
+    audit(req.actor, 'update', 'settings', null,
+      `case_folder_groups groups=${checked.config.groups.join('、') || '(无)'}`);
+  });
   try {
     res.json(workspacePayload());
   } catch (error) {
@@ -153,15 +278,24 @@ r.post('/cases', (req, res) => {
   const reconsiderationPrecondition = Object.hasOwn(b, 'reconsideration_precondition')
     ? b.reconsideration_precondition : 'unknown';
   if (!validatePrecondition(reconsiderationPrecondition)) return res.status(400).json({ error: 'reconsideration_precondition 须为 yes/no/unknown' });
-  const folderPath = normalizeCaseDirectoryName(b.folder_path || caseName);
-  if (!folderPath) return res.status(400).json({ error: 'folder_path 须为文件根下的单层、非隐藏目录名' });
-  const owner = workspaceOwner(folderPath);
+  const folderConfig = readCaseFolderConfig();
+  const folderOptions = { groups: folderConfig.groups };
+  let folderPath;
+  if (b.folder_path) {
+    const checked = validateFolderPath(b.folder_path, folderConfig);
+    if (checked.error) return res.status(400).json({ error: checked.error });
+    folderPath = checked.folderPath;
+  } else {
+    folderPath = defaultFolderPath(caseName, caseType, folderConfig);
+    if (!folderPath) return res.status(400).json({ error: FOLDER_PATH_ERROR });
+  }
+  const owner = workspaceOwner(folderPath, folderOptions);
   if (owner) return res.status(409).json({ error: `案件夹「${folderPath}」已绑定到「${owner.name}」` });
 
   let createdDirectory = null;
   try {
     if (FILES_ROOT) {
-      const ensured = ensureCaseDirectory(FILES_ROOT, folderPath);
+      const ensured = ensureCaseDirectory(FILES_ROOT, folderPath, folderOptions);
       if (ensured.created) createdDirectory = ensured.context;
     }
     const info = withChangeContext({ actor: req.actor }, () => {
@@ -191,20 +325,23 @@ r.put('/cases/:id/workspace', async (req, res) => {
   const c = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
   if (!c) return res.status(404).json({ error: '案件不存在' });
   if (!FILES_ROOT) return res.status(503).json({ error: '未配置文件根（ANJIAN_FILES_ROOT）' });
-  const folderPath = normalizeCaseDirectoryName(req.body?.folder_path);
-  if (!folderPath) return res.status(400).json({ error: 'folder_path 须为文件根下的单层、非隐藏目录名' });
-  const owner = workspaceOwner(folderPath, c.id);
+  const folderConfig = readCaseFolderConfig();
+  const folderOptions = { groups: folderConfig.groups };
+  const checked = validateFolderPath(req.body?.folder_path, folderConfig);
+  if (checked.error) return res.status(400).json({ error: checked.error });
+  const { folderPath } = checked;
+  const owner = workspaceOwner(folderPath, folderOptions, c.id);
   if (owner) return res.status(409).json({ error: `案件夹「${folderPath}」已绑定到「${owner.name}」` });
 
   let context;
   let createdDirectory = null;
   try {
     if (req.body?.create === true) {
-      const ensured = ensureCaseDirectory(FILES_ROOT, folderPath);
+      const ensured = ensureCaseDirectory(FILES_ROOT, folderPath, folderOptions);
       context = ensured.context;
       if (ensured.created) createdDirectory = context;
     } else {
-      context = resolveCaseDirectory(FILES_ROOT, folderPath);
+      context = resolveCaseDirectory(FILES_ROOT, folderPath, folderOptions);
       if (!context.exists) return res.status(404).json({ error: `案件夹不存在：${folderPath}` });
     }
   } catch (error) {
@@ -217,13 +354,18 @@ r.put('/cases/:id/workspace', async (req, res) => {
     throw error;
   }
 
-  const previous = caseDirectoryName(c);
+  const previous = caseDirectoryName(c, folderOptions);
   if (previous !== folderPath && supervisor && typeof supervisor.stop === 'function') {
     try { await supervisor.stop(c.id, 'case-workspace-rebound'); } catch { /* stop() 自带强杀兜底 */ }
   }
-  // stop() 是异步的；等待期间另一个请求可能已抢先绑定同一目录。更新前重新
-  // 核验一次，让 Node 单进程内最后的 owner-check + 同步 SQLite update 连续完成。
-  const racedOwner = workspaceOwner(folderPath, c.id);
+  // stop() 是异步的；等待期间另一个请求可能已抢先绑定同一目录、或把它登记成分组。
+  // 更新前重新核验一次，让 Node 单进程内最后的 owner-check + 同步 SQLite update 连续完成。
+  const racedConfig = readCaseFolderConfig();
+  if (!validateFolderPath(folderPath, racedConfig).folderPath) {
+    if (createdDirectory) removeCreatedCaseDirectory(createdDirectory);
+    return res.status(409).json({ error: `分组设置刚刚变化，「${folderPath}」已不能作为案件夹，请刷新后重选` });
+  }
+  const racedOwner = workspaceOwner(folderPath, { groups: racedConfig.groups }, c.id);
   if (racedOwner) {
     return res.status(409).json({ error: `案件夹「${folderPath}」已绑定到「${racedOwner.name}」` });
   }

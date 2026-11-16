@@ -85,10 +85,12 @@ echo "[19/108] 启动 fail-closed + trusted proxy 解析"
 node tools/test-startup-config.js
 node tools/test-trust-proxy.js
 
-echo "[20/108] 会话、恒时凭据比较与案件文件安全边界"
+echo "[20/108] 会话、恒时凭据比较与案件文件安全边界（含「分组/案件夹」两层）"
 node tools/test-auth-security.js
 node tools/test-secure-files.js
 node tools/test-files-http.js
+node tools/test-secure-files-groups.js
+node tools/test-case-folder-groups-http.js
 
 echo "[21/108] production 500 脱敏"
 node tools/test-error-handler.js

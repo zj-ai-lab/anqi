@@ -69,14 +69,52 @@ export function normalizeCaseDirectoryName(value) {
   return name;
 }
 
+// 分组：部署者可以把文件根下的若干一级文件夹登记为「分组」（如 诉讼/、顾问/），
+// 这时案件夹也可以是分组下的一级文件夹，folder_path 记为「分组/案件夹」。最多两层，
+// 第一层必须是**当前登记**的分组：没登记分组时，两段路径一律按旧口径视为不合法、
+// 回落 cases.name——017 之前遗留的 OneDrive/... 多层指针因此行为完全不变。
+// 分组本身不是案件夹、案件夹不互相嵌套，由建案 / 换绑 / 分组设置三处写入口保证
+// （routes/cases.js）；这里只负责结构与真实路径边界。
+function caseFolderGroupSet(groups) {
+  return new Set((Array.isArray(groups) ? groups : [])
+    .map((group) => normalizeCaseDirectoryName(group))
+    .filter(Boolean));
+}
+
+export function normalizeCaseFolderPath(value, { groups = [] } = {}) {
+  if (typeof value !== 'string') return null;
+  const raw = value.trim();
+  if (!raw.includes('/')) return normalizeCaseDirectoryName(raw);
+  const parts = raw.split('/');
+  if (parts.length !== 2) return null;
+  const group = normalizeCaseDirectoryName(parts[0]);
+  const name = normalizeCaseDirectoryName(parts[1]);
+  if (!group || !name || !caseFolderGroupSet(groups).has(group)) return null;
+  return `${group}/${name}`;
+}
+
+// 只接受 normalizeCaseFolderPath() 的输出。
+export function splitCaseFolderPath(folderPath) {
+  const index = folderPath.indexOf('/');
+  return index < 0
+    ? { group: '', name: folderPath }
+    : { group: folderPath.slice(0, index), name: folderPath.slice(index + 1) };
+}
+
 // cases.name 是案件标题；folder_path 才是 ANJIAN_FILES_ROOT 下的工作区名。
 // 兼容迁移前的空值：在 017 migration 尚未跑过的独立 fixture/旧备份上仍以
 // name 作为一次性 fallback，但所有新写入都会把 folder_path 物化为非空值。
-export function caseDirectoryName(caseRow) {
-  if (typeof caseRow === 'string') return normalizeCaseDirectoryName(caseRow);
+// 标题回落只认单层目录名，标题里的「/」不会被当成分组路径。
+export function caseDirectoryName(caseRow, options = {}) {
+  if (typeof caseRow === 'string') return normalizeCaseFolderPath(caseRow, options);
   if (!caseRow || typeof caseRow !== 'object') return null;
-  return normalizeCaseDirectoryName(caseRow.folder_path)
+  return normalizeCaseFolderPath(caseRow.folder_path, options)
     || normalizeCaseDirectoryName(caseRow.name);
+}
+
+// 案件夹的身份锚：文件根、（分组下的案件）分组文件夹、案件夹本身。
+function caseAnchorIdentities(context) {
+  return [context.filesRootIdentity, context.groupIdentity, context.caseRootIdentity].filter(Boolean);
 }
 
 export function normalizeRelativeFilePath(value, { allowEmpty = false, rejectHidden = true } = {}) {
@@ -130,11 +168,42 @@ export function ensureFilesRoot(configuredRoot) {
   return resolveFilesRoot(configured);
 }
 
-export function resolveCaseDirectory(configuredRoot, caseName) {
-  const name = normalizeCaseDirectoryName(caseName);
-  if (!name) throw pathError('invalid_case_name', '案件名必须是单一、非隐藏的目录名称');
+export function resolveCaseDirectory(configuredRoot, caseName, options = {}) {
+  const name = normalizeCaseFolderPath(caseName, options);
+  if (!name) throw pathError('invalid_case_name', '案件夹必须是文件根下一个非隐藏的文件夹，或已登记分组下的一个文件夹');
   const filesRoot = resolveFilesRoot(configuredRoot);
-  const expected = path.join(filesRoot.absolute, name);
+  const { group, name: leaf } = splitCaseFolderPath(name);
+  let parent = filesRoot.absolute;
+  let groupIdentity = null;
+  if (group) {
+    const groupPath = path.join(filesRoot.absolute, group);
+    let groupStat;
+    try {
+      groupStat = fs.lstatSync(groupPath);
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        return {
+          name,
+          filesRoot: filesRoot.absolute,
+          filesRootIdentity: filesRoot.identity,
+          groupIdentity: null,
+          caseRoot: path.join(groupPath, leaf),
+          caseRootIdentity: null,
+          exists: false,
+        };
+      }
+      throw error;
+    }
+    if (groupStat.isSymbolicLink()) throw pathError('symlink', '分组文件夹不能是符号链接');
+    if (!groupStat.isDirectory()) throw pathError('not_directory', '分组文件夹不是目录');
+    const groupReal = realpathOrPathError(groupPath);
+    if (!containedBy(filesRoot.absolute, groupReal)) throw pathError('escape', '分组文件夹真实路径越出文件根');
+    const groupRealStat = lstatOrPathError(groupReal);
+    if (!sameFile(groupStat, groupRealStat)) throw pathError('path_changed', '分组文件夹在检查期间发生变化，请重试');
+    parent = groupReal;
+    groupIdentity = identityRecord(groupReal, groupRealStat);
+  }
+  const expected = path.join(parent, leaf);
   let stat;
   try {
     stat = fs.lstatSync(expected);
@@ -144,6 +213,7 @@ export function resolveCaseDirectory(configuredRoot, caseName) {
         name,
         filesRoot: filesRoot.absolute,
         filesRootIdentity: filesRoot.identity,
+        groupIdentity,
         caseRoot: expected,
         caseRootIdentity: null,
         exists: false,
@@ -154,29 +224,30 @@ export function resolveCaseDirectory(configuredRoot, caseName) {
   if (stat.isSymbolicLink()) throw pathError('symlink', '案件夹不能是符号链接');
   if (!stat.isDirectory()) throw pathError('not_directory', '案件夹不是目录');
   const real = realpathOrPathError(expected);
-  if (!containedBy(filesRoot.absolute, real)) throw pathError('escape', '案件夹真实路径越出文件根');
+  if (!containedBy(parent, real)) throw pathError('escape', '案件夹真实路径越出文件根');
   const realStat = lstatOrPathError(real);
   if (!sameFile(stat, realStat)) throw pathError('path_changed', '案件夹在检查期间发生变化，请重试');
   return {
     name,
     filesRoot: filesRoot.absolute,
     filesRootIdentity: filesRoot.identity,
+    groupIdentity,
     caseRoot: real,
     caseRootIdentity: identityRecord(real, realStat),
     exists: true,
   };
 }
 
-export function resolveCaseDirectoryForCase(configuredRoot, caseRow) {
-  const directoryName = caseDirectoryName(caseRow);
+export function resolveCaseDirectoryForCase(configuredRoot, caseRow, options = {}) {
+  const directoryName = caseDirectoryName(caseRow, options);
   if (!directoryName) throw pathError('invalid_case_name', '案件工作区必须是单一、非隐藏的目录名称');
-  const primary = resolveCaseDirectory(configuredRoot, directoryName);
+  const primary = resolveCaseDirectory(configuredRoot, directoryName, options);
   if (primary.exists || !caseRow || typeof caseRow !== 'object') return primary;
 
   // beta3 兼容：只有“合法、非空的 folder_path 指针目标确实不存在”这一种情
   // 形，才尝试同名 name 目录。folder_path 若是 symlink/普通文件/越界路径，
   // resolveCaseDirectory() 会在上面直接抛错，不能用 fallback 掩盖边界故障。
-  const configuredName = normalizeCaseDirectoryName(caseRow.folder_path);
+  const configuredName = normalizeCaseFolderPath(caseRow.folder_path, options);
   const fallbackName = normalizeCaseDirectoryName(caseRow.name);
   if (!configuredName || !fallbackName || configuredName === fallbackName) return primary;
   const fallback = resolveCaseDirectory(configuredRoot, fallbackName);
@@ -188,45 +259,75 @@ export function resolveCaseDirectoryForCase(configuredRoot, caseRow) {
   };
 }
 
-// 只列文件根的直接子目录。这里返回的是可绑定 workspace 候选，不递归、不跟随
-// symlink，也不把隐藏目录暴露给浏览器。
-export function listCaseDirectories(configuredRoot) {
-  // 纯读路径必须如实反映同步盘/挂载点是否可用。不能在 GET 时用
-  // ensureFilesRoot() 补建一个同名空目录，否则挂载掉线会被伪装成“空案卷”。
-  const root = resolveFilesRoot(configuredRoot);
+// 只列一层真实子目录：不递归、不跟随 symlink、隐藏项不出现。
+function listDirectChildren(parent) {
   const names = [];
-  for (const entry of fs.readdirSync(root.absolute, { withFileTypes: true })) {
+  for (const entry of fs.readdirSync(parent, { withFileTypes: true })) {
     const name = normalizeCaseDirectoryName(entry.name);
     if (!name || !entry.isDirectory() || entry.isSymbolicLink()) continue;
-    const absolute = path.join(root.absolute, name);
+    const absolute = path.join(parent, name);
     let stat;
     try { stat = fs.lstatSync(absolute); } catch { continue; }
     if (stat.isSymbolicLink() || !stat.isDirectory()) continue;
     let real;
     try { real = fs.realpathSync.native(absolute); } catch { continue; }
-    if (!containedBy(root.absolute, real) || real !== absolute) continue;
+    if (!containedBy(parent, real) || real !== absolute) continue;
     names.push(name);
   }
   names.sort((left, right) => left.localeCompare(right, 'zh-CN'));
-  return { filesRoot: root.absolute, names };
+  return names;
 }
 
-export function ensureCaseDirectory(configuredRoot, requestedName) {
-  const name = normalizeCaseDirectoryName(requestedName);
-  if (!name) throw pathError('invalid_case_name', '案件工作区必须是单一、非隐藏的目录名称');
+// 可绑定 workspace 候选：文件根的直接子目录（names，已登记的分组不在其中），
+// 以及每个分组下的直接子目录（groups[].names）。只到这两层，绝不再往下。
+export function listCaseDirectories(configuredRoot, options = {}) {
+  // 纯读路径必须如实反映同步盘/挂载点是否可用。不能在 GET 时用
+  // ensureFilesRoot() 补建一个同名空目录，否则挂载掉线会被伪装成“空案卷”。
+  const root = resolveFilesRoot(configuredRoot);
+  const groupNames = caseFolderGroupSet(options.groups);
+  const rootNames = listDirectChildren(root.absolute);
+  const present = new Set(rootNames);
+  const groups = [...groupNames].map((group) => ({
+    name: group,
+    exists: present.has(group),
+    names: present.has(group) ? listDirectChildren(path.join(root.absolute, group)) : [],
+  }));
+  return {
+    filesRoot: root.absolute,
+    names: rootNames.filter((name) => !groupNames.has(name)),
+    groups,
+  };
+}
+
+export function ensureCaseDirectory(configuredRoot, requestedName, options = {}) {
+  const name = normalizeCaseFolderPath(requestedName, options);
+  if (!name) throw pathError('invalid_case_name', '案件夹必须是文件根下一个非隐藏的文件夹，或已登记分组下的一个文件夹');
   const filesRoot = ensureFilesRoot(configuredRoot);
-  const target = path.join(filesRoot.absolute, name);
   verifyIdentities([filesRoot.identity]);
-  let created = false;
-  try {
-    fs.mkdirSync(target, { mode: 0o700 });
-    created = true;
-  } catch (error) {
-    if (error?.code !== 'EEXIST') throw error;
+  const { group } = splitCaseFolderPath(name);
+  if (group) {
+    // 分组文件夹不存在时顺手建出来；随后 resolveCaseDirectory() 会拒绝符号链接、
+    // 非目录与越界，必须在建案件夹之前校验完，避免经被换成链接的分组建到根外。
+    try {
+      fs.mkdirSync(path.join(filesRoot.absolute, group), { mode: 0o700 });
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
   }
-  const context = resolveCaseDirectory(filesRoot.absolute, name);
+  const before = resolveCaseDirectory(filesRoot.absolute, name, options);
+  let created = false;
+  if (!before.exists) {
+    verifyIdentities([filesRoot.identity, before.groupIdentity].filter(Boolean));
+    try {
+      fs.mkdirSync(before.caseRoot, { mode: 0o700 });
+      created = true;
+    } catch (error) {
+      if (error?.code !== 'EEXIST') throw error;
+    }
+  }
+  const context = resolveCaseDirectory(filesRoot.absolute, name, options);
   if (!context.exists) throw pathError('not_found', '案件工作区创建后不可见');
-  verifyIdentities([filesRoot.identity, context.caseRootIdentity]);
+  verifyIdentities(caseAnchorIdentities(context));
   return { context, created };
 }
 
@@ -235,7 +336,7 @@ export function ensureCaseDirectory(configuredRoot, requestedName) {
 export function removeCreatedCaseDirectory(context) {
   if (!context?.exists || !context.caseRootIdentity) return false;
   try {
-    verifyIdentities([context.filesRootIdentity, context.caseRootIdentity]);
+    verifyIdentities(caseAnchorIdentities(context));
     fs.rmdirSync(context.caseRoot);
     return true;
   } catch {
@@ -247,14 +348,14 @@ function requireCaseDirectory(context) {
   if (!context?.exists || !context.caseRootIdentity) {
     throw pathError('not_found', '案件夹不存在');
   }
-  verifyIdentities([context.filesRootIdentity, context.caseRootIdentity]);
+  verifyIdentities(caseAnchorIdentities(context));
 }
 
 function inspectExistingPath(context, relativePath, expectedType) {
   requireCaseDirectory(context);
   const rel = normalizeRelativeFilePath(relativePath, { allowEmpty: expectedType === 'directory' });
   const parts = rel ? rel.split('/') : [];
-  const identities = [context.filesRootIdentity, context.caseRootIdentity];
+  const identities = caseAnchorIdentities(context);
   let absolute = context.caseRoot;
   let stat = lstatOrPathError(absolute);
 
@@ -449,7 +550,7 @@ export function writeUniqueSecureFile(context, relativeDirectory, requestedName,
 export function removeSecureCreatedFile(context, written) {
   if (!written?.identity || !containedBy(context.caseRoot, written.absolute)) return false;
   try {
-    verifyIdentities([context.filesRootIdentity, context.caseRootIdentity]);
+    verifyIdentities(caseAnchorIdentities(context));
     const current = fs.lstatSync(written.absolute);
     if (current.isSymbolicLink() || !sameFile(current, written.identity)) return false;
     fs.unlinkSync(written.absolute);

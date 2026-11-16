@@ -6,10 +6,10 @@ import { todayCN, isDate } from '../lib/dates.js';
 import {
   openSecureFile,
   removeSecureCreatedFile,
-  resolveCaseDirectoryForCase,
   sanitizeUploadFileName,
   writeUniqueSecureFile,
 } from '../lib/secure-files.js';
+import { resolveCaseFolderForCase } from '../lib/case-folders.js';
 import { withdrawAcceptedEntityFacts } from '../lib/candidate-facts.js';
 import { fenToYuan, parseMoneyToFen } from '../lib/settlement.js';
 import {
@@ -81,7 +81,7 @@ function vouchersForFees(fees) {
     let missing = false;
     if (FILES_ROOT && fee) {
       try {
-        const context = resolveCaseDirectoryForCase(FILES_ROOT, {
+        const context = resolveCaseFolderForCase(FILES_ROOT, {
           name: fee.case_name || fee.case_name_for_files || '',
           folder_path: fee.case_folder_path || fee.case_folder_path_for_files || '',
         });
@@ -299,7 +299,7 @@ r.put('/fees/:id/files', express.raw({ type: '*/*', limit: MAX_VOUCHER_SIZE }), 
 
   let context;
   try {
-    context = resolveCaseDirectoryForCase(FILES_ROOT, {
+    context = resolveCaseFolderForCase(FILES_ROOT, {
       name: fee.case_name,
       folder_path: fee.case_folder_path,
     });
