@@ -15,10 +15,10 @@ import {
   listSecureDirectory,
   normalizeRelativeFilePath,
   openSecureFile,
-  resolveCaseDirectoryForCase,
   sanitizeUploadFileName,
   writeUniqueSecureFile,
 } from '../lib/secure-files.js';
+import { resolveCaseFolderForCase } from '../lib/case-folders.js';
 
 const r = Router();
 const ROOT = process.env.ANJIAN_FILES_ROOT || '';
@@ -62,7 +62,7 @@ function mustCase(req, res) {
   const c = db.prepare('SELECT * FROM cases WHERE id = ?').get(req.params.id);
   if (!c) { res.status(404).json({ error: '案件不存在' }); return null; }
   try {
-    const context = resolveCaseDirectoryForCase(ROOT, c);
+    const context = resolveCaseFolderForCase(ROOT, c);
     return { c, context };
   } catch (error) {
     securePathFailure(res, error, '文件或目录不存在', {

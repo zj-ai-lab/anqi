@@ -10,8 +10,10 @@ import { mountNav } from './nav.js';
 import { setSkin, getSkin, getResolvedSkin } from './skin.js';
 import { api, toast } from './api.js';
 import { buildModelOptions } from './agent-model-options.js';
+import { mountFolderGroupSettings } from './folder-groups-settings.js';
 
 await mountNav();
+mountFolderGroupSettings();
 
 // 账户与安全 / 关于：两条事实条，「展开/收起」就地展开同条内详情，不走 fold.js
 const bindStrip = (toggleId, moreId) => {

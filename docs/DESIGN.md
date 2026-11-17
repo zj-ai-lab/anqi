@@ -38,7 +38,7 @@ case CLI ─────────────────► /api
 SQLite，migration 走编号 SQL。以下是核心表结构示意；现行字段与约束以 `src/migrations/` 为准：
 
 ```sql
--- 案件。name 是人读的案件标题；folder_path 是配置文件根下的单层案件工作区名
+-- 案件。name 是人读的案件标题；folder_path 是配置文件根下的案件工作区（一级文件夹，或已登记分组下的一级文件夹「分组/名称」）
 CREATE TABLE cases (
   id INTEGER PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,          -- 例「张三诉李四民间借贷」（示例）
@@ -52,7 +52,7 @@ CREATE TABLE cases (
   stage_entered_at TEXT,              -- 进入当前阶段日 → 「停留 N 天」信号（D6）
   status TEXT NOT NULL DEFAULT 'active',  -- active|shelved|closed（shelved 语义同 registry）
   accepted_at TEXT,                   -- 收案日
-  folder_path TEXT,                   -- ANJIAN_FILES_ROOT 下的单层案件工作区名
+  folder_path TEXT,                   -- ANJIAN_FILES_ROOT 下的案件工作区：「名称」或「分组/名称」
   note TEXT,
   created_at TEXT, updated_at TEXT
 );
@@ -407,10 +407,11 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 **铁律：案件夹是唯一文件真相源，本系统不建第二文件仓；同一个案件夹同时就是本案 Agent workspace。**
 
-- 部署者将本地磁盘或同步软件管理的目录挂载为 `ANJIAN_FILES_ROOT`；`cases.folder_path` 是该根目录下的单层案件夹名，`cases.name` 只承担人读标题。两者在建案时默认同名，但此后互不跟随：改案件标题不搬目录，换工作区也不改标题。历史空 `folder_path` 以 `name` 回填一次后固定。
-- 已配置 `ANJIAN_FILES_ROOT` 时，新建案件必须同时选择一个根下既有文件夹，或由服务端原子创建一个新文件夹；桌面版默认总是配置该根。未配置文件根的兼容部署仍可建案，但只保存待物化的 `folder_path` 指针，文件区与 Agent 明确不可用，不伪装成已有目录。案件详情可重新绑定根下未被其他案件占用的真实目录；换绑只改指针、不移动、不复制、不删除任何文件，并先停掉该案正在运行的 Agent worker。目录选择器只列 `ANJIAN_FILES_ROOT` 的单层真实目录，隐藏项、符号链接和非目录不出现；Web/自托管版不接受浏览器提交任意宿主绝对路径。
-- **桌面版可改文件根的位置（只换根，不改模型）**：`config.json` 可带可选的 `filesRoot`（绝对路径），缺省、为空或不是绝对路径时一律回到 `<dataDir>/案件夹`；`DB_PATH` 与 `ANJIAN_AGENT_SESSION_ROOT` 永远留在 `dataDir`。入口只有应用菜单「案件文件夹位置…」→ 原生文件夹选择器 → 原生确认框，由主进程完成，**不给页面新增 IPC，也不给主窗口加 preload**。选定的位置先 `realpath`，再过 `electron/backend-env.js` 的 `filesRootProblem()`：拒绝整块磁盘、个人文件夹本身及其上级、包含数据目录的位置、数据目录里除默认位置外的文件夹、程序自身所在位置。通过后写 `config.json` 并按新 env 重启后端；起不来就写回旧配置并恢复。改位置不移动、不复制、不删除任何文件；已有案件按 `folder_path` 在新根下找同名目录，找不到时沿用既有的「目录缺失 / 回落提示」路径。「案件夹 = 文件根下的单层目录」「案件夹必须在文件根之内」（文件 API、款项凭证、LegalRAG 桥、Agent 沙箱共用的前提）不变；逐案任意绝对路径与多层相对路径不在本设计内。后端经 `ANJIAN_DESKTOP=1` 得知自己在桌面版里，`GET /case-folders`（含 503）只回布尔 `desktop`，页面据此提示去菜单改位置；文件根的绝对路径仍不出后端。
-- 工作区名 validator：去掉首尾空白后必须非空、非 `.`/`..`、非隐藏名，不含 `/`、`\\`、NUL/控制字符，且 UTF-8 文件名不超过 255 bytes。同一工作区最多绑定一个案件；案件标题可重名与否继续由案件表自己的约束决定。
+- 部署者将本地磁盘或同步软件管理的目录挂载为 `ANJIAN_FILES_ROOT`；`cases.folder_path` 是该根目录下的案件夹相对路径，`cases.name` 只承担人读标题。两者在建案时默认同名，但此后互不跟随：改案件标题不搬目录，换工作区也不改标题。历史空 `folder_path` 以 `name` 回填一次后固定。
+- **案件夹分组（两层，不嵌套）**：案卷按类别放在上一级文件夹里的（如 `诉讼/`、`顾问/`），可在设置页把这些一级文件夹登记为「分组」（`settings.case_folder_groups`，JSON `{groups, defaults}`，只经 `PUT /api/case-folder-groups` 写入）。登记后案件夹可以是文件根下的一级文件夹，也可以是某个分组下的一级文件夹，`folder_path` 记为 `分组/名称`；**最多两层，第一层必须是当下登记的分组**——没登记分组时两段路径一律不合法并按旧口径回落标题，017 之前遗留的多段指针因此行为不变。不嵌套由结构保证：分组本身不能绑案件；登记分组时拒绝「已是某案件夹」的文件夹、拒绝与某案旧多段指针同前缀的名字；分组下还有案件时不能移除；案件夹以下的子目录永远不在候选里。`defaults` 按案件类型给「自动创建同名案件夹」的落点（如民事→诉讼、非诉→顾问），没配就放文件根下；标题里的 `/` 不当分组。解析口径集中在 `src/lib/case-folders.js`（取当前分组清单）+ `secure-files.js`（分组与案件夹逐级 `lstat` 拒绝符号链接、真实路径须在上一级之内、分组也进身份复核），文件 API、款项凭证、快录附件、AI 助理 supervisor 共用；Agent 沙箱仍以真实案件夹为 workspace，bwrap 遮蔽整个文件根后逐级补目录只挂回本案夹。LegalRAG 文件桥按案件名在共享树里找一级文件夹，分组下的案件暂不接入（明确报错、不排队、不注册）。
+- 已配置 `ANJIAN_FILES_ROOT` 时，新建案件必须同时选择一个根下既有文件夹，或由服务端原子创建一个新文件夹；桌面版默认总是配置该根。未配置文件根的兼容部署仍可建案，但只保存待物化的 `folder_path` 指针，文件区与 Agent 明确不可用，不伪装成已有目录。案件详情可重新绑定根下未被其他案件占用的真实目录；换绑只改指针、不移动、不复制、不删除任何文件，并先停掉该案正在运行的 Agent worker。目录选择器只列 `ANJIAN_FILES_ROOT` 的一级真实目录（已登记的分组除外）和各分组下的一级真实目录，隐藏项、符号链接和非目录不出现；Web/自托管版不接受浏览器提交任意宿主绝对路径。
+- **桌面版可改文件根的位置（只换根，不改模型）**：`config.json` 可带可选的 `filesRoot`（绝对路径），缺省、为空或不是绝对路径时一律回到 `<dataDir>/案件夹`；`DB_PATH` 与 `ANJIAN_AGENT_SESSION_ROOT` 永远留在 `dataDir`。入口只有应用菜单「案件文件夹位置…」→ 原生文件夹选择器 → 原生确认框，由主进程完成，**不给页面新增 IPC，也不给主窗口加 preload**。选定的位置先 `realpath`，再过 `electron/backend-env.js` 的 `filesRootProblem()`：拒绝整块磁盘、个人文件夹本身及其上级、包含数据目录的位置、数据目录里除默认位置外的文件夹、程序自身所在位置。通过后写 `config.json` 并按新 env 重启后端；起不来就写回旧配置并恢复。改位置不移动、不复制、不删除任何文件；已有案件按 `folder_path` 在新根下找同名目录，找不到时沿用既有的「目录缺失 / 回落提示」路径。「案件夹必须在文件根之内」（文件 API、款项凭证、LegalRAG 桥、Agent 沙箱共用的前提）不变；案件夹在根下的层级见上一条「案件夹分组」（最多两层），逐案任意绝对路径与任意深度的相对路径不在本设计内。后端经 `ANJIAN_DESKTOP=1` 得知自己在桌面版里，`GET /case-folders`（含 503）只回布尔 `desktop`，页面据此提示去菜单改位置；文件根的绝对路径仍不出后端。
+- 工作区名 validator：每一段（分组名、案件夹名）去掉首尾空白后必须非空、非 `.`/`..`、非隐藏名，不含 `/`、`\\`、NUL/控制字符，且 UTF-8 文件名不超过 255 bytes；整体只能是「名称」或「已登记分组/名称」。同一工作区最多绑定一个案件；案件标题可重名与否继续由案件表自己的约束决定。
 - 能力：网页浏览案件夹（面包屑单层列目录）/ 上传（PUT 原始字节流，零依赖；白名单子目录：法院文书/立案材料/证据整理/客户沟通/办案过程/人工终稿；重名自动 (2) 不覆盖）/ 取流预览（PDF/图片 inline，html 以纯文本回防存储 XSS，nosniff）。
 - `attachments` 表只存**引用**（case_id + entity/entity_id + rel_path）：事件可挂多份文书，时间线出 📎 签；删除仅解除引用，永不删文件本体（不可逆操作留给人）。
 - 文件 API、款项凭证和 LegalRAG reconciliation/排队必须共用 `src/lib/secure-files.js`，禁止各自复制词法 `safeJoin`。配置根先 `realpath` 成可信锚；案件夹、每级中间目录和目标均以 `lstat` 拒绝符号链接，真实路径须留在案件夹内，并在操作前后复核 `dev/ino` 身份。读取用 `O_NOFOLLOW` 打开已验证文件描述符并绑定 inode；新文件用 `O_CREAT|O_EXCL|O_NOFOLLOW` 原子抢占名称，冲突才尝试 `(2)`，绝不先 `exists` 后覆盖。目录列表和 LegalRAG 扫描忽略符号链接。读取类端点把穿越、绝对路径、符号链接、越界真实路径和路径竞态统一回成 404，不向探测者区分安全拒绝与文件不存在；案件名、上传名等写入类非法输入仍回 400，供界面明确纠正。另有 60MB 上限、文件名清洗和会话/静态 token 鉴权。
@@ -570,7 +571,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 
 ## 9. 外部集成边界
 
-1. `cases.folder_path` 是配置文件根下的单层案件工作区名，也是共享文件服务的稳定目录键；`cases.name` 是人读标题；`status=shelved` 表示搁置。
+1. `cases.folder_path` 是配置文件根下的案件工作区（「名称」或「分组/名称」），也是共享文件服务的稳定目录键；`cases.name` 是人读标题；`status=shelved` 表示搁置。外部文件服务（LegalRAG）目前只认一级文件夹，分组下的案件不接文件桥。
 2. 外部自动化优先使用 `/internal/digest` 与 `/internal/cases/byname/:name` 读取结构化状态，并只通过 `/internal/inbox` 投递固定白名单内的异步建议。API 不可达时是否降级由外部工具自行决定，不属于本仓运行时。
 3. CLI 或其他受信任工具可在人工确认事实后调用公开的人面 API；不得绕过事件入口直接制造派生期限。
 4. **LegalRAG 衔接**（1.5.0）：
@@ -626,6 +627,7 @@ due_on = roll(count(occurred_on, rule), holidays, rule.roll)
 | A24 | 文件 API、凭证与 LegalRAG 共用一套真实路径边界 | 只做 `path.resolve` 前缀比较会跟随案件根、中间目录或目标符号链接，`exists→write` 还会产生覆盖竞态。共享 helper 把案件名单一分量、root realpath、逐级 lstat、真实路径 containment、inode 复核、no-follow 读取与 exclusive create 钉成同一契约；新文件仍保留重名 `(2)` 的用户语义。|
 | A25 | Android 壳由用户配置唯一服务器 origin，不内置项目部署坐标 | 自托管客户端不能把维护者实例当产品默认；严格 origin 比较阻断伪同源深链，切换清会话阻断跨实例凭据串用。动态局域网地址无法用 manifest 静态枚举，因此 cleartext 能力在壳层开放、目的地由 Activity 确定性白名单收窄；公网仍强制 HTTPS。|
 | A26 | 内置 DSH 以案件 workspace 为边界，默认收敛但提供显式完整档与可信插件 patch | project 档只发布本案文件/技能/待办/问人及案齐领域工具；full 档恢复上游命令、jobs、goal、subagent、workflow、Ralph、web，并可 HMR trusted Cordis patch。标准文件工具始终经过 canonical containment，shell/第三方代码的更宽宿主权限必须在界面明示。依赖 Web Client 插槽的插件仍需另做前端适配。对话 Markdown 用 DOM 安全子集渲染，不执行 HTML、不自动加载远端图片。|
+| A27 | 案件夹分组只到两层，分组须显式登记 | 律师常按「诉讼 / 顾问」等类别分上一级文件夹，单层模型只能覆盖其中一类；改成多个文件根要动沙箱、LegalRAG 与存储。分组只是根下被登记的一级文件夹，存储不加列、沙箱与真实路径边界不变。必须显式登记而非自动识别：案件夹本身就有子目录，自动识别会把「某案/证据」当成候选案件夹；登记 + 三条写入口把关（分组不绑案件、不与已绑案件夹或旧多段指针撞名、有案件不能移除）让「案件夹不互相嵌套」由结构成立。|
 
 ## 12. 初始未决问题（现状）
 

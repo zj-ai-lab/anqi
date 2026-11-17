@@ -19,6 +19,7 @@ import { bindFold, setFoldOpen } from './fold.js';
 import { mountAgentDrawer } from './agent-drawer.js';
 import { setLawTexts, basisBtn } from './deadline-basis.js';
 import { openTaskModal } from './calendar-task-modal.js';
+import { appendFolderOptions, defaultGroupFor, groupOf, leafName } from './case-folder-picker.js';
 import { settleDeadline, settleTask } from './record-actions.js';
 
 await mountNav();
@@ -225,12 +226,17 @@ document.getElementById('edit-form').addEventListener('submit', async (e) => {
 // 桌面版：下拉里列的是「案件文件夹位置」下面的子文件夹，位置本身在应用菜单里改。
 const DESKTOP_FILES_ROOT_HINT = ' 这里列出的是「案件文件夹位置」下面的文件夹；已有的案卷放在别处时，可在菜单栏「案齐 → 案件文件夹位置…」把位置改过去。';
 
+// 「新建并绑定」留空时的落点：按本案类型的默认分组（设置页可改），没配就在文件根下。
+let workspaceDefaultPath = '';
+
 async function loadWorkspacePicker() {
   const select = document.getElementById('case-workspace-select');
   const note = document.getElementById('case-workspace-note');
   const bindButton = document.getElementById('case-workspace-bind');
   const createButton = document.getElementById('case-workspace-create');
+  const createInput = document.getElementById('case-workspace-new');
   const current = bundle?.case?.folder_path || bundle?.case?.name || '';
+  workspaceDefaultPath = bundle?.case?.name || '';
   try {
     const result = await api('/case-folders');
     select.replaceChildren();
@@ -244,19 +250,27 @@ async function loadWorkspacePicker() {
     }
     const available = result.folders.filter((folder) => folder.bound_case_id == null || folder.bound_case_id === Number(id));
     if (!available.some((folder) => folder.name === current)) {
-      available.unshift({ name: current, bound_case_id: Number(id), missing: true });
+      available.unshift({ name: current, group: groupOf(current), bound_case_id: Number(id), missing: true });
     }
-    for (const folder of available) {
-      const label = folder.name === current
-        ? `${folder.name}${folder.missing ? '（当前指针，目录缺失）' : '（当前）'}`
-        : folder.name;
-      select.append(el('option', { value: folder.name }, label));
-    }
+    appendFolderOptions(select, available, {
+      label: (folder) => {
+        const shown = folder.group ? leafName(folder.name) : folder.name;
+        return folder.name === current
+          ? `${shown}${folder.missing ? '（当前指针，目录缺失）' : '（当前）'}`
+          : shown;
+      },
+    });
     select.value = current;
     select.disabled = false;
     bindButton.disabled = select.options.length === 0;
     createButton.disabled = false;
-    note.textContent = `当前项目：${current}。案件夹就是本案 AI 助理的工作目录；换绑不移动、不复制、也不删除原文件。${result.desktop ? DESKTOP_FILES_ROOT_HINT : ''}`;
+    const defaultGroup = defaultGroupFor(result, bundle?.case?.case_type);
+    workspaceDefaultPath = defaultGroup ? `${defaultGroup}/${bundle.case.name}` : bundle.case.name;
+    createInput.placeholder = `默认：${workspaceDefaultPath}`;
+    const groupHint = result.groups?.length
+      ? ` 新建时写「分组/文件夹名」可放进分组（已登记：${result.groups.map((group) => group.name).join('、')}）。`
+      : '';
+    note.textContent = `当前项目：${current}。案件夹就是本案 AI 助理的工作目录；换绑不移动、不复制、也不删除原文件。${groupHint}${result.desktop ? DESKTOP_FILES_ROOT_HINT : ''}`;
   } catch (error) {
     select.replaceChildren(el('option', { value: current }, current || '案件工作区不可用'));
     select.disabled = true;
@@ -290,7 +304,7 @@ document.getElementById('case-workspace-bind').addEventListener('click', async (
 document.getElementById('case-workspace-create').addEventListener('click', async () => {
   const input = document.getElementById('case-workspace-new');
   try {
-    await bindWorkspace(input.value || bundle.case.name, true);
+    await bindWorkspace(input.value || workspaceDefaultPath || bundle.case.name, true);
   } catch { /* api() 已显示服务端错误；避免留下 unhandled rejection */ }
 });
 

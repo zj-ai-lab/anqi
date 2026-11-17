@@ -55,7 +55,7 @@ import path from 'node:path';
 import { createInterface } from 'node:readline';
 import { fileURLToPath } from 'node:url';
 import { db, audit } from '../db.js';
-import { resolveCaseDirectoryForCase } from '../lib/secure-files.js';
+import { resolveCaseFolderForCase } from '../lib/case-folders.js';
 import { eventTypeGroups } from '../lib/vocab.js';
 import {
   AGENT_IMAGE_LIMITS,
@@ -979,7 +979,7 @@ export class AgentSupervisor {
     interactionTtlMs = DEFAULT_INTERACTION_TTL_MS,
     spawnFn = spawn,
     loadConfigFn = loadAgentConfig,
-    resolveCaseDirectoryFn = resolveCaseDirectoryForCase,
+    resolveCaseDirectoryFn = resolveCaseFolderForCase,
     bashSandboxProbeFn = probeHostBashSandbox,
     // null 表示生产接线：只有 worker 当前选择 2 档时才会调用固定的 DeepSeek
     // flash 分类器；全局默认档仍是 1，所以默认运行态不产生分类外发。测试可

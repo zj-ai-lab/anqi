@@ -13,7 +13,8 @@ import {
   MAX_STAGING_BYTES, STAGING_DIR, cleanupStaging, detectMime, extractDocument, readStaged, stageBuffer,
 } from '../lib/doc-intake.js';
 import { legalRagBridgeConfigured, queueCaseFile } from '../lib/legalrag-bridge.js';
-import { resolveCaseDirectoryForCase, writeUniqueSecureFile } from '../lib/secure-files.js';
+import { writeUniqueSecureFile } from '../lib/secure-files.js';
+import { resolveCaseFolderForCase } from '../lib/case-folders.js';
 
 const r = Router();
 
@@ -713,7 +714,7 @@ function stagedForQuick(payload, kind) {
   const c = db.prepare('SELECT * FROM cases WHERE id=?').get(payload.case_id);
   if (!c) throw recordError('案件不存在', 404, 'case_not_found');
   let context;
-  try { context = resolveCaseDirectoryForCase(FILES_ROOT, c); }
+  try { context = resolveCaseFolderForCase(FILES_ROOT, c); }
   catch (error) { throw recordError(`案件夹不存在：${c.name}（先建案件夹，或去掉附件再记）`, 409, 'case_folder_missing'); }
   if (!context.exists) throw recordError(`案件夹不存在：${c.name}（先建案件夹，或去掉附件再记）`, 409, 'case_folder_missing');
   let written;

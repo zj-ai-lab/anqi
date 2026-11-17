@@ -85,6 +85,23 @@
       </div>
     </div>
 
+    <!-- ═════ 案件文件夹分组（folder-groups-settings.js） ═════ -->
+    <div class="panel" aria-label="案件文件夹分组" id="folder-groups-panel">
+      <div class="p-head"><h2 class="p-title">案件文件夹分组</h2><span class="p-meta" id="folder-groups-state">读取中</span></div>
+      <div class="panel-body">
+        <p class="page-sub">案卷按类别放在上一级文件夹里时（如「诉讼」「顾问」），把这些类别文件夹登记为分组，建案和换绑就能选分组里的文件夹。分组本身不能绑案件，案件夹也不会套在另一个案件夹里；只到这一层，不再往下。</p>
+        <div id="folder-groups-list" style="margin:10px 0"></div>
+        <div class="formrow">
+          <label class="f grow">添加分组<input id="folder-group-new" list="folder-group-candidates" autocomplete="off" placeholder="案件文件夹位置下的文件夹名，如 诉讼"></label>
+          <datalist id="folder-group-candidates"></datalist>
+          <button class="btn" type="button" id="folder-group-add">添加</button>
+        </div>
+        <p class="page-sub">新建案件时「自动创建同名案件文件夹」放进：</p>
+        <div class="formgrid" id="folder-group-defaults"></div>
+        <div class="formrow"><button class="btn primary" type="button" id="folder-groups-save">保存分组设置</button></div>
+      </div>
+    </div>
+
     <!-- ═════ 提醒（确定性 worker + 应用内通知） ═════ -->
     <div class="panel" aria-label="提醒">
       <div class="p-head"><h2 class="p-title">提醒</h2><span class="p-meta">应用内通知</span></div>
